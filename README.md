@@ -579,14 +579,14 @@ jevskill/              the Python package — the measurement half
 bench/
   run.py               E1–E7 microbenchmarks (latency, fan-out, REDUCE, guards)
   ab.py                the A/B evaluation vs the model doing it alone
-tests/                 424 tests, offline, green
+tests/                 467 tests, offline, green
 docs/DESIGN.md         architecture + the mistakes that shaped it
 AGENTS.md              conventions for agents working on this repo
 ```
 
 ## 🧭 Status & known limits — `v0.7.0`
 
-CLI, skill, bundled scripts, ledger and reference docs (424 offline tests) are
+CLI, skill, bundled scripts, ledger and reference docs (467 offline tests) are
 complete, and there are now two benchmark suites. What is **not** proven:
 
 * **Redaction is not a PII policy.** It catches credential-shaped strings, not

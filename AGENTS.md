@@ -41,7 +41,7 @@ because passing the wrong one is a 404 or a 422.
 ## Running things
 
 ```bash
-python -m pytest -q                       # 424 tests, offline, must stay green
+python -m pytest -q                       # 467 tests, offline, must stay green
 python bench/run.py --legacy-reduce       # live API: E1-E7, writes bench/results.json
 python bench/ab.py --runs 3               # live API: the A/B evaluation, writes bench/ab_results.json
 

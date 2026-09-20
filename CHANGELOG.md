@@ -94,6 +94,104 @@ is corrected.
   flagged an otherwise-confident answer, proving the band is live and not inert.
 - No published number changes.
 
+## [0.8.0] — 2026-09-21
+
+Two things that actually save tokens, and one that stops a reduction from lying.
+The token work was deliberately done first: a cache and a prefilter are the only
+remaining places where the answer is cheaper without asking a better question.
+
+### Added — `--cache`: the cheapest call is the one you do not make
+
+`jevskill ask --cache` reuses a previous response when the request body is
+**byte-identical**, which covers re-running yesterday's triage, retrying a batch
+after a failure, and two agents looking at the same diff. Measured live:
+
+```
+call 1: cached=False  tokens=310  cost=$0.00001302
+call 2: cached=True   tokens=0    cost=$0.00        same answer
+```
+
+Three rules keep a hit honest:
+
+- **off by default.** A stale decision is worse than a paid one when the state is
+  moving, so reuse is a choice, with `--cache-ttl` (default 900 s) as the window.
+- the hit **reports itself** — `"cached": true`, `"cached_age_s"`, and
+  `cached: yes (N s old)` in the human path — and carries **zero tokens and zero
+  cost**, because the model did no work. It also reports `http_ms: 0.0` rather than
+  charging the disk lookup to the network.
+- the ledger row carries `extra: {"cache": "hit"}`, so a zero-cost row is
+  explained instead of looking like a decision the model made for free.
+
+The key hashes the whole request body rather than `(state, questions)`, so it
+cannot drift from what is actually sent: a new field changes the key by
+construction. `session_id` is part of the key, because it is part of the request.
+
+The cache lives beside the ledger and follows the same precedence (explicit root →
+`JEVSKILL_LEDGER_DIR` → cwd), so a project's cache and ledger cannot end up in two
+different places.
+
+### Added — `batch --skip-regex`: rules before the model
+
+A known-noise pattern costs nothing to exclude. Measured live on 8 log lines, 4 of
+them `DEBUG`, gating the rest for ownership:
+
+| | items sent | input tokens |
+|---|---|---|
+| no filter | 8 | 990 |
+| `--skip-regex '^DEBUG'` | 4 | **626** (−36.8%) |
+
+Dropped items are reported as `skipped` / `skipped_count`, never as items Jev
+judged — the rule is the caller's, and letting it look like a model decision would
+inflate the saving and misattribute a judgement. A pattern that matches everything
+is an error rather than an empty run.
+
+### Fixed — REDUCE silently dropped items the gate never judged
+
+Auditing this against a competing implementation's explicit fail-safe rule
+("timeouts and provider failures conservatively keep records for analysis") found
+the opposite, for a subtler reason:
+
+```python
+probability = (...get(f"keep_L{i}") or {}).get("noul") or 0.0
+```
+
+A **missing** verdict became `0.0`, which is indistinguishable from a confident
+"irrelevant" — so an item the model never judged was filed as `rejected` and
+counted in the reduction. Now:
+
+- a missing verdict puts the item in a new `unjudged` list;
+- unjudged items are **kept**, and are never cut by `--keep`, because dropping what
+  could not be evaluated is the one thing a reduction must not do quietly;
+- the count is reported (`unjudged_count`) and printed loudly in the human path;
+- the recovery record stores them separately, so `kept ∪ rejected ∪ unjudged` still
+  accounts for every input item;
+- a failed chunk now reports what the run already spent before dying, instead of
+  losing that information.
+
+A genuine `0.0` is still a rejection. The distinction is between a verdict and the
+absence of one.
+
+### Changed — evidence labels on the pattern palette
+
+`references/patterns.md` now labels each of the nine patterns `measured`,
+`inferred` or `unproven`, with a legend. This is the discipline a competing skill
+applies per scenario, and it is the honest answer to "does triage actually work?":
+`gate`, `verify`, `guard` and `reduce` are benchmarked here; `triage`, `rank`,
+`route` and `extract` are structurally inferred; `shortlist` is logic-tested with
+no empirical demonstration.
+
+### Verified
+
+- 467 tests green, from 424. New: `test_cache.py` (24), `test_reduce_failsafe.py`
+  (7), plus CLI tests for `--cache` and `--skip-regex`.
+- The seven fail-safe tests **all fail on 0.7.0**, checked by stashing the script.
+- Live: cache hit costs $0.00 with an identical answer; prefilter cut 990 → 626
+  tokens; the partition check confirms no input item is lost.
+- The CLI test double's `decide()` signature was extended to mirror the real one,
+  so a new keyword argument there fails a test instead of passing untested.
+
+No published number changes.
+
 ## [Unreleased]
 
 ### Planned

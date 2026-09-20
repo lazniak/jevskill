@@ -9,17 +9,24 @@ The palette is also machine-readable:
 
 ## Contents
 
-| | Pattern | Shape |
-|---|---|---|
-| [1](#1-gate--one-boolean-about-one-text) | **gate** | one boolean about one text |
-| [2](#2-triage--many-items-to-one-bounded-category-each) | **triage** | many items → one bounded category each |
-| [3](#3-reduce--a-large-sequence-to-a-small-shortlist) | **reduce** | large sequence → small shortlist |
-| [4](#4-rank--several-items-to-an-order) | **rank** | several items → an order |
-| [5](#5-route--one-task-to-one-tier-of-effort) | **route** | one task → one tier of effort |
-| [6](#6-verify--one-artifact-to-a-rubric-score) | **verify** | one artifact → a rubric score |
-| [7](#7-guard--one-proposed-action-to-safe--unsafe) | **guard** | one proposed action → safe/unsafe |
-| [8](#8-shortlist--a-close-call-becomes-a-narrower-question) | **shortlist** | a close call → ask again, narrower |
-| [9](#9-extract--unstructured-text-to-fixed-fields) | **extract** | unstructured text → fixed fields |
+| | Pattern | Shape | Evidence |
+|---|---|---|---|
+| [1](#1-gate--one-boolean-about-one-text) | **gate** | one boolean about one text | measured |
+| [2](#2-triage--many-items-to-one-bounded-category-each) | **triage** | many items → one bounded category each | inferred |
+| [3](#3-reduce--a-large-sequence-to-a-small-shortlist) | **reduce** | large sequence → small shortlist | measured, incl. a published failure |
+| [4](#4-rank--several-items-to-an-order) | **rank** | several items → an order | inferred |
+| [5](#5-route--one-task-to-one-tier-of-effort) | **route** | one task → one tier of effort | inferred |
+| [6](#6-verify--one-artifact-to-a-rubric-score) | **verify** | one artifact → a rubric score | measured |
+| [7](#7-guard--one-proposed-action-to-safe--unsafe) | **guard** | one proposed action → safe/unsafe | measured |
+| [8](#8-shortlist--a-close-call-becomes-a-narrower-question) | **shortlist** | a close call → ask again, narrower | **logic tested, value unproven** |
+| [9](#9-extract--unstructured-text-to-fixed-fields) | **extract** | unstructured text → fixed fields | inferred |
+
+**What the labels mean.** `measured` — a script in this repo produces a number for
+it, and the number is in `benchmarks.md`. `inferred` — the pattern follows from the
+model's shape and is exercised in tests, but it has **not** been benchmarked on its
+own workload, so treat the shape as sound and the effect size as unknown.
+`unproven` — the code path is tested; the behaviour it exists for did not occur in
+testing. Numbers, method and threats to validity: `benchmarks.md`.
 
 Then: [composition](#composition-how-patterns-stack) ·
 [choosing between patterns](#choosing-between-patterns) ·

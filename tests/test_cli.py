@@ -50,9 +50,31 @@ class FakeClient:
         self.warmed += 1
         return 90.0
 
-    def decide(self, state, questions, session_id=None, timeout_s=None):
+    def decide(self, state, questions, session_id=None, timeout_s=None, cache=None):
+        # The signature mirrors JevClient.decide, so a new keyword there fails
+        # here rather than silently going untested.
         FakeClient.calls.append({"state": state, "questions": questions,
-                                 "session_id": session_id, "timeout_s": timeout_s})
+                                 "session_id": session_id, "timeout_s": timeout_s,
+                                 "cache": cache})
+        if cache is not None:
+            # Exercise the real cache path so CLI tests cover the wiring.
+            body = json.dumps({"state": state, "questions": questions,
+                               "session_id": session_id}, sort_keys=True).encode()
+            entry = cache.lookup(body)
+            if entry is not None:
+                real = fake_decisions()
+                return type(real)(
+                    answers=real.answers, model=real.model, request_id=real.request_id,
+                    usage={"input_tokens": 0, "output_tokens": 0, "cost": 0.0,
+                           "cost_source": "cache"},
+                    timing_ms={"serialize_ms": 0.1, "http_ms": 0.0, "parse_ms": 0.0,
+                               "total_ms": 0.1},
+                    attempts=0, session_id=session_id, cached=True,
+                    cached_age_s=entry.age_s,
+                )
+            cache.store(body, {"id": "gen-1", "model": fake_decisions().model,
+                               "answers": {k: v.raw for k, v in fake_decisions().answers.items()},
+                               "usage": fake_decisions().usage})
         return fake_decisions()
 
     def close(self):
@@ -186,7 +208,7 @@ class TestReviewExitContract:
         hesitant = self.HESITANT  # captured: the lambda's `self` is the client
         monkeypatch.setattr(
             FakeClient, "decide",
-            lambda self, state, questions, session_id=None, timeout_s=None:
+            lambda self, state, questions, session_id=None, timeout_s=None, cache=None:
                 fake_decisions(answers={"needs_test": hesitant}))
 
     def ask(self, capsys, extra: list[str], *, as_json: bool = True):
@@ -229,6 +251,111 @@ class TestReviewExitContract:
         rows = [json.loads(line) for line in
                 (tmp_path / ".jevskill" / "ledger.jsonl").read_text(encoding="utf-8").splitlines()]
         assert rows[-1]["extra"] == {"review": ["needs_test"]}
+
+
+class TestCacheCommand:
+    """`--cache` is opt-in: a repeat costs nothing, and says so."""
+
+    def ask(self, argv_extra, *, as_json: bool = True, ledger: bool = False):
+        argv = ["ask", "--state", "the same state", "--question-type", "noul",
+                "--name", "needs_test", "--instructions", "Does `state` hold?", *argv_extra]
+        if as_json:
+            argv.append("--json")
+        if not ledger:
+            argv.append("--no-ledger")
+        return argv
+
+    def test_without_the_flag_every_call_is_fresh(self, capsys, monkeypatch, tmp_path):
+        code, _, _ = run(capsys, self.ask([]))
+        assert code == 0
+        assert FakeClient.calls[0]["cache"] is None
+        assert not (tmp_path / ".jevskill" / "cache").exists()
+
+    def test_the_second_identical_call_is_a_reported_hit(self, capsys):
+        run(capsys, self.ask(["--cache"]))
+        code, out, _ = run(capsys, self.ask(["--cache"]))
+        payload = json.loads(out)
+        assert code == 0
+        assert payload["cached"] is True
+        assert payload["cached_age_s"] is not None
+
+    def test_a_hit_spends_nothing(self, capsys):
+        run(capsys, self.ask(["--cache"]))
+        _, out, _ = run(capsys, self.ask(["--cache"]))
+        payload = json.loads(out)
+        assert payload["usage"]["input_tokens"] == 0
+        assert payload["usage"]["cost"] == 0.0
+
+    def test_a_hit_is_visible_in_the_human_path(self, capsys):
+        run(capsys, self.ask(["--cache"]))
+        _, human, _ = run(capsys, self.ask(["--cache"], as_json=False))
+        assert "cached: yes" in human
+
+    def test_changing_the_state_is_not_a_hit(self, capsys):
+        run(capsys, self.ask(["--cache"]))
+        code, out, _ = run(capsys, ["ask", "--state", "a different state",
+                                    "--question-type", "noul", "--name", "needs_test",
+                                    "--instructions", "Does `state` hold?",
+                                    "--json", "--no-ledger", "--cache"])
+        assert code == 0 and json.loads(out)["cached"] is False
+
+    def test_the_ledger_explains_a_zero_cost_row(self, capsys, tmp_path):
+        run(capsys, self.ask(["--cache", "--ledger-root", str(tmp_path)], ledger=True))
+        run(capsys, self.ask(["--cache", "--ledger-root", str(tmp_path)], ledger=True))
+        rows = [json.loads(line) for line in
+                (tmp_path / ".jevskill" / "ledger.jsonl").read_text(encoding="utf-8").splitlines()]
+        assert rows[-1]["extra"]["cache"] == "hit"
+        assert rows[-1]["cost_usd"] == 0.0
+
+
+class TestBatchSkipRegex:
+    """Rules before the model: known noise costs nothing, and dropped items are
+    reported as skipped rather than as items Jev judged."""
+
+    def test_matching_items_are_dropped_before_sending(self, capsys, tmp_path):
+        path = _items(tmp_path)
+        code, out, _ = run(capsys, ["batch", str(path), "--text-key", "line",
+                                    "--question-type", "choice", "--name", "kind",
+                                    "--options", "routine", "problem",
+                                    "--skip-regex", "line 0$", "--json"])
+        assert code == 0
+        payload = json.loads(out)
+        assert payload["skipped_count"] == 1
+        assert payload["skipped"] == [0]
+
+    def test_a_pattern_matching_nothing_skips_nothing(self, capsys, tmp_path):
+        path = _items(tmp_path)
+        _, out, _ = run(capsys, ["batch", str(path), "--text-key", "line",
+                                 "--question-type", "choice", "--name", "kind",
+                                 "--options", "routine", "problem",
+                                 "--skip-regex", "nothing-matches-here", "--json"])
+        assert json.loads(out)["skipped_count"] == 0
+
+    def test_dropping_everything_is_an_error_not_an_empty_run(self, capsys, tmp_path):
+        path = _items(tmp_path)
+        code, _, err = run(capsys, ["batch", str(path), "--text-key", "line",
+                                    "--question-type", "choice", "--name", "kind",
+                                    "--options", "routine", "problem",
+                                    "--skip-regex", "ERROR"])
+        assert code == 1
+        assert "no items left" in err
+
+    def test_a_bad_regex_fails_loudly(self, capsys, tmp_path):
+        path = _items(tmp_path)
+        code, _, err = run(capsys, ["batch", str(path), "--text-key", "line",
+                                    "--question-type", "choice", "--name", "kind",
+                                    "--options", "routine", "problem",
+                                    "--skip-regex", "(["])
+        assert code == 1
+        assert "not a valid regex" in err
+
+
+def _items(tmp_path, n=6):
+    path = tmp_path / "items.jsonl"
+    path.write_text("".join(
+        json.dumps({"id": f"L{i}", "line": f"ERROR line {i}"}) + "\n"
+        for i in range(n)), encoding="utf-8")
+    return path
 
 
 class TestPatternsCommand:

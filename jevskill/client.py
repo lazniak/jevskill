@@ -117,6 +117,10 @@ class Decisions:
     attempts: int = 1
     session_id: str | None = None
     provider: str = "openrouter"
+    #: True when this came from the local cache rather than the model. Reported
+    #: rather than hidden, because a cached answer has no fresh latency to trust.
+    cached: bool = False
+    cached_age_s: float | None = None
 
     # ---- typed accessors -------------------------------------------------
     def noul(self, name: str) -> float | None:
@@ -269,6 +273,7 @@ class JevClient:
         *,
         session_id: str | None = None,
         timeout_s: float | None = None,
+        cache: Any = None,
     ) -> Decisions:
         """One round trip: one state, all questions, all answers.
 
@@ -278,6 +283,10 @@ class JevClient:
         ``timeout_s`` overrides the read timeout for this call only. Callers that
         batch — many items in one state, hence a long payload — should raise it,
         while the default stays tuned for a single small decision.
+
+        ``cache`` is an optional :class:`jevskill.cache.DecisionCache`. When given,
+        a byte-identical request is answered from disk with ``cached=True``, zero
+        tokens and zero cost.
         """
         validate_questions(questions)
         t0 = time.perf_counter_ns()
@@ -294,6 +303,19 @@ class JevClient:
             body += b',"session_id":"' + safe + b'"'
         body += b"}"
         t_serialized = time.perf_counter_ns()
+
+        if cache is not None:
+            entry = cache.lookup(body)
+            if entry is not None:
+                return self._decisions_from_payload(
+                    entry.payload,
+                    t0=t0,
+                    t_serialized=t_serialized,
+                    attempts=0,
+                    session_id=session_id,
+                    cached=True,
+                    cached_age_s=entry.age_s,
+                )
 
         payload: dict | None = None
         last_error: Exception | None = None
@@ -313,29 +335,16 @@ class JevClient:
                 t_http = time.perf_counter_ns()
                 payload = _loads(raw)
                 t_parsed = time.perf_counter_ns()
-                answers = {
-                    str(k): _parse_answer(str(k), v)
-                    for k, v in (payload.get("answers") or {}).items()
-                }
-                usage = {
-                    str(k): (float(v) if isinstance(v, (int, float)) else v)
-                    for k, v in (payload.get("usage") or {}).items()
-                }
-                usage = self._normalise_usage(usage)
-                return Decisions(
-                    answers=answers,
-                    model=str(payload.get("model", self.config.model)),
-                    request_id=str(payload.get("id", "")),
-                    usage=usage,
-                    timing_ms={
-                        "serialize_ms": round((t_serialized - t0) / 1e6, 3),
-                        "http_ms": round((t_http - t_serialized) / 1e6, 3),
-                        "parse_ms": round((t_parsed - t_http) / 1e6, 3),
-                        "total_ms": round((t_parsed - t0) / 1e6, 3),
-                    },
+                if cache is not None:
+                    cache.store(body, payload)
+                return self._decisions_from_payload(
+                    payload,
+                    t0=t0,
+                    t_serialized=t_serialized,
                     attempts=attempts,
                     session_id=session_id,
-                    provider=self.config.provider,
+                    t_http=t_http,
+                    t_parsed=t_parsed,
                 )
             last_error = JevApiError(status, _short(raw), raw.decode("utf-8", "replace"))
             self._annotate(last_error)
@@ -347,6 +356,66 @@ class JevClient:
             self._annotate(last_error)
             raise last_error
         raise JevApiError(0, f"transport failure after {attempts} attempt(s): {last_error}")
+
+    def _decisions_from_payload(
+        self,
+        payload: dict,
+        *,
+        t0: int,
+        t_serialized: int,
+        attempts: int,
+        session_id: str | None,
+        t_http: int | None = None,
+        t_parsed: int | None = None,
+        cached: bool = False,
+        cached_age_s: float | None = None,
+    ) -> "Decisions":
+        """Turn a response payload into ``Decisions``.
+
+        Shared by the live path and the cache path so a cached answer is parsed by
+        exactly the same code — a cache that decoded differently would be a second
+        implementation of the response format, and the two would drift.
+        """
+        answers = {
+            str(k): _parse_answer(str(k), v)
+            for k, v in (payload.get("answers") or {}).items()
+        }
+        usage = {
+            str(k): (float(v) if isinstance(v, (int, float)) else v)
+            for k, v in (payload.get("usage") or {}).items()
+        }
+        if cached:
+            # The model did no work for this answer, so it must not appear to have
+            # spent tokens or money. Anything else inflates reported savings.
+            usage = {"input_tokens": 0, "output_tokens": 0, "cost": 0.0,
+                     "cost_source": "cache"}
+        else:
+            usage = self._normalise_usage(usage)
+        now = time.perf_counter_ns()
+        t_http = now if t_http is None else t_http
+        t_parsed = now if t_parsed is None else t_parsed
+        # A cache hit has no network stages; reporting the lookup as `http` would
+        # be a lie about where the time went, so the split collapses to zero and
+        # the stage breakdown shows an honest ~0 ms total.
+        http_ms = 0.0 if cached else round((t_http - t_serialized) / 1e6, 3)
+        parse_ms = 0.0 if cached else round((t_parsed - t_http) / 1e6, 3)
+        return Decisions(
+            answers=answers,
+            model=str(payload.get("model", self.config.model)),
+            request_id=str(payload.get("id", "")),
+            usage=usage,
+            timing_ms={
+                "serialize_ms": round((t_serialized - t0) / 1e6, 3),
+                "http_ms": http_ms,
+                "parse_ms": parse_ms,
+                "total_ms": round((now - t0) / 1e6, 3),
+            },
+            attempts=attempts,
+            session_id=session_id,
+            provider=self.config.provider,
+            cached=cached,
+            cached_age_s=cached_age_s,
+        )
 
     def _annotate(self, error: JevApiError) -> None:
         """Add provider-specific detail to an error hint.

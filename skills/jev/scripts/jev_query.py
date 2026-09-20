@@ -379,7 +379,7 @@ def reduce_state(data, args, key: str, provider: str, model: str) -> dict:
 
     window = args.window
     instructions = args.instructions or "Does the item at `L{i}` matter?"
-    kept, calls, cost = [], 0, 0.0
+    kept, unjudged, calls, cost = [], [], 0, 0.0
     started = time.perf_counter()
     for start in range(0, len(items), window):
         chunk = [str(x) for x in items[start:start + window]]
@@ -398,17 +398,35 @@ def reduce_state(data, args, key: str, provider: str, model: str) -> dict:
         }
         body = json.dumps({"model": model, "state": {f"L{i}": t for i, t in enumerate(chunk)},
                            "questions": questions}).encode()
-        result = post(body, key, spec["base_url"], spec["endpoint"],
-                      args.retries, args.timeout, provider)
+        try:
+            result = post(body, key, spec["base_url"], spec["endpoint"],
+                          args.retries, args.timeout, provider)
+        except SystemExit:
+            # Report what the run already spent before dying, so a failed chunk
+            # does not look like a free run.
+            print(f"error: chunk {start // window + 1} failed after {calls} call(s) "
+                  f"and ${cost:.8f}; nothing was written.", file=sys.stderr)
+            raise
         calls += 1
         cost += cost_of(provider, result.get("usage") or {})
+        answers = result.get("answers") or {}
         for i, text in enumerate(chunk):
-            probability = ((result.get("answers") or {}).get(f"keep_L{i}") or {}).get("noul") or 0.0
+            raw = (answers.get(f"keep_L{i}") or {}).get("noul")
+            if raw is None:
+                # The gate returned no verdict for this item. Coercing that to 0.0
+                # would file it under `rejected` as though Jev had judged it
+                # unimportant — a silent drop, and the exact failure this pipeline
+                # exists to prevent. Keep it and say so instead.
+                unjudged.append({"index": start + i, "text": text})
+                continue
+            probability = float(raw)
             if probability >= 0.5:
                 kept.append({"index": start + i, "p": probability, "text": text})
 
     kept.sort(key=lambda row: row["p"], reverse=True)
-    selected = kept[:args.keep]
+    # Unjudged items are never cut by --keep: dropping what could not be evaluated
+    # is the one thing a reduction must not do quietly.
+    selected = unjudged + kept[:args.keep]
     kept_indexes = {row["index"] for row in selected}
     rejected = [{"index": i, "text": str(t)} for i, t in enumerate(items) if i not in kept_indexes]
 
@@ -429,6 +447,7 @@ def reduce_state(data, args, key: str, provider: str, model: str) -> dict:
             "kept": selected,
             "rejected_count": len(rejected),
             "rejected": rejected,
+            "unjudged": unjudged,
             "raw_tokens": raw_tokens,
             "kept_tokens": kept_tokens,
             "calls": calls,
@@ -447,6 +466,7 @@ def reduce_state(data, args, key: str, provider: str, model: str) -> dict:
         "items": len(items),
         "kept": len(selected),
         "rejected": len(rejected),
+        "unjudged_count": len(unjudged),
         "raw_tokens": raw_tokens,
         "kept_tokens": kept_tokens,
         "reduction_pct": round((1 - kept_tokens / raw_tokens) * 100, 1),
@@ -559,6 +579,11 @@ def main(argv=None) -> int:
             for line in out["lines"]:
                 print(f"  {line[:150]}")
             print(f"\n  {out['calls']} calls, {out['ms']:.0f} ms, ${out['cost_usd']:.8f}")
+            if out.get("unjudged_count"):
+                # Louder than a footnote on purpose: the caller must know that
+                # part of the reduction was not a judgement.
+                print(f"  ! {out['unjudged_count']} item(s) got no verdict from the gate "
+                      f"and were KEPT rather than dropped (see 'unjudged' in the record)")
             if out["recovery_hint"]:
                 print(f"  {out['recovery_hint']}")
         return 0

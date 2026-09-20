@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import time
 from pathlib import Path
@@ -27,6 +28,7 @@ from pathlib import Path
 _T_IMPORT_NS = time.perf_counter_ns()
 
 from . import __version__
+from .cache import DEFAULT_TTL_S, DecisionCache
 from .client import JevClient
 from .config import PROVIDERS, Config
 from .errors import JevApiError, JevConfigError, JevError, JevQuestionError
@@ -116,7 +118,8 @@ def add_redact_flags(p: argparse.ArgumentParser) -> None:
                    help="additional regexes to scrub, labelled extra_0, extra_1, ...")
 
 
-def _ledger_extra(redactions: list[str], hesitant: list[str]) -> dict | None:
+def _ledger_extra(redactions: list[str], hesitant: list[str],
+                  cached: bool = False) -> dict | None:
     """The optional ledger payload for one decision, or None when there is
     nothing worth recording. Kept in one place so `ask` and `batch` agree."""
     extra: dict = {}
@@ -124,7 +127,22 @@ def _ledger_extra(redactions: list[str], hesitant: list[str]) -> dict | None:
         extra["redactions"] = redactions
     if hesitant:
         extra["review"] = hesitant
+    if cached:
+        # Marked so a zero-cost row is explained rather than looking like a
+        # decision the model made for free.
+        extra["cache"] = "hit"
     return extra or None
+
+
+def add_cache_flags(p: argparse.ArgumentParser) -> None:
+    """Opt-in disk cache. Off by default: a stale decision is worse than a paid
+    one when the state is moving, so reusing an answer must be a choice."""
+    p.add_argument("--cache", action="store_true",
+                   help="reuse a byte-identical previous request within the TTL "
+                        "(default: off, so every call is fresh)")
+    p.add_argument("--cache-ttl", type=float, default=None, metavar="SECONDS",
+                   help=f"how long a cached decision stays usable "
+                        f"(default {int(DEFAULT_TTL_S)} s)")
 
 
 def add_review_flags(p: argparse.ArgumentParser) -> None:
@@ -346,7 +364,13 @@ def cmd_ask(args: argparse.Namespace) -> int:
         # (measured 1189 ms of "http" against a 345 ms decision).
         stages.mark("warm")
         started = time.perf_counter()
-        result = client.decide(state, questions, session_id=args.session_id)
+        cache = None
+        if args.cache:
+            cache = DecisionCache(
+                args.ledger_root,
+                ttl_s=DEFAULT_TTL_S if args.cache_ttl is None else args.cache_ttl,
+            )
+        result = client.decide(state, questions, session_id=args.session_id, cache=cache)
         wall_ms = (time.perf_counter() - started) * 1000
         stages.mark("http")
         stages.absorb(result.timing_ms)
@@ -377,6 +401,8 @@ def cmd_ask(args: argparse.Namespace) -> int:
         "redactions": redactions,
         "needs_review": review,
         "review": hesitant,
+        "cached": result.cached,
+        "cached_age_s": result.cached_age_s,
     }
 
     # The ledger should capture the stage breakdown *including* the work of
@@ -400,7 +426,7 @@ def cmd_ask(args: argparse.Namespace) -> int:
             baseline_tokens=baseline_tokens,
             session_id=args.session_id or "",
             version=__version__,
-            extra=_ledger_extra(redactions, hesitant),
+            extra=_ledger_extra(redactions, hesitant, result.cached),
             root=args.ledger_root,
         )
         payload["decision_id"] = decision_id
@@ -421,6 +447,9 @@ def cmd_ask(args: argparse.Namespace) -> int:
             # Say it in the human path too: data left the machine different from
             # how it arrived, and the caller must be able to notice that.
             lines.append(f"  redacted: {', '.join(redactions)}")
+        if result.cached:
+            lines.append(
+                f"  cached: yes ({result.cached_age_s:.0f} s old) — no tokens spent")
         lines.append("")
         lines.append(
             f"  tokens {result.input_tokens}  cost ${result.cost_usd:.8f}"
@@ -584,6 +613,21 @@ def cmd_batch(args: argparse.Namespace) -> int:
         raise JevError(f"could not read items: {exc}") from exc
     if args.limit:
         items = items[:args.limit]
+    skipped_items: list[int] = []
+    if args.skip_regex:
+        # Rules before the model: a known-noise pattern costs nothing to exclude.
+        # The rule is the caller's, so these items are reported as *skipped*, never
+        # as items Jev judged — dropping them silently would inflate the saving and
+        # pretend the model made a decision it was never asked for.
+        try:
+            skip = re.compile(args.skip_regex)
+        except re.error as exc:
+            raise JevError(f"--skip-regex is not a valid regex: {exc}") from exc
+        kept = [item for item in items if not skip.search(str(item.data))]
+        skipped_items = [item.index for item in items if skip.search(str(item.data))]
+        items = kept
+    if not items:
+        raise JevError("no items left to decide after --skip-regex")
     redactions: list[str] = []
     if not args.no_redact:
         # Redact before anything measures the items, so the token baseline, the
@@ -605,11 +649,17 @@ def cmd_batch(args: argparse.Namespace) -> int:
     ledger_rows: list[tuple] = []
     hesitant_items: list[int] = []
 
+    # `mapping` carries each item's *original* index (numeric question ids are
+    # derived from it), while `items` is a list whose positions shift as soon as
+    # --skip-regex drops anything. Look items up by index, never by position.
+    by_index = {item.index: item for item in items}
+
     def on_call(result, mapping):
         # One ledger row per call, labelled with the batch intent so `stats` and
         # `advice` can judge the batch path on its own terms.
         covered = sorted({index for index, _ in mapping.values()})
-        baseline = sum(count_tokens(items[i].as_state()) for i in covered)
+        baseline = sum(count_tokens(by_index[i].as_state())
+                       for i in covered if i in by_index)
         call_review = flagged(review_report(
             result.answers, below=args.review_below, margin=args.review_margin))
         # Map question names back to item indices: "which items need a look" is
@@ -682,6 +732,8 @@ def cmd_batch(args: argparse.Namespace) -> int:
         "stages_ms": stages.ordered(),
         "redactions": redactions,
         "review": sorted(set(hesitant_items)),
+        "skipped": sorted(skipped_items),
+        "skipped_count": len(skipped_items),
     })
 
     if args.out:
@@ -843,6 +895,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--ledger-root", help="directory holding .jevskill/ledger.jsonl")
     add_redact_flags(p)
     add_review_flags(p)
+    add_cache_flags(p)
     p.set_defaults(func=cmd_ask)
 
     # batch
@@ -890,6 +943,10 @@ def build_parser() -> argparse.ArgumentParser:
                         "a flattering ratio)")
     p.add_argument("--no-measure-baseline", dest="measure_baseline",
                    action="store_false", help="estimate the baseline instead")
+    p.add_argument("--skip-regex", metavar="REGEX", default=None,
+                   help="drop items matching this regex before sending — a known-noise "
+                        "rule costs nothing, and the dropped items are reported as "
+                        "skipped, not as ones Jev judged")
     p.add_argument("--pattern", help="pattern label for the ledger (default triage)")
     p.add_argument("--intent", help="intent label for the ledger (default batch)")
     p.add_argument("--session-id")

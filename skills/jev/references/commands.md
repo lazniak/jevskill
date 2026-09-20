@@ -29,6 +29,12 @@ python scripts/jev_recovery.py --list             # read back what REDUCE reject
 python scripts/jev_recovery.py rc_1a2b3c4d5e6f --grep "payment" --all
 ```
 
+**REDUCE never drops what it could not judge.** If the gate returns no verdict for
+an item, that item is reported in `unjudged`, **kept** (and never cut by `--keep`),
+and counted separately — a missing verdict is not the same as a confident "0.0", and
+filing it as rejected would be a silent loss. `kept ∪ rejected ∪ unjudged` always
+accounts for every input item.
+
 ## Flags shared by the data-sending commands
 
 | Flag | Default | Effect |
@@ -40,6 +46,31 @@ python scripts/jev_recovery.py rc_1a2b3c4d5e6f --grep "payment" --all
 | `--review-margin FLOAT` | `0.10` | minimum gap between the top two options for a `choice` |
 | `--provider` | auto | `openrouter` or `typesafe` |
 | `--json` | off | machine-readable output |
+
+### `ask --cache` — do not pay twice for the same question
+
+*Package CLI only: the zero-install script does not carry a cache, because a cache
+is state that belongs beside the ledger.*
+
+| Flag | Default | Effect |
+|---|---|---|
+| `--cache` | **off** | reuse a response when the request is byte-identical |
+| `--cache-ttl SECONDS` | `900` | how long a cached decision stays usable |
+
+Off by default: a stale decision is worse than a paid one when the state is moving.
+A hit reports `"cached": true` with its age, spends **zero tokens and zero cost**
+(the model did no work), and its ledger row carries `extra: {"cache": "hit"}` so a
+zero-cost row is explained rather than mysterious. The key hashes the whole request
+body, so a hit means byte-identical input — not merely similar.
+
+### `batch --skip-regex REGEX` — rules before the model
+
+*Package CLI only.* Drop items matching a regex before anything is sent. A
+known-noise rule costs nothing: on 8 log lines of which 4 were `DEBUG`, this cut
+input tokens **990 → 626 (−36.8%)**. Dropped items are reported as `skipped` /
+`skipped_count`, never as items Jev judged — the rule is yours, and presenting it
+as a model decision would inflate the saving. A pattern matching everything is an
+error, not an empty run.
 
 Redaction is **default-on** because this skill sends your data to a third party by
 design. It scrubs credential-shaped strings (private keys, provider and cloud keys,
