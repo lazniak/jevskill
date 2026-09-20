@@ -544,7 +544,8 @@ class TestOneAtexitHookForEveryLedger:
         assert all(ledger in stats._OPEN_LEDGERS for ledger in ledgers)
         for ledger in ledgers:
             ledger.close()
-        assert not any(ledger in stats._OPEN_LEDGERS for ledger in ledgers), \n            "closed ledgers stayed registered"
+        still_open = [ledger for ledger in ledgers if ledger in stats._OPEN_LEDGERS]
+        assert not still_open, "closed ledgers stayed registered"
 
     def test_a_forgotten_ledger_can_be_collected(self, tmp_path):
         ledger = Ledger(root=tmp_path, start_thread=False)
