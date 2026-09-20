@@ -50,6 +50,23 @@ try:  # CI runs on Linux; the one registry oracle is unevaluable there.
 except ImportError:
     _HAS_WINREG = False
 
+FIXTURES = ROOT / "tests" / "fixtures" / "cu"
+
+
+def fake_snapshot(name: str, **overrides):
+    """A recorded UIA tree as a `Snapshot`, for grading without a desktop.
+
+    `tests/fixtures/cu/*.json` are real snapshots of apps `bench/cu_observe_bench.py`
+    launched, with titles and content-bearing names scrubbed. `overrides` patch
+    the top-level fields, which is how a test says "the same window, wrong title"
+    without hand-building 53 elements.
+    """
+    from jevskill.cu.types import Snapshot
+
+    data = json.loads((FIXTURES / name).read_text(encoding="utf-8"))["snapshot"]
+    data.update(overrides)
+    return Snapshot.from_dict(data)
+
 
 # --------------------------------------------------------------------------- #
 # The task list on disk
@@ -318,8 +335,14 @@ class TestOracles:
 
     @pytest.mark.parametrize("kind", cu_run.ORACLE_NEEDS_DESKTOP)
     def test_a_desktop_oracle_refuses_rather_than_guessing(self, kind):
-        with pytest.raises(cu_run.OracleUnsupported, match="live desktop"):
+        with pytest.raises(cu_run.OracleUnsupported, match="not implemented"):
             cu_run.evaluate_oracle({"type": kind})
+
+    def test_clipboard_is_the_only_unimplemented_type_and_nothing_uses_it(self):
+        assert cu_run.ORACLE_NEEDS_DESKTOP == ("clipboard_equals",)
+        # Oracles only: `calc_multiply`'s notes still say the word, because they
+        # record why its unreachable clipboard fallback was deleted.
+        assert "clipboard_equals" not in json.dumps([t["oracle"] for t in TASKS])
 
     def test_an_unknown_type_refuses(self):
         with pytest.raises(cu_run.OracleUnsupported):
@@ -334,38 +357,179 @@ class TestOracles:
         passed, detail = cu_run.fake_oracle(TASKS[0])
         assert passed is True and "grades nothing" in detail
 
-    def test_exactly_which_tasks_this_harness_can_grade(self, tmp_path):
-        """`bench/cu_tasks.md` names both halves of this split; pin it here.
+    def test_task_oracle_forwards_both_seams(self):
+        seen = []
+        spec = {"id": "x", "oracle": {"type": "window_title_contains",
+                                      "substring": "Jevcu"}}
+        passed, _ = cu_run.task_oracle(
+            spec, snapshot=lambda: seen.append("snap"),
+            window_title=lambda: "Jevcu Page One - Chrome")
+        assert passed is True
+        assert seen == []      # a title oracle must not observe a whole tree
 
-        Five tasks grade from the filesystem and the registry. The other five need
-        a UIA / window-title / clipboard reader, which is `cu/observe.py` (Phase
-        4.1), and until it lands they raise rather than being guessed at.
+
+class TestUiaValueOracle:
+    """Graded against recorded fixtures; this suite never looks at a real window."""
+
+    def calc(self, display=None):
+        snap = fake_snapshot("calculator.json")
+        if display is not None:
+            # The committed fixture is scrubbed ('text 1'), so a test that wants a
+            # result on screen puts one there. The sentence shape is the real one:
+            # Calculator's display carries the number inside a localised Name.
+            snap.by_id("e10").name = display
+        return lambda: snap
+
+    def test_the_real_calc_multiply_oracle_passes_on_the_expected_display(self):
+        spec = [t for t in TASKS if t["id"] == "calc_multiply"][0]["oracle"]
+        passed, detail = cu_run.evaluate_oracle(
+            spec, snapshot=self.calc("Wyswietlacz to 408"))
+        assert passed is True, detail
+
+    def test_the_wrong_number_fails(self):
+        spec = [t for t in TASKS if t["id"] == "calc_multiply"][0]["oracle"]
+        passed, detail = cu_run.evaluate_oracle(
+            spec, snapshot=self.calc("Wyswietlacz to 407"))
+        assert passed is False
+        assert "408" in detail and "407" in detail
+
+    def test_the_scrubbed_fixture_fails_which_is_the_point_of_scrubbing(self):
+        spec = [t for t in TASKS if t["id"] == "calc_scientific_power"][0]["oracle"]
+        assert cu_run.evaluate_oracle(spec, snapshot=self.calc())[0] is False
+
+    def test_a_missing_element_is_a_reasoned_failure(self):
+        spec = {"type": "uia_value", "automation_id": "NoSuchThing",
+                "expect_contains": "408"}
+        passed, detail = cu_run.evaluate_oracle(spec, snapshot=self.calc())
+        assert passed is False
+        assert "no element matched" in detail and "NoSuchThing" in detail
+
+    def test_value_wins_over_name_when_a_control_has_both(self):
+        snap = fake_snapshot("calculator.json")
+        snap.by_id("e10").name = "Wyswietlacz to 111"
+        snap.by_id("e10").value = "408"
+        spec = {"type": "uia_value", "automation_id": "CalculatorResults",
+                "expect_contains": "408"}
+        assert cu_run.evaluate_oracle(spec, snapshot=lambda: snap)[0] is True
+
+    def test_expect_is_an_equality_not_a_substring(self):
+        spec = {"type": "uia_value", "automation_id": "CalculatorResults",
+                "expect": "408"}
+        assert cu_run.evaluate_oracle(spec, snapshot=self.calc("says 408"))[0] is False
+        assert cu_run.evaluate_oracle(spec, snapshot=self.calc("408"))[0] is True
+
+    def test_a_window_that_is_not_in_the_foreground_is_not_found(self):
+        spec = [t for t in TASKS if t["id"] == "explorer_view_details"][0]["oracle"]
+        passed, detail = cu_run.evaluate_oracle(
+            spec, snapshot=lambda: fake_snapshot("notepad.json"))
+        assert passed is False
+        assert "window not found" in detail and "notepad" in detail
+
+    def test_the_real_explorer_oracle_passes_on_a_window_with_a_header(self):
+        spec = [t for t in TASKS if t["id"] == "explorer_view_details"][0]["oracle"]
+        snap = fake_snapshot("notepad.json", window_title="explorer_view_details")
+        assert cu_run.evaluate_oracle(spec, snapshot=lambda: snap)[0] is False
+        snap.by_id("e13").role = "header"          # Details view grew its column bar
+        passed, detail = cu_run.evaluate_oracle(spec, snapshot=lambda: snap)
+        assert passed is True, detail
+
+    def test_the_window_title_gate_is_case_insensitive(self):
+        spec = {"type": "uia_value", "window_title_contains": "EXPLORER_view",
+                "find_control_type": "text", "expect": "exists"}
+        snap = fake_snapshot("notepad.json", window_title="explorer_view_details")
+        assert cu_run.evaluate_oracle(spec, snapshot=lambda: snap)[0] is True
+
+    def test_a_control_type_is_matched_case_insensitively(self):
+        """cu_tasks.json says "Header"; this package's roles are lowercased."""
+        snap = fake_snapshot("notepad.json")
+        snap.by_id("e13").role = "header"
+        for spelling in ("Header", "header", "HEADER"):
+            spec = {"type": "uia_value", "find_control_type": spelling,
+                    "expect": "exists"}
+            assert cu_run.evaluate_oracle(spec, snapshot=lambda: snap)[0] is True, spelling
+
+    def test_selectors_are_anded(self):
+        snap = fake_snapshot("calculator.json")
+        both = {"type": "uia_value", "automation_id": "CalculatorResults",
+                "find_control_type": "button", "expect": "exists"}
+        # CalculatorResults exists and buttons exist, but not the same element.
+        assert cu_run.evaluate_oracle(both, snapshot=lambda: snap)[0] is False
+        both["find_control_type"] = "text"
+        assert cu_run.evaluate_oracle(both, snapshot=lambda: snap)[0] is True
+
+    def test_a_spec_with_no_expectation_refuses(self):
+        spec = {"type": "uia_value", "automation_id": "CalculatorResults"}
+        with pytest.raises(cu_run.OracleUnsupported):
+            cu_run.evaluate_oracle(spec, snapshot=self.calc())
+
+
+class TestWindowTitleOracle:
+    def test_the_real_chrome_oracles_pass_on_their_own_title(self):
+        for task_id, title in (("chrome_open_url", "Jevcu Page One - Chrome"),
+                               ("chrome_find_continue", "jevcu page two")):
+            spec = [t for t in TASKS if t["id"] == task_id][0]["oracle"]
+            passed, detail = cu_run.evaluate_oracle(spec, window_title=lambda: title)
+            assert passed is True, detail
+
+    def test_the_wrong_page_fails_with_the_title_it_saw(self):
+        spec = [t for t in TASKS if t["id"] == "chrome_open_url"][0]["oracle"]
+        passed, detail = cu_run.evaluate_oracle(
+            spec, window_title=lambda: "New Tab - Chrome")
+        assert passed is False
+        assert "New Tab" in detail and "Jevcu Page One" in detail
+
+    def test_case_sensitive_is_honoured_when_asked_for(self):
+        spec = {"type": "window_title_contains", "substring": "Jevcu",
+                "case_sensitive": True}
+        assert cu_run.evaluate_oracle(spec, window_title=lambda: "jevcu")[0] is False
+        assert cu_run.evaluate_oracle(spec, window_title=lambda: "Jevcu")[0] is True
+
+    def test_an_empty_title_is_a_failure_not_a_crash(self):
+        spec = [t for t in TASKS if t["id"] == "chrome_open_url"][0]["oracle"]
+        assert cu_run.evaluate_oracle(spec, window_title=lambda: "")[0] is False
+
+    def test_every_task_is_gradable_now_that_observe_exists(self):
+        """All ten oracles evaluate against injected fakes; none raises.
+
+        The desktop half is fed recorded fixtures, not a live window: this suite
+        must never look at whatever happens to be on screen. Only the registry
+        oracle stays platform-dependent, and on Linux CI it is an honest "not
+        graded" rather than a different bug.
         """
-        gradable, needs_desktop = [], []
+        gradable, refused = [], []
         for task in TASKS:
             try:
-                # Read-only: a filesystem oracle whose %TEMP% path is absent
-                # returns False, and the one registry oracle reads HKCU without
-                # writing. Anything that raises something other than
-                # OracleUnsupported is a harness bug and should surface here.
-                cu_run.evaluate_oracle(task["oracle"])
+                cu_run.evaluate_oracle(task["oracle"],
+                                       snapshot=lambda: fake_snapshot("calculator.json"),
+                                       window_title=lambda: "anything")
             except cu_run.OracleUnsupported:
-                needs_desktop.append(task["id"])
+                refused.append(task["id"])
             else:
                 gradable.append(task["id"])
+        expected_refused = [] if _HAS_WINREG else ["settings_dark_mode"]
+        assert refused == expected_refused
+        assert len(gradable) == len(TASKS) - len(expected_refused)
 
-        expected_gradable = ["explorer_new_folder", "explorer_rename",
-                             "notepad_replace", "notepad_save_as", "settings_dark_mode"]
-        expected_ungradable = ["calc_multiply", "calc_scientific_power",
-                               "chrome_find_continue", "chrome_open_url",
-                               "explorer_view_details"]
-        if not _HAS_WINREG:
-            # CI is Linux: the registry oracle is unevaluable there too, which is
-            # the same honest "not graded" and not a different bug.
-            expected_gradable.remove("settings_dark_mode")
-            expected_ungradable = sorted(expected_ungradable + ["settings_dark_mode"])
-        assert sorted(gradable) == expected_gradable
-        assert sorted(needs_desktop) == expected_ungradable
+    def test_the_default_seams_point_at_jevskill_cu_observe(self, monkeypatch):
+        """`default_snapshot`/`default_window_title` resolve lazily, by call.
+
+        Importing this module on Linux CI must not drag in a Windows-only
+        package, and an unavailable observer must be `OracleUnsupported` rather
+        than an ImportError escaping through `run_task`.
+        """
+        import builtins
+        real_import = builtins.__import__
+
+        def no_observe(name, *args, **kwargs):
+            if name.startswith("jevskill.cu") and "observe" in str(args[2:]):
+                raise ImportError("comtypes.gen is Windows-only")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", no_observe)
+        with pytest.raises(cu_run.OracleUnsupported, match="unavailable"):
+            cu_run.default_snapshot()
+        with pytest.raises(cu_run.OracleUnsupported, match="unavailable"):
+            cu_run.default_window_title()
 
     @pytest.mark.skipif(not _HAS_WINREG, reason="registry oracles need Windows")
     def test_a_missing_registry_value_fails_with_a_reason(self):
@@ -609,6 +773,30 @@ class TestDryRunEndToEnd:
         assert cu_run.main(["--skip-syntax", "--tasks", str(broken),
                             "--out", str(tmp_path / "x.json")]) == 2
 
+    def test_the_two_modes_default_to_two_different_files(self):
+        """A synthetic run and a measurement must not land in the same place.
+
+        `.gitignore` drops `cu_runs.json`; `cu_task_results.json` is the plan's
+        own name and is committed on purpose, like `bench/results.json`.
+        """
+        assert cu_run.DEFAULT_OUT_DRY.name == "cu_runs.json"
+        assert cu_run.DEFAULT_OUT_LIVE.name == "cu_task_results.json"
+        assert cu_run.resolve_out(None, live=False) == cu_run.DEFAULT_OUT_DRY
+        assert cu_run.resolve_out(None, live=True) == cu_run.DEFAULT_OUT_LIVE
+
+    def test_an_explicit_out_wins_in_either_mode(self, tmp_path):
+        chosen = tmp_path / "elsewhere.json"
+        assert cu_run.resolve_out(chosen, live=False) == chosen
+        assert cu_run.resolve_out(chosen, live=True) == chosen
+
+    def test_a_dry_run_with_no_out_writes_the_dry_run_file(self, tmp_path, monkeypatch):
+        target = tmp_path / "cu_runs.json"
+        monkeypatch.setattr(cu_run, "DEFAULT_OUT_DRY", target)
+        assert cu_run.main(["--skip-syntax", "--runs", "1", "--task",
+                            "calc_multiply"]) == 0
+        assert target.exists()
+        assert not (tmp_path / "cu_task_results.json").exists()
+
     def test_no_write_leaves_the_file_alone(self, tmp_path):
         out = tmp_path / "runs.json"
         assert cu_run.main(["--skip-syntax", "--runs", "1", "--no-write",
@@ -718,6 +906,20 @@ class TestReport:
         payload = json.loads(capsys.readouterr().out)
         assert payload["totals"]["runs"] == 3 * len(TASKS)
         assert "DRY RUN" in payload["mode"]
+
+    def test_the_default_input_prefers_the_measured_file(self, tmp_path, monkeypatch):
+        """Measured rows beat synthetic ones when both are on disk."""
+        live = tmp_path / "cu_task_results.json"
+        dry = tmp_path / "cu_runs.json"
+        monkeypatch.setattr(cu_report, "DEFAULT_IN_LIVE", live)
+        monkeypatch.setattr(cu_report, "DEFAULT_IN_DRY", dry)
+        assert cu_report.default_input() == dry          # no live file yet
+        live.write_text("{}", encoding="utf-8")
+        assert cu_report.default_input() == live
+
+    def test_the_in_flag_is_an_alias_for_the_positional(self, dry_results, capsys):
+        assert cu_report.main(["--in", str(dry_results)]) == 0
+        assert "DRY RUN" in capsys.readouterr().out
 
     def test_main_on_a_missing_file_explains_itself(self, tmp_path, capsys):
         assert cu_report.main([str(tmp_path / "nope.json")]) == 2

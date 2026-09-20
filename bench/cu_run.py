@@ -89,7 +89,15 @@ TaskRun = contract.TaskRun
 summarise = contract.summarise
 
 DEFAULT_TASKS = ROOT / "bench" / "cu_tasks.json"
-DEFAULT_OUT = ROOT / "bench" / "cu_runs.json"
+#: Two default outputs, because the two modes produce different *kinds* of
+#: thing. A dry run's rows are synthetic and `.gitignore` drops `cu_runs.json`
+#: for that reason; a live run's rows are the measurement plan item 4.7 asks
+#: for, they go to the plan's own filename, and they are committed on purpose
+#: the way `bench/results.json` is. One shared default would have made "commit
+#: the benchmark" and "commit a fake" the same gesture.
+DEFAULT_OUT_DRY = ROOT / "bench" / "cu_runs.json"
+DEFAULT_OUT_LIVE = ROOT / "bench" / "cu_task_results.json"
+DEFAULT_OUT = DEFAULT_OUT_DRY       # kept: older callers pass it explicitly
 
 #: Every key `bench/cu_tasks.json` currently carries, with the type it must have.
 #: Derived from the file rather than invented: `tests/test_cu_run.py` pins both
@@ -110,15 +118,39 @@ TASK_SCHEMA: Dict[str, Any] = {
     "expected_agent_steps_min": int,
 }
 
-#: Oracle `type` values the harness knows. `window_title_contains`, `uia_value`
-#: and `clipboard_equals` need a live desktop reader, which is `cu/observe.py`
-#: (plan item 4.1) — they are listed here so the schema check accepts them, and
-#: refused at evaluation time with a reason rather than silently graded false.
+#: Oracle `type` values the harness knows. `uia_value` and
+#: `window_title_contains` read the live desktop through `jevskill.cu.observe`
+#: (plan item 4.1), injected as two callables so the tests grade fixtures
+#: instead of windows.
 ORACLE_TYPES = (
     "file_exists", "file_contains", "registry_value", "all_of", "any_of",
     "window_title_contains", "uia_value", "clipboard_equals",
 )
-ORACLE_NEEDS_DESKTOP = ("window_title_contains", "uia_value", "clipboard_equals")
+#: Still unimplemented, and refused with a reason rather than silently graded
+#: false. `clipboard_equals` survives as a vocabulary entry only: no task uses
+#: it, and reading the clipboard mid-benchmark would also destroy whatever the
+#: person at the machine had put there.
+ORACLE_NEEDS_DESKTOP = ("clipboard_equals",)
+
+#: Every key each oracle type may carry. An oracle is a contract with the
+#: harness, so a key nobody reads is dead weight at best — `calc_multiply`
+#: carried a `fallback` whose own `note` said the task's goal could never reach
+#: it, and it sat there unexecuted because nothing checked.
+ORACLE_KEYS = {
+    "file_exists": {"type", "path", "kind", "expect"},
+    "file_contains": {"type", "path", "contains", "not_contains"},
+    "registry_value": {"type", "hive", "path", "name", "expect"},
+    "all_of": {"type", "all_of"},
+    "any_of": {"type", "any_of"},
+    "window_title_contains": {"type", "substring", "case_sensitive"},
+    "uia_value": {"type", "window_title_contains", "automation_id", "name",
+                  "find_control_type", "expect", "expect_contains"},
+    "clipboard_equals": {"type", "expect"},
+}
+#: The ways a `uia_value` oracle may pick its element, and the ways it may judge
+#: what it found. At least one of each is required.
+UIA_SELECTORS = ("automation_id", "name", "find_control_type")
+UIA_EXPECTATIONS = ("expect", "expect_contains")
 
 #: Parse-only probe. `ParseInput` builds an abstract syntax tree and returns the
 #: parse errors; it never executes the text it is given, which is the only reason
@@ -263,8 +295,17 @@ def _validate_oracle(oracle: dict, *, depth: int = 0) -> List[str]:
     for key in required:
         if key not in oracle:
             problems.append(f"oracle {kind} is missing {key!r}")
+    extra = sorted(set(oracle) - ORACLE_KEYS[kind])
+    if extra:
+        problems.append(f"oracle {kind} carries key(s) nothing reads: {extra}")
     if kind == "file_contains" and not ({"contains", "not_contains"} & set(oracle)):
         problems.append("oracle file_contains needs 'contains' or 'not_contains'")
+    if kind == "uia_value":
+        if not set(UIA_SELECTORS) & set(oracle):
+            problems.append(f"oracle uia_value needs one of {list(UIA_SELECTORS)} "
+                            "to pick an element")
+        if not set(UIA_EXPECTATIONS) & set(oracle):
+            problems.append(f"oracle uia_value needs one of {list(UIA_EXPECTATIONS)}")
     return problems
 
 
@@ -415,24 +456,65 @@ def _expand(path: str) -> str:
     return os.path.expandvars(os.path.expanduser(str(path)))
 
 
-def evaluate_oracle(spec: dict) -> Tuple[bool, str]:
+def default_snapshot():
+    """`jevskill.cu.observe.snapshot` of the foreground window, or a refusal.
+
+    Resolved lazily and by call, never at import: `observe` is Windows-only and
+    needs the ``cu`` extra, and CI runs the whole suite on Linux. An `ImportError`
+    here is "this oracle cannot be evaluated", which `bench/cu_tasks.md` says must
+    be recorded as a failure with a reason — not a pass, and not a crash.
+    """
+    try:
+        from jevskill.cu import observe
+    except ImportError as exc:      # pragma: no cover - Linux CI path
+        raise OracleUnsupported(f"jevskill.cu.observe is unavailable: {exc}")
+    try:
+        return observe.snapshot()
+    except (ImportError, OSError) as exc:   # pragma: no cover - needs a desktop
+        raise OracleUnsupported(f"could not observe the foreground window: {exc}")
+
+
+def default_window_title() -> str:
+    """Title of the foreground window, adapting `observe`'s two-call shape.
+
+    `observe` exposes `foreground_hwnd()` and `window_title(hwnd)`; the oracle
+    only ever wants "what is on top right now", and a zero-argument seam is a
+    one-line fake in a test instead of a handle to invent.
+    """
+    try:
+        from jevskill.cu import observe
+    except ImportError as exc:      # pragma: no cover - Linux CI path
+        raise OracleUnsupported(f"jevskill.cu.observe is unavailable: {exc}")
+    try:
+        return observe.window_title(observe.foreground_hwnd())
+    except (ImportError, OSError) as exc:   # pragma: no cover - needs a desktop
+        raise OracleUnsupported(f"could not read the foreground window title: {exc}")
+
+
+def evaluate_oracle(spec: dict, *, snapshot=None, window_title=None) -> Tuple[bool, str]:
     """Grade one oracle. Returns ``(passed, detail)``; raises `OracleUnsupported`.
 
-    Pure filesystem and registry reads, nothing that moves the desktop. The three
-    desktop-reading types raise instead of guessing, because
-    `bench/cu_tasks.md` is explicit: an oracle that cannot be evaluated is a
-    failure with a reason, "never a retro-fit pass".
+    Filesystem and registry reads happen in-process. The two desktop oracles go
+    through injected callables — ``snapshot() -> Snapshot`` and
+    ``window_title() -> str``, defaulting to `jevskill.cu.observe` — so the tests
+    grade recorded fixtures rather than whatever window happens to be on top.
+    Both **read**; neither clicks, types or moves focus.
+
+    `clipboard_equals` still raises. No task uses it, and reading the clipboard
+    mid-benchmark would also be the one oracle that destroys something the person
+    at the machine put there.
     """
     kind = spec.get("type")
     if kind in ORACLE_NEEDS_DESKTOP:
         raise OracleUnsupported(
-            f"oracle type {kind!r} needs a live desktop reader (jevskill/cu/observe.py, "
-            "plan item 4.1); this harness does not read UIA, window titles or the clipboard")
+            f"oracle type {kind!r} is not implemented; no task in "
+            "bench/cu_tasks.json uses it and a clipboard read would clobber the "
+            "user's own clipboard")
     if kind == "all_of":
         details = []
         passed = True
         for sub in spec.get("all_of") or []:
-            ok, detail = evaluate_oracle(sub)
+            ok, detail = evaluate_oracle(sub, snapshot=snapshot, window_title=window_title)
             details.append(("ok" if ok else "FAIL") + ": " + detail)
             passed = passed and ok
         return passed, "all_of[" + "; ".join(details) + "]"
@@ -440,10 +522,14 @@ def evaluate_oracle(spec: dict) -> Tuple[bool, str]:
         details = []
         passed = False
         for sub in spec.get("any_of") or []:
-            ok, detail = evaluate_oracle(sub)
+            ok, detail = evaluate_oracle(sub, snapshot=snapshot, window_title=window_title)
             details.append(("ok" if ok else "FAIL") + ": " + detail)
             passed = passed or ok
         return passed, "any_of[" + "; ".join(details) + "]"
+    if kind == "uia_value":
+        return _oracle_uia_value(spec, snapshot or default_snapshot)
+    if kind == "window_title_contains":
+        return _oracle_window_title(spec, window_title or default_window_title)
     if kind == "file_exists":
         path = Path(_expand(spec["path"]))
         want = bool(spec.get("expect", True))
@@ -471,6 +557,98 @@ def evaluate_oracle(spec: dict) -> Tuple[bool, str]:
     raise OracleUnsupported(f"unknown oracle type {kind!r}")
 
 
+def _element_text(element) -> str:
+    """The text a `uia_value` oracle compares against: ``value``, else ``name``.
+
+    Value first because a real text field keeps its contents there. Name as the
+    fallback because Calculator's result display does not: `CalculatorResults`
+    is a ``text`` node with no ValuePattern, and the number lives in its
+    accessible Name as a full localised sentence ("Wyświetlacz to 408"). That is
+    why `cu_tasks.json` grades it with `expect_contains` on the digits and not
+    with an equality on the sentence — the prefix is a different string in every
+    Windows display language, and this benchmark runs on a Polish-locale host.
+    """
+    value = getattr(element, "value", None)
+    if value is not None and str(value) != "":
+        return str(value)
+    return str(getattr(element, "name", "") or "")
+
+
+def _oracle_uia_value(spec: dict, snapshot_fn) -> Tuple[bool, str]:
+    """Grade the accessibility tree of the foreground window.
+
+    Selectors (`automation_id`, `name`, `find_control_type`) are ANDed, so a
+    spec that names two of them means "the element that is both". Judgements are
+    `expect: "exists"` (the element is present at all), `expect: <str>` (its text
+    equals that) or `expect_contains: <str>` (its text contains that).
+
+    `window_title_contains` on a `uia_value` spec gates the *window*, not an
+    element: the observer only ever looks at whatever is in the foreground, so a
+    title that does not match means the task's window is not the one on top.
+    That is a genuine False with a reason, not an unevaluable oracle — the
+    window being somewhere else is exactly the failure the oracle should catch.
+    """
+    snap = snapshot_fn()
+    title = str(getattr(snap, "window_title", "") or "")
+    wanted_title = spec.get("window_title_contains")
+    if wanted_title and wanted_title.casefold() not in title.casefold():
+        return False, (f"window not found: foreground title {title!r} does not "
+                       f"contain {wanted_title!r}")
+
+    want_aid = spec.get("automation_id")
+    want_name = spec.get("name")
+    want_role = spec.get("find_control_type")
+    matches = []
+    for element in getattr(snap, "elements", []) or []:
+        if want_aid is not None and getattr(element, "automation_id", "") != want_aid:
+            continue
+        if want_name is not None and (getattr(element, "name", "") or "") != want_name:
+            continue
+        # UIA spells control types "Header"; this package lowercases them into
+        # `role` (jevskill/cu/types.py CONTROL_TYPES), so compare case-folded
+        # rather than making cu_tasks.json speak the internal vocabulary.
+        if want_role is not None and str(getattr(element, "role", "")).casefold() != str(want_role).casefold():
+            continue
+        matches.append(element)
+
+    selector = ", ".join(f"{k}={spec[k]!r}" for k in UIA_SELECTORS if k in spec)
+    if not matches:
+        return False, f"no element matched {selector} in {title!r} ({len(snap)} elements)"
+
+    if spec.get("expect") == "exists":
+        return True, f"{len(matches)} element(s) matched {selector} in {title!r}"
+
+    texts = [_element_text(element) for element in matches]
+    if "expect_contains" in spec:
+        needle = str(spec["expect_contains"])
+        hit = any(needle in text for text in texts)
+        return hit, f"{selector} -> {texts!r}, looking for {needle!r}"
+    if "expect" in spec:
+        wanted = str(spec["expect"])
+        hit = any(text == wanted for text in texts)
+        return hit, f"{selector} -> {texts!r}, expected {wanted!r}"
+    raise OracleUnsupported(
+        f"uia_value needs one of {list(UIA_EXPECTATIONS)}; got {sorted(spec)}")
+
+
+def _oracle_window_title(spec: dict, window_title_fn) -> Tuple[bool, str]:
+    """Is the foreground window's title the one the task asked for?
+
+    The foreground window and not "any window with this title": both tasks that
+    use this grade a Chrome tab the agent was asked to open, and a match on some
+    background window would pass a run where the agent opened the page and then
+    navigated away from it.
+    """
+    title = str(window_title_fn() or "")
+    needle = str(spec.get("substring", ""))
+    if spec.get("case_sensitive"):
+        hit = needle in title
+    else:
+        hit = needle.casefold() in title.casefold()
+    return hit, (f"foreground title {title!r}, looking for {needle!r} "
+                 f"({'case-sensitive' if spec.get('case_sensitive') else 'case-insensitive'})")
+
+
 def _oracle_registry(spec: dict) -> Tuple[bool, str]:
     try:
         import winreg  # noqa: WPS433 — Windows only, and only for a live grade
@@ -492,9 +670,14 @@ def _oracle_registry(spec: dict) -> Tuple[bool, str]:
     return value == want, f"{hive_name}\\{path}\\{name}={value!r}, expected {want!r}"
 
 
-def task_oracle(task: dict) -> Tuple[bool, str]:
-    """The oracle of one task, as `run_task` wants it."""
-    return evaluate_oracle(task["oracle"])
+def task_oracle(task: dict, *, snapshot=None, window_title=None) -> Tuple[bool, str]:
+    """The oracle of one task, as `run_task` wants it.
+
+    The two seams are threaded through rather than reached for inside
+    `evaluate_oracle`, so a caller with a recorded tree — a test, or a replay of
+    a failed live run — grades exactly what the live path would.
+    """
+    return evaluate_oracle(task["oracle"], snapshot=snapshot, window_title=window_title)
 
 
 def fake_oracle(task: dict) -> Tuple[bool, str]:
@@ -722,6 +905,13 @@ def resolve_agent(spec: str):
 # Results file
 # --------------------------------------------------------------------------- #
 
+def resolve_out(requested: Optional[Path], *, live: bool) -> Path:
+    """Where this invocation's rows go: explicit `--out`, else the mode's default."""
+    if requested is not None:
+        return Path(requested)
+    return DEFAULT_OUT_LIVE if live else DEFAULT_OUT_DRY
+
+
 def host_facts() -> dict:
     return {
         "python": platform.python_version(),
@@ -817,7 +1007,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--provider", choices=("typesafe", "openrouter"), default=None,
                         help="endpoint the agent should use; recorded in the row key")
     parser.add_argument("--tasks", type=Path, default=DEFAULT_TASKS)
-    parser.add_argument("--out", type=Path, default=DEFAULT_OUT)
+    parser.add_argument("--out", type=Path, default=None,
+                        help=f"results file; defaults to {DEFAULT_OUT_DRY.name} for a "
+                             f"dry run and {DEFAULT_OUT_LIVE.name} for --live")
     parser.add_argument("--no-write", action="store_true", help="do not touch --out")
     parser.add_argument("--skip-syntax", action="store_true",
                         help="skip the PowerShell parse check")
@@ -845,6 +1037,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print("REFUSED: --live and --dry-run are opposites; pick one.", file=sys.stderr)
         return 2
     mode = "live" if live else "dry-run"
+    out_path = resolve_out(args.out, live=live)
 
     tasks = load_tasks(args.tasks)
     problems = validate_tasks(tasks)
@@ -938,8 +1131,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
               "always passes.")
 
     if not args.no_write:
-        merge(args.out, rows, syntax=syntax)
-        print(f"\nwrote {args.out}")
+        merge(out_path, rows, syntax=syntax)
+        print(f"\nwrote {out_path}")
     return 0
 
 
