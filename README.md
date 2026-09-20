@@ -26,7 +26,7 @@ tokens on decisions — and start making them for **$0.000013** in **325 ms**.
 **Jev** is TypeSafe's *System One* decision model, and it is the whole engine here.
 Official model page: **[typesafe.ai](https://typesafe.ai/)** · [API docs](https://docs.typesafe.ai/)
 
-[![tests](https://img.shields.io/badge/tests-842%20passing-brightgreen)](#-does-it-actually-help-ab-tested)
+[![tests](https://img.shields.io/badge/tests-881%20passing-brightgreen)](#-does-it-actually-help-ab-tested)
 [![A/B](https://img.shields.io/badge/A%2FB-99.3%25%20fewer%20tokens-blue)](#-does-it-actually-help-ab-tested)
 [![cost](https://img.shields.io/badge/decision-%240.000013-success)](#-cost-per-decision)
 [![license](https://img.shields.io/badge/license-MIT-informational)](LICENSE)
@@ -674,8 +674,8 @@ with JevClient(hot=True) as jev:
 
 Three things here were **measured before being believed**, and one of them lost:
 
-* **Warm-up.** The vendor's cold first decision is 682 ms; a free `HEAD` beforehand
-  makes it 284 ms. A paid warm-up decision buys 24 ms more. `HEAD` is the default.
+* **Warm-up.** The vendor's cold first decision is 693 ms; a free `HEAD` beforehand
+  makes it 293 ms. A paid warm-up decision ($0.000013) buys 26 ms more. `HEAD` is the default.
 * **Hedging** (a duplicate request after 400 ms) was implemented, then measured on
   both providers: **66 duplicates fired, 0 won**, and the calls that fired one got
   slower. It ships off. `hedge=True` turns it on and always costs the loser.
@@ -717,7 +717,7 @@ bench/
   cu_observe_bench.py  UIA walk: comtypes CacheRequest vs uiautomation vs pywinauto → cu_observe_results.json
   cu_tasks.json        10 Windows computer-use tasks with oracles (+ cu_tasks.md)
   cu_run.py            the task harness: --dry-run (default, synthetic) · --live; cu_report.py renders it
-tests/                 842 tests, offline, green
+tests/                 881 tests, offline, green
 docs/install.md        install guide an agent reads and executes
 docs/DESIGN.md         architecture + the mistakes that shaped it
 AGENTS.md              conventions for agents working on this repo
@@ -725,7 +725,7 @@ AGENTS.md              conventions for agents working on this repo
 
 ## 🧭 Status & known limits — `v0.11.0`
 
-CLI, skill, bundled scripts, ledger and reference docs (842 offline tests) are
+CLI, skill, bundled scripts, ledger and reference docs (881 offline tests) are
 complete, and there are now two benchmark suites. What is **not** proven:
 
 * **Redaction is not a PII policy.** It catches credential-shaped strings, not

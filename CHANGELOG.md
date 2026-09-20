@@ -153,8 +153,8 @@ installed; only `snapshot()` needs Windows and `pip install "jevskill[cu]"`
   which key*, hot is the call pattern of one client. **`AsyncJevClient`** shares
   body-building and parsing with the sync client (needs `httpx`, says so).
 - **Warm-up measured, and the research note was wrong.** Five fresh clients per
-  mode: vendor cold first decision 682 ms → 284 after `HEAD /v1/models` (free) →
-  260 after a warm-up decision ($0.000013); OpenRouter 375 → 305 → 307. `HEAD`
+  mode: vendor cold first decision 693 ms → 293 after `HEAD /v1/models` (free) →
+  266 after a warm-up decision (310 tokens, $0.000013); OpenRouter 342 → 314 → 304. `HEAD`
   removes the cold penalty on both for nothing, so `warm_mode="head"` is the
   default; `"decision"` stays because it also proves the key and the parser.
 - **Hedging: implemented, measured, off — it never won.** 160 hedged calls on both
@@ -176,6 +176,38 @@ installed; only `snapshot()` needs Windows and `pip install "jevskill[cu]"`
 - `bench/cu_bench.py` gained `--provider`, `--hedge`, `--hedge-probe`,
   `--warm-bench`, `--micro` (offline) and writes `bench/cu_results.json`, which is
   where every figure above lives.
+
+### Fixed — what the review of the hot path found (before release)
+
+An adversarial review of the hot-loop client ran the code, not only read it. Every
+finding is fixed with a regression test:
+
+- **The buffered ledger could lose rows silently.** `Ledger.flush()` emptied its
+  buffer before writing, so a failed `open` discarded the batch and the background
+  thread's bare `except` hid it (measured: 5 accepted rows, 0 on disk, "no loss" in
+  the docstring). A failed batch now goes back to the front of the buffer,
+  `flush_errors` counts it, and `close()` re-raises. Each batch is one `os.write`
+  on an `O_APPEND` descriptor (it was several buffered writes, interleavable from a
+  second process on Windows, and wrote CRLF there). One `atexit` hook over a
+  `WeakSet` of open ledgers instead of one registration per instance.
+- **Hot mode overrode values the caller had stated.** `Config(timeout_read_s=60.0)`
+  with `hot=True` became 1.5 s because the check was value equality with the
+  default. `Config` now records which fields were defaulted; a stated value is
+  never retuned, and `replace()` copies never are.
+- **Hedging multiplied and could exhaust the pool.** `retries=2, hedge=True` sent six
+  requests; abandoned legs held pool slots against a 1.5 s pool timeout;
+  `hedge_after_ms=0` duplicated every call; `requests_sent` missed a leg that timed
+  out; the ledger had no field for the loser's estimated cost. Now: hedge on the
+  first attempt only, at most two abandoned legs in flight (then the call is not
+  hedged and says so in `timing_ms["note"]`), a 50 ms floor, counting at send, and
+  `hedge_cost_usd_est`/`hedge_cost_source` on every ledger row.
+- `replace()` aliased `extra` between a hot client and its caller; async
+  `decide_many` orphaned tasks on the first failure; `warm()` inherited retries
+  (751 ms on a failing warm-up); `to_dict()` omitted the combined `cost_usd`.
+- **The warm-up numbers were re-measured** so the warm-up decision's cost is a
+  recorded figure (310 tokens, $0.000013) rather than a rounded estimate; the table
+  in `hotloop.md` and the figures above are from that re-run. The one docstring that
+  said "65 fires" says 66 like everything else.
 
 ### Added — the `act` pattern (`references/act.md`, `bench/act_validate.py`)
 
