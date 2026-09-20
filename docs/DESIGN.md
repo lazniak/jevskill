@@ -175,3 +175,58 @@ already in `api.md`.
   say `Bash(python:*)` while every example was `jevskill …`.
 - The cost is indirection: an agent that wants the ledger must open a second file.
   That is the correct trade for a document loaded on every activation.
+
+## ADR — `hot` is a client flag, not a `Config` mode (2026-09-20, 0.12.0)
+
+**Decision.** `JevClient(hot=True)` retunes the read timeout, connect timeout and
+retry count for a per-step agent loop. There is no `Config.hot()`.
+
+**Why.** A `Config` answers *where do I send this and with which key*. It is
+resolved once from the environment, shared by the CLI and by every client in a
+process, and may be handed around. Hot is not a fact about the endpoint; it is the
+call pattern of **one** client. Putting it on the constructor keeps a loop from
+retuning a config that a burst-mode caller is also using, and it makes the
+default path byte-identical to what it was: no extra thread, no extra field on the
+result, unless the caller asked. The knobs still live on `Config` (`hedge`,
+`hedge_after_ms`, `warm_mode`) so `doctor` can read them back and a caller can
+state them explicitly; hot only supplies different *defaults*.
+
+## ADR — hedging ships off, because it lost (2026-09-20, 0.12.0)
+
+**Decision.** A duplicate request after `hedge_after_ms` is implemented, tested,
+and **disabled by default** on every path including the hot one.
+
+**Why.** The plan expected a hedge to cover the tail once retries were zero. It was
+measured before being believed (`bench/cu_results.json`, 160 hedged calls on both
+providers plus a 320 ms probe): 66 duplicates fired and **none won**, and the calls
+that fired one were slower. Both legs share one multiplexed HTTP/2 connection to one
+provider, so the twin cannot escape a slow connection and makes the server do the
+work twice; it also starts late, so it can only beat a primary that is *stuck*, and
+the tail at large states is a property of the request, not noise. The code stays
+because the stuck case is real and unrepresented in the sample, and because a hedge
+over a second connection or a second provider is an experiment nobody has run. The
+abandoned leg is always costed — recording it as free would poison the ledger this
+project uses to claim savings.
+
+## ADR — perception reads the UIA tree through one `CacheRequest` (2026-09-20, 0.12.0)
+
+**Decision.** `jevskill.cu.observe` uses `comtypes` and a single
+`BuildUpdatedCache(TreeScope_Subtree)` per window; `uiautomation` and `pywinauto`
+are used only by the comparison bench.
+
+**Why.** Measured, three warm runs per app (`bench/cu_observe_results.json`): the
+two libraries read every property live — one cross-process call per node per
+property — and took 138–223 ms on a 34-node Notepad; one `CacheRequest` fetching
+sixteen properties for the whole window took 73–104 ms, and 42–52 ms on a 53-node
+Calculator. The cost that remains is the provider's and tracks its node count
+(~1 ms per node; a Notepad with 18 restored tabs cost 368–410 ms), and no
+client-side trick moved it. A lazy per-container descent tied on an idle machine
+and lost under load, so `strategy="subtree"` is the default and `"lazy"` is kept
+only for windows too large to fetch at once.
+
+**The split this enables.** Visible, enabled, on-screen, duplicated, *unchanged* —
+these are facts, and code settles facts faster and more reliably than a model: the
+`stuck` question the model was asked instead returned 0.42–0.60 on screens that had
+plainly changed. Everything a step can know without judgement is computed in
+`reduce`/`hashing`; the model is asked only which of the remaining controls the
+goal wants.
