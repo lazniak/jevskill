@@ -15,8 +15,108 @@ replaced.
   demonstrated rather than only unit-tested.
 - `jevskill batch` — read a JSONL/CSV of items and run one pattern across them
   with progress and a resumable ledger.
+- Block-level REDUCE, so a gate can keep a parent key together with its values.
+  The `yaml_drift` loss in the A/B suite is exactly this gap.
 - Per-repository ledger merging (`jevskill stats --merge`).
-- MCP wrapper, if harnesses turn out to want one.
+
+## [0.3.0] — 2026-09-20
+
+Distribution and reversibility: the skill installs into 20+ agents with one
+command, reduction can be undone, and the repository finally contains the
+experiment that answers "should I use this?"
+
+### Added
+
+**One-command install into 20+ agents.** `npx skills add lazniak/jevskill -g`
+now works, verified against the live registry:
+
+```
+Found 1 skill: jev
+universal: Antigravity, Cline, Codex, Cursor, Gemini CLI +15 more
+symlinked: Claude Code, Kiro CLI, Qwen Code, Windsurf, ZCode
+```
+
+Also `.claude-plugin/marketplace.json`, so Claude Code users can
+`/plugin marketplace add lazniak/jevskill`.
+
+**Bundled zero-install scripts.** The skill carries its own dependency-free
+caller, so it is useful the moment it is installed, with no `pip install`:
+
+| Script | What it does |
+|---|---|
+| `scripts/jev_query.py` | decisions (`noul`/`choice`/`score`) and reversible REDUCE |
+| `scripts/jev_recovery.py` | read back everything REDUCE rejected |
+| `scripts/jev.py` | delegates to the full CLI when the package is installed |
+
+**Reversible REDUCE.** `--reduce` stores every rejected item locally and returns a
+handle. Measured on the 900-line log benchmark: the gate kept 8 of 14 salient
+lines, and recovery surfaced the **6 it had missed** — a 57%-recall gate becomes a
+100%-recoverable pipeline. This closes the one structural advantage mechanical
+compressors had over a decision model.
+
+**A/B evaluation** (`bench/ab.py`). Six workloads with checkable oracles, three
+arms (direct / deterministic filter / Jev), identical answering model,
+provider-reported token counts, 3 runs per arm:
+
+| Workload | direct | filter | Jev | Token change |
+|---|---:|---:|---:|---:|
+| log_needle | 3/3 | 3/3 | 3/3 | −99.5% |
+| csv_outlier | 3/3 | 3/3 | 3/3 | −98.9% |
+| test_output | 3/3 | 3/3 | 3/3 | −99.1% |
+| json_drift | **0/3** | 2/3 | **3/3** | −99.6% |
+| yaml_drift | **0/3** | **3/3** | **0/3** | −99.5% |
+| html_alert | 3/3 | 3/3 | 3/3 | −98.8% |
+| **TOTAL** | **12/18** | **17/18** | **15/18** | **−99.3%** |
+
+Tokens 113,352 → 801. Accuracy rose from 12/18 to 15/18.
+
+**`AGENTS.md`** — the conventions that keep this repo honest: every published
+number reproducible, negative results stay published, name the target value, fan
+out instead of looping, one chars-per-token constant.
+
+**CI** (`.github/workflows/tests.yml`) — pytest on Python 3.9/3.11/3.13, plus a
+smoke test that the bundled skill scripts still work without the package.
+
+### Changed
+- **Skill moved from `skill/` to `skills/jev/`.** The Agent Skills convention is a
+  root-level `skills/<name>/` with `<name>` matching the frontmatter `name`. The
+  old layout could not be mapped by any installer. `install.ps1` and every
+  cross-reference updated.
+- Table of contents added to `references/patterns.md` (328 lines; the guidance
+  suggests one past 300).
+- `SKILL.md` documents the zero-install path, the recovery workflow, and the
+  package-vs-bundled boundary.
+
+### Fixed
+Two defects in the A/B harness, both of which would have produced a flattering
+and false result:
+
+- **The reduce gate was handed the model's own question**, so it was told to look
+  for "payment gateway timeout" and then credited with finding the needle on its
+  own merit. The gate now receives an **answer-neutral filter description**, and
+  the deterministic control arm is built from that same description so both arms
+  get an equally fair brief.
+- **`_yaml_fixture` generated only 420 flags while targeting `flag_0512`**, so the
+  control arm had no target to find and would have been scored as a genuine
+  failure. A guard assertion now makes that class of bug impossible to miss.
+
+Also: `scripts/jev.py` must not be named `jevskill.py` — a script's own directory
+leads `sys.path`, so the name shadows the `jevskill` package and the import
+resolves to the script itself. The first version made exactly this mistake.
+
+### Measured
+- A/B: **−99.3%** model input tokens (113,352 → 801), accuracy 12/18 → 15/18.
+- Reversible REDUCE: 900 items → 8 kept (−98.8%), 892 recoverable, and the 6
+  missed salient lines were recovered.
+- `json_drift` is the clearest single case for the technique: direct 0/3, Jev 3/3.
+- `yaml_drift` is the clearest case against it: Jev 0/3, deterministic filter 3/3.
+
+### Notes
+- The published microbenchmark figures in Part 2 of `benchmarks.md` are unchanged
+  from 0.2.0.
+- The A/B percentages are **not** comparable to other token-reduction tools'
+  published numbers: different fixtures, model and harness. The method is
+  comparable; the numbers are not.
 
 ## [0.2.0] — 2026-09-20
 

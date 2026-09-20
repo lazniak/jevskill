@@ -1,22 +1,141 @@
 # Benchmarks — method and every number
 
-All figures come from `bench/run.py` against the live OpenRouter Decisions API,
-written to `bench/results.json`. Reproduce with:
+Two suites. `bench/run.py` measures Jev **in isolation** (latency, cost, fan-out,
+reduction, accuracy). `bench/ab.py` measures the thing a user actually cares
+about: **with Jev in front of the model, does the model answer better, cheaper,
+or not at all?**
+
+Both write a machine-readable artifact that the README quotes:
+`bench/results.json` and `bench/ab_results.json`.
 
 ```bash
 export OPENROUTER_API_KEY=sk-or-v1-...
-python bench/run.py --legacy-reduce
-python -m jevskill stats          # the same run, from the ledger's point of view
+python bench/run.py --legacy-reduce    # E1-E7 microbenchmarks
+python bench/ab.py --runs 3            # the A/B evaluation
+python -m jevskill stats               # the same runs, from the ledger's point of view
 ```
 
 **Conditions.** `typesafe/jev-1.13` via `https://openrouter.ai/api/alpha/decisions`,
-from a residential connection in Poland, 2026-09-20, 148 decisions / 1 188
-questions. Client under test: `jevskill` with `httpx[http2]` and `orjson`.
+from a residential connection in Poland, 2026-09-20. Client under test:
+`jevskill` with `httpx[http2]` and `orjson`.
 
 > Latency is dominated by network distance and provider inference. TypeSafe quotes
 > 70–500 ms end-to-end depending on where the caller is; these numbers reflect one
 > location. **Measure your own round trip before promising a figure** — the
 > limitations page of the independent guide makes the same point.
+
+---
+
+# Part 1 — A/B evaluation (`bench/ab.py`)
+
+The experiment that answers "should I actually use this?"
+
+**Method.** Six workloads, each a large fixture plus a question with a
+**checkable oracle** (an exact string from the data). Three arms:
+
+| Arm | What the model reads |
+|---|---|
+| `direct` | the whole fixture |
+| `grep` | a **deterministic** filter — the thing a competent engineer does with no model at all |
+| `jev` | Jev's REDUCE shortlist (8 lines) |
+
+The answering model is **identical in every arm** (`google/gemini-2.5-flash-lite`),
+so the only variable is what the model reads. Token counts are the **provider's
+own reported `usage`**, not an estimate. Answers are graded by substring match
+against the oracle. Three runs per arm.
+
+## Results — 3 runs × 6 workloads × 3 arms
+
+| Workload | Fixture | direct | grep | **jev** | Token change (direct→jev) |
+|---|---:|---:|---:|---:|---:|
+| log_needle | 27,472 | 3/3 | 3/3 | **3/3** | −99.5% |
+| csv_outlier | 12,065 | 3/3 | 3/3 | **3/3** | −98.9% |
+| test_output | 19,882 | 3/3 | 3/3 | **3/3** | −99.1% |
+| json_drift | 23,888 | **0/3** | 2/3 | **3/3** | −99.6% |
+| yaml_drift | 25,133 | **0/3** | **3/3** | **0/3** | −99.5% |
+| html_alert | 22,064 | 3/3 | 3/3 | **3/3** | −98.8% |
+| **TOTAL** | | **12/18** | **17/18** | **15/18** | **−99.3%** |
+
+**Provider-reported mean tokens: 113,352 → 801.**
+
+## Reading the result honestly
+
+**Jev cut the model's input by 99.3% and *improved* accuracy from 12/18 to 15/18.**
+
+The accuracy gain is the interesting part and it is explainable: on `json_drift`
+the direct arm scored **0/3**. Handed 23,888 tokens of service definitions, the
+model failed to find the one SNAPSHOT tag three times out of three. Given 83
+tokens of shortlist, it found it every time. **A reduction is not only a cost
+optimisation — it is a signal-to-noise improvement.** That is a real result and
+it is not what this benchmark was designed to find.
+
+**But the deterministic filter beat both, at 17/18.** And it beat Jev on
+`yaml_drift` 3/3 to 0/3. So the honest conclusion is not "Jev wins":
+
+1. **If a regex or a structural text pass can answer it, use that.** It is free,
+   instantaneous and deterministic. Jev is for the residue that code cannot
+   classify.
+2. **Jev's advantage over `grep` shows up on semantic anomalies** (`json_drift`:
+   "looks non-release, unusual, or out of pattern") which no keyword expresses.
+   There Jev scored 3/3 against the filter's 2/3, and against direct's 0/3.
+3. **Jev loses where the answer spans lines that must be kept together.**
+
+### The yaml_drift loss, diagnosed
+
+Post-mortem (`--only yaml_drift`), because a failure that is not explained is
+just an anecdote:
+
+The target flag's block is four lines:
+
+```yaml
+  flag_0512:          <- the line holding the ANSWER (the name)
+    default: false
+    prod: true        <- the line holding the SIGNAL
+    owner: team-7
+```
+
+Asked to "keep lines where the prod value differs from the default value", Jev
+picked **`prod: true` at p=0.92** — a correct judgement of the description it was
+given. But the test asks for the *flag name*, and the name lives on the line
+above. Jev's shortlist was two lines (`prod: true`, `owner: team-7`) and
+contained no name at all. The structural filter in the other arm emitted the
+whole four-line block, so the name survived.
+
+**Two lessons, both general:**
+
+* A line-level gate is the wrong granularity when the unit of meaning is a
+  **block**. Gate blocks, or widen each kept line to include its parent key.
+* More importantly: **ask for the thing that carries the identifier.** The filter
+  description asked about a *value* comparison when the answer was a *name*. Jev
+  did exactly what it was told; the question was wrong. This is the same class of
+  error as the un-named-value bug in `prompting.md` §1, arriving from the other
+  direction — there the question was too vague, here it was too precise about the
+  wrong attribute.
+
+## Threats to validity
+
+1. **Synthetic fixtures.** Generated, not harvested. Real logs have messier
+   signal distribution; `log_needle` in particular has exactly one needle.
+2. **One answering model**, and a cheap one. A stronger model would likely score
+   higher in the `direct` arm, and the `json_drift` 0/3 may be partly a small-model
+   limitation rather than a context-length one.
+3. **One filter description per workload**, written by the same author as the
+   gate question. A different phrasing could move either arm.
+4. **`n=3` per cell.** Directional, not statistical. No confidence interval is
+   claimed; with 18 observations per arm a two-point difference is noise.
+5. **Not a head-to-head with other token-reduction tools.** Caveman publishes
+   −33.2% on a 54-run Claude Code suite with provider-reported tokens and 18/18
+   oracles. The fixtures, model and harness differ, so the percentages are **not**
+   comparable. What is comparable is the *method*, and this suite now matches it.
+
+---
+
+# Part 2 — Microbenchmarks (`bench/run.py`)
+
+All figures below come from `bench/run.py` against the live OpenRouter Decisions
+API, written to `bench/results.json`.
+
+**Conditions for Part 2.** 148 decisions / 1 188 questions.
 
 ---
 
