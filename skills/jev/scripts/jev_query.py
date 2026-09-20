@@ -70,7 +70,7 @@ PROVIDERS = {
         "base_url": "https://api.typesafe.ai",
         "endpoint": "/v1/systemone",
         "model": "jev-latest",
-        "key_env": ("TYPESAFE_API_KEY", "JEV_API_KEY"),
+        "key_env": ("JEV_API_KEY", "TYPESAFE_API_KEY"),
         # The vendor returns input/output tokens but no cost, so spend is
         # computed from the documented $0.042/Mtok rate instead of recorded as 0.
         "reports_cost": False,
@@ -264,33 +264,52 @@ def _registry_env(name: str) -> str:
         return ""
 
 
+def provider_intent(explicit: str | None = None) -> str | None:
+    """What the user *stated*: ``--provider``, then ``JEVSKILL_PROVIDER``, then the
+    ``provider`` field of ``~/.jevskill/config.json``. ``None`` when nothing was
+    stated. Mirrors ``jevskill.config.resolve_provider_intent``."""
+    if explicit in PROVIDERS:
+        return explicit
+    from_env = (os.environ.get("JEVSKILL_PROVIDER") or "").strip().lower()
+    if from_env in PROVIDERS:
+        return from_env
+    try:
+        data = json.loads((Path.home() / ".jevskill" / "config.json").read_text("utf-8"))
+        from_file = str(data.get("provider", "")).strip().lower()
+    except Exception:
+        from_file = ""
+    return from_file if from_file in PROVIDERS else None
+
+
 def find_api_key(provider: str | None = None) -> tuple[str, str]:
     """Resolve ``(provider, key)`` from the environment, registry, or config file.
 
-    Key *shape* picks the provider when nothing is stated: ``sk-or-...`` is
-    OpenRouter, anything else is assumed to be the vendor's own key. With
-    ``provider`` given, only that provider's variables are consulted, so a machine
-    holding both keys does not send traffic to the wrong endpoint.
+    Order of business, mirroring ``jevskill.config.Config.from_env``:
+
+    1. the stated provider (flag, ``JEVSKILL_PROVIDER``, config file) is resolved
+       **first**, and if there is one only *its* key variables are consulted — a
+       machine holding both keys must not send the aggregator's key to the vendor
+       (measured: that is a 401);
+    2. with nothing stated, variables are searched **name by name**, vendor names
+       first (``JEV_API_KEY``, ``TYPESAFE_API_KEY``, then the OpenRouter names),
+       each in the environment and then in the Windows user registry — a vendor key
+       set yesterday with ``setx`` beats an aggregator key exported in this shell;
+    3. key *shape* then picks the provider: ``sk-or-...`` is OpenRouter, anything
+       else is the vendor's.
     """
+    intent = provider_intent(provider)
     names = (
-        ("JEVSKILL_API_KEY",) + PROVIDERS[provider]["key_env"]
-        if provider in PROVIDERS
-        else tuple(dict.fromkeys(
-            ("JEVSKILL_API_KEY",)
-            + PROVIDERS["openrouter"]["key_env"]
-            + PROVIDERS["typesafe"]["key_env"]
-        ))
+        ("JEVSKILL_API_KEY",) + PROVIDERS[intent]["key_env"]
+        if intent
+        else ("JEVSKILL_API_KEY",)
+        + PROVIDERS["typesafe"]["key_env"]
+        + PROVIDERS["openrouter"]["key_env"]
     )
     key = ""
     for name in names:
-        key = (os.environ.get(name) or "").strip()
+        key = (os.environ.get(name) or "").strip() or _registry_env(name)
         if key:
             break
-    if not key:
-        for name in names:
-            key = _registry_env(name)
-            if key:
-                break
     if not key:
         try:
             data = json.loads((Path.home() / ".jevskill" / "config.json").read_text("utf-8"))
@@ -298,11 +317,11 @@ def find_api_key(provider: str | None = None) -> tuple[str, str]:
         except Exception:
             key = ""
 
-    chosen = provider
-    if chosen not in PROVIDERS:
-        chosen = DEFAULT_PROVIDER
-        if key and not key.startswith(OPENROUTER_KEY_PREFIX):
-            chosen = "typesafe"
+    if intent:
+        return intent, key
+    chosen = DEFAULT_PROVIDER
+    if key and not key.startswith(OPENROUTER_KEY_PREFIX):
+        chosen = "typesafe"
     return chosen, key
 
 
@@ -645,7 +664,8 @@ def main(argv=None) -> int:
         help=("which endpoint serves the model: 'openrouter' "
               "(/api/alpha/decisions, model typesafe/jev-1.13) or 'typesafe' "
               "(the vendor's /v1/systemone, model jev-latest, cost computed from "
-              "the published rate). Default: detected from the key shape."))
+              "the published rate). Default: JEVSKILL_PROVIDER if set, else detected "
+              "from the key shape (vendor-named keys are looked for first)."))
     parser.add_argument("--model", default=os.environ.get("JEVSKILL_MODEL", ""))
     parser.add_argument("--base-url", default=os.environ.get("JEVSKILL_BASE_URL", ""))
     parser.add_argument("--retries", type=int, default=2)

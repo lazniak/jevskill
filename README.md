@@ -26,7 +26,7 @@ tokens on decisions — and start making them for **$0.000013** in **325 ms**.
 **Jev** is TypeSafe's *System One* decision model, and it is the whole engine here.
 Official model page: **[typesafe.ai](https://typesafe.ai/)** · [API docs](https://docs.typesafe.ai/)
 
-[![tests](https://img.shields.io/badge/tests-520%20passing-brightgreen)](#-does-it-actually-help-ab-tested)
+[![tests](https://img.shields.io/badge/tests-1328%20passing-brightgreen)](#-does-it-actually-help-ab-tested)
 [![A/B](https://img.shields.io/badge/A%2FB-99.3%25%20fewer%20tokens-blue)](#-does-it-actually-help-ab-tested)
 [![cost](https://img.shields.io/badge/decision-%240.000013-success)](#-cost-per-decision)
 [![license](https://img.shields.io/badge/license-MIT-informational)](LICENSE)
@@ -178,7 +178,8 @@ Claude Code plugin marketplace users can instead do:
 ```bash
 git clone https://github.com/lazniak/jevskill && cd jevskill
 python -m pip install -e ".[fast]"          # the measurement half (ledger, stats)
-export OPENROUTER_API_KEY=sk-or-v1-...      # Windows: setx OPENROUTER_API_KEY "..."
+export JEV_API_KEY=apikey_...               # vendor key; Windows: setx JEV_API_KEY "..."
+# or: export OPENROUTER_API_KEY=sk-or-v1-...  # the aggregator route, same price
 
 jevskill doctor          # verifies key, endpoint, latency, live cost
 ```
@@ -197,7 +198,7 @@ jevskill doctor --provider openrouter  # POST openrouter.ai/api/alpha/decisions
 | | OpenRouter | TypeSafe (vendor) |
 |---|---|---|
 | Model field | `typesafe/jev-1.13` | `jev-latest` |
-| Key variable | `OPENROUTER_API_KEY` | `TYPESAFE_API_KEY` |
+| Key variable | `OPENROUTER_API_KEY` | `JEV_API_KEY` or `TYPESAFE_API_KEY` |
 | Context | 32,000 tokens | **64,000** (32,000 for state + longest question) |
 | Choice options | — | documented max 255 |
 | Score levels | — | documented 2–10 |
@@ -217,6 +218,15 @@ Two things worth knowing about the vendor endpoint:
 - **`jev-latest` is a moving alias.** The response's `model` field reports the
   versioned id that answered — log it, and pin a version if you have tuned a
   confidence threshold against it.
+- **It rejects `session_id`** (HTTP 400 `api_usage_error`; the field is an
+  OpenRouter extension), so the client sends it only to OpenRouter and keeps it
+  for the local ledger on both.
+
+**Which one is used?** `--provider`, then `JEVSKILL_PROVIDER`, then the config
+file; a stated provider uses only its own key. With nothing stated, the first key
+found **by name** decides, vendor names first — so `setx JEV_API_KEY …` next to an
+existing OpenRouter key moves traffic to the vendor. Measured live on 2026-09-20
+from Poland: vendor warm p50 292–320 ms, OpenRouter 325–371 ms, identical price.
 
 Full delta table, including error codes: [`api.md`](skills/jev/references/api.md).
 
@@ -647,18 +657,50 @@ leverage is better questions and less state. So the Skill teaches both.
 
 ---
 
+## 🖱️ The hot path — one decision per step
+
+The default client is tuned for a *burst* of decisions inside one harness turn.
+An agent loop is the other shape — one decision per step, every few hundred
+milliseconds — and `JevClient(hot=True)` is the same client with that shape's
+priorities: 1.5 s read timeout, 0 retries, one warm connection.
+
+```python
+from jevskill import JevClient
+
+with JevClient(hot=True) as jev:
+    jev.warm()                                   # HEAD /v1/models — free, and enough
+    step = jev.decide(ui_tree, questions)        # target · op · goal_reached · needs_text
+```
+
+Three things here were **measured before being believed**, and one of them lost:
+
+* **Warm-up.** The vendor's cold first decision is 693 ms; a free `HEAD` beforehand
+  makes it 293 ms. A paid warm-up decision ($0.000013) buys 26 ms more. `HEAD` is the default.
+* **Hedging** (a duplicate request after 400 ms) was implemented, then measured on
+  both providers: **66 duplicates fired, 0 won**, and the calls that fired one got
+  slower. It ships off. `hedge=True` turns it on and always costs the loser.
+* **State size.** Latency is flat to ~30 UI elements, then climbs: +125 ms on the
+  vendor and +205 ms on OpenRouter by 240 elements. The answer did not degrade —
+  `target` stayed at 0.97–0.99 with 241 options — so reduce for latency, not accuracy.
+
+`stuck` ("did the last action do nothing?") returned **0.45–0.60 on a screen that
+had obviously changed**, so change detection is a hash diff in code, not a question.
+Every number: [`hotloop.md`](skills/jev/references/hotloop.md) and
+[`bench/cu_results.json`](bench/cu_results.json). The loop itself — what code owns
+and what Jev is asked — is [`act.md`](skills/jev/references/act.md).
+
 ## 📁 What's inside
 
 ```
 skills/jev/            the Agent Skill — works with NOTHING installed
   SKILL.md             what your harness loads
-  references/          api · patterns · prompting · benchmarks · commands
+  references/          api · patterns · prompting · benchmarks · commands · measure · hotloop · act · speculate
   scripts/
     jev_query.py       stdlib-only caller: decisions + reversible REDUCE
     jev_recovery.py    read back everything REDUCE rejected
     jev.py             delegates to the full CLI when the package is installed
 jevskill/              the Python package — the measurement half
-  client.py            Decisions API — warm HTTP/2, retries, per-stage timings
+  client.py            Decisions API — warm HTTP/2, retries, per-stage timings; hot mode, async
   primitives.py        noul / choice / score, with validation that prevents 400s
   orchestrate.py       pattern selection, profiling, chunking, iteration rules
   redact.py            scrub credential-shaped strings before state is sent
@@ -666,20 +708,44 @@ jevskill/              the Python package — the measurement half
   stats.py             the effectiveness ledger
   cli.py               doctor · plan · patterns · ask · batch · outcome · stats · advice
   jevtask.py           batching: N items, one question set, measured saving
+  cu/                  computer use: observe (Windows UIA, `[cu]` extra) · reduce · hashing · decide · act · loop · macros · contract · speculate · consistency · beam
 bench/
   run.py               E1–E7 microbenchmarks (latency, fan-out, REDUCE, guards)
   ab.py                the A/B evaluation vs the model doing it alone
-tests/                 520 tests, offline, green
+  cu_bench.py          per-step decision bench: providers, N=12…240, warm-up, hedging → cu_results.json
+  act_validate.py      the three live calls behind references/act.md §9
+  cu_decide_live.py    the decide bundle on the real fixtures → cu_decide_results.json
+  cu_phase5_live.py    speculation / consistency / beam measured → cu_phase5_results.json
+  cu_observe_bench.py  UIA walk: comtypes CacheRequest vs uiautomation vs pywinauto → cu_observe_results.json
+  cu_tasks.json        10 Windows computer-use tasks with oracles (+ cu_tasks.md)
+  cu_run.py            the task harness: --dry-run (default, synthetic) · --live; cu_report.py renders it
+tests/                 1328 tests, offline, green
 docs/install.md        install guide an agent reads and executes
 docs/DESIGN.md         architecture + the mistakes that shaped it
 AGENTS.md              conventions for agents working on this repo
 ```
 
-## 🧭 Status & known limits — `v0.10.2`
+## 🧭 Status & known limits — `v0.12.0`
 
-CLI, skill, bundled scripts, ledger and reference docs (520 offline tests) are
-complete, and there are now two benchmark suites. What is **not** proven:
+CLI, skill, bundled scripts, ledger, reference docs and the computer-use half
+(`jevskill.cu`: observe · reduce · hashing · decide · act · loop · macros) are
+complete and offline-tested. What is **not** proven, stated plainly:
 
+* **The live UIA execution path has never been run against a desktop.** Every
+  `act.execute()`/`loop.run()` test drives it through fakes; the only Windows
+  machine available was live-streaming on 2026-09-20. The first live run is the
+  next task (`bench/cu_run.py --live --i-am-not-streaming`), and until it happens
+  the loop is a measured design, not a measured agent.
+* **No computer-use benchmark result exists yet.** `bench/cu_tasks.json` has the
+  ten tasks and their oracles; `bench/cu_run.py --dry-run` proves the harness,
+  and every dry-run number is marked synthetic.
+* **Four accelerations ship off because they lost when measured**: hedged
+  requests (66 fired, 0 won), speculative planning (1 of 8 hits, +48 % tokens),
+  self-consistency for destructive actions (0 of 28 fired), beam over the cascade
+  (0 of 12 changes). The flags exist; the numbers are in `bench/*.json`.
+* **The destructive name list is English-only.** On a Polish Calculator no name
+  matched and the per-element noul sat at 0.42–0.51 — well under the 0.85 gate.
+  Localise the list before trusting the gate on a non-English desktop.
 * **Redaction is not a PII policy.** It catches credential-shaped strings, not
   personal or business data, and it is pattern-based — a secret in an unusual shape
   will pass through. Read what you send.
@@ -720,9 +786,16 @@ complete, and there are now two benchmark suites. What is **not** proven:
 | [`skills/jev/SKILL.md`](skills/jev/SKILL.md) | the Skill your agent loads |
 | [`skills/jev/references/api.md`](skills/jev/references/api.md) | exact API shapes, both providers, every field, error codes |
 | [`skills/jev/references/patterns.md`](skills/jev/references/patterns.md) | all 9 patterns, worked questions |
-| [`skills/jev/references/prompting.md`](skills/jev/references/prompting.md) | 10 rules, each backed by a measurement |
+| [`skills/jev/references/prompting.md`](skills/jev/references/prompting.md) | the vendor's 11 failure modes, then 11 rules, each backed by a measurement |
 | [`skills/jev/references/commands.md`](skills/jev/references/commands.md) | every command, flag and script invocation |
 | [`skills/jev/references/benchmarks.md`](skills/jev/references/benchmarks.md) | every number + threats to validity |
+| [`skills/jev/references/measure.md`](skills/jev/references/measure.md) | the ledger, `stats`, `advice`, stage timings — is the skill paying for itself? |
+| [`skills/jev/references/hotloop.md`](skills/jev/references/hotloop.md) | `JevClient(hot=True)`, warm-up and hedging **measured** (hedging lost), latency vs state size on both providers |
+| [`skills/jev/references/act.md`](skills/jev/references/act.md) | the `act` pattern: Jev as the per-step decision core of a GUI loop, validated live |
+| [`skills/jev/references/speculate.md`](skills/jev/references/speculate.md) | speculation, self-consistency, beam over the cascade — measured, all three off |
+| [`bench/cu_tasks.md`](bench/cu_tasks.md) | the 10-task Windows computer-use benchmark: method, oracles, threats to validity |
+| [`docs/research-2026-09-20-jev-cu.md`](docs/research-2026-09-20-jev-cu.md) | research + critique of this skill against the vendor's docs; competitor table |
+| [`docs/plan-2026-09-20.md`](docs/plan-2026-09-20.md) | the phased plan behind 0.12.0 (`TASKS.md` tracks it) |
 | [`CHANGELOG.md`](CHANGELOG.md) | versioned history |
 | [`docs/install.md`](docs/install.md) | install guide written for an **agent** to read and execute |
 | [`docs/DESIGN.md`](docs/DESIGN.md) | why it's built this way |

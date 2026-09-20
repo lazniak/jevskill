@@ -21,14 +21,14 @@ import json
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping, Sequence
 
-from .config import CHARS_PER_TOKEN
+from .config import CHARS_PER_TOKEN, DATACLASS_SLOTS
 
 # --------------------------------------------------------------------------- #
 # Data profiling
 # --------------------------------------------------------------------------- #
 
 
-@dataclass(slots=True)
+@dataclass(**DATACLASS_SLOTS)
 class Shape:
     """What we learned about the payload before deciding how to send it."""
 
@@ -243,7 +243,7 @@ def choose_pattern(problem: str) -> tuple[str, dict[str, Any]]:
 # --------------------------------------------------------------------------- #
 
 
-@dataclass(slots=True)
+@dataclass(**DATACLASS_SLOTS)
 class Round:
     """What to do next, given the answer we just got."""
 
@@ -331,7 +331,7 @@ def combine_weighted(signals: Mapping[str, float], weights: Mapping[str, float])
     return round(total, 4)
 
 
-@dataclass(slots=True)
+@dataclass(**DATACLASS_SLOTS)
 class Plan:
     """A ready-to-run, costed plan for one Jev usage."""
 

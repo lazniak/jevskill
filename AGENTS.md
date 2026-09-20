@@ -16,6 +16,7 @@ Two halves, deliberately separate:
 |---|---|
 | `skills/jev/` | the Skill: `SKILL.md`, `references/`, and stdlib-only `scripts/` |
 | `jevskill/` | the Python package: client, primitives, orchestration, ledger, CLI |
+| `jevskill/cu/` | the computer-use half: `observe` (Windows UIA through `comtypes`, the `cu` extra), `reduce`, `hashing` — everything but `snapshot()` is pure Python and runs on Linux CI |
 
 The Skill must work with **no install** (stdlib only). The package adds the
 measurement half (ledger, `stats`, `outcome`, `plan`). Keep that boundary: if you
@@ -38,6 +39,25 @@ treatment.
 Model names are translated per provider (`typesafe/jev-1.13` ↔ `jev-latest`)
 because passing the wrong one is a 404 or a 422.
 
+**Provider intent is resolved before the key is looked up.** `Config.from_env`
+asks "what did the user state?" (`--provider`, `JEVSKILL_PROVIDER`, config file)
+and only then searches for a key — scoped to that provider when one was stated,
+otherwise **by name with the vendor's names first** (`JEV_API_KEY`,
+`TYPESAFE_API_KEY`, then the OpenRouter names), each in the environment and then
+the registry. Measured 2026-09-20: the reverse order sent an OpenRouter key to the
+vendor (401) and kept using the aggregator after a vendor key had been added. The
+zero-install script carries the same rule (`find_api_key` in `jev_query.py`) and
+`tests/test_key_precedence.py` pins both.
+
+**The vendor rejects unknown top-level fields.** `session_id` (an OpenRouter
+extension) is a `400 api_usage_error` on `api.typesafe.ai`; `PROVIDERS[...]
+["accepts_session_id"]` gates it in the client. A new body field goes through the
+same gate.
+
+**Never print key material.** `doctor` reports `key_name`, `key_source`
+(`env`/`registry`/`file`) and an 8-hex SHA-256 `key_fingerprint` — never a prefix
+of the key, which an earlier version did.
+
 ### Adding a third provider
 
 The model is also served by Cloudflare Workers AI (`typesafe/jev`), Vercel AI
@@ -48,7 +68,9 @@ one honestly:
 1. **Make a real call first**, with a real account. The exact body shape, whether the
    endpoint wraps the response, whether `cost` is reported, what the model field is
    called — all of it is only knowable from a live response. Both existing providers
-   were written against live calls; do not add a third from documentation alone.
+   have now been exercised live (OpenRouter from the first release, the vendor on
+   2026-09-20 — which is how the `session_id` rejection and the key-precedence bug
+   were found); do not add a third from documentation alone.
 2. Add the entry to `PROVIDERS` in `jevskill/config.py` **and** the compiled copy in
    `skills/jev/scripts/jev_query.py` (the Skill must run with nothing installed).
 3. If the endpoint does not report `cost`, set `reports_cost: False` — the client
@@ -65,7 +87,7 @@ one honestly:
 ## Running things
 
 ```bash
-python -m pytest -q                       # 520 tests, offline, must stay green
+python -m pytest -q                       # 1328 tests, offline, must stay green
 python bench/run.py --legacy-reduce       # live API: E1-E7, writes bench/results.json
 python bench/ab.py --runs 3               # live API: the A/B evaluation, writes bench/ab_results.json
 
@@ -76,8 +98,9 @@ python -m jevskill advice                           # KEEP / STOP / ESCALATE per
 python bench/batch_bench.py                         # live API: batch vs per-item
 ```
 
-The benchmark scripts spend real money (a few cents) and need
-`OPENROUTER_API_KEY`. Tests never touch the network.
+The benchmark scripts spend real money (a few cents) and need a key —
+`JEV_API_KEY` (vendor) or `OPENROUTER_API_KEY`; set `JEVSKILL_PROVIDER` to pick the
+route explicitly. Tests never touch the network.
 
 ## Conventions that matter
 
@@ -120,8 +143,10 @@ the global ledger; that silently contaminated a per-project report once.
 - Tests derive from constants rather than hard-coding them, so re-tuning a
   constant does not require editing assertions.
 - `SKILL.md` is a decision guide for an agent, not documentation for a human. Keep
-  it imperative and under 500 lines (it is at the ceiling: move detail into
-  `references/` instead of adding to it, and update the §10 router when you do).
+  it imperative and under 250 lines: every paragraph must change what an agent does
+  next. Measurement prose, ledger reports and provider history belong in
+  `references/` — move detail there instead of adding to it, and add the file to
+  the §7 router when you do (a test fails if a reference is left unrouted).
 - Commit messages: conventional commits, and explain the reasoning and the
   measurement, not just the change.
 

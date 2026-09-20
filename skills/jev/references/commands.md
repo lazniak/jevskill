@@ -53,7 +53,7 @@ accounts for every input item.
 | `--redact-extra REGEX` | — | extra regexes to scrub, labelled `extra_0`, `extra_1`, … |
 | `--review-below FLOAT` | `0.75` | confidence floor; below it an answer needs review |
 | `--review-margin FLOAT` | `0.10` | minimum gap between the top two options for a `choice` |
-| `--provider` | auto | `openrouter` or `typesafe` |
+| `--provider` | auto | `openrouter` or `typesafe`; auto = `JEVSKILL_PROVIDER`, else the first key found by name, vendor names (`JEV_API_KEY`, `TYPESAFE_API_KEY`) first |
 | `--json` | off | machine-readable output |
 
 ### `ask --cache` — do not pay twice for the same question

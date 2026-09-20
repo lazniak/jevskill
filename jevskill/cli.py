@@ -280,7 +280,12 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         "provider": config.provider,
         "provider_options": sorted(PROVIDERS),
         "key_found": config.has_key(),
-        "key_source_hint": config.api_key[:12] + "..." if config.api_key else None,
+        # Which variable answered and where it lived — never the key itself. The
+        # previous field printed the first twelve characters of the secret, which
+        # is a partial credential in every log that captured a doctor run.
+        "key_name": config.extra.get("key_name") or None,
+        "key_source": config.extra.get("key_source") or None,
+        "key_fingerprint": config.key_fingerprint() or None,
         "model": config.model,
         "endpoint": config.decisions_url,
         "context_tokens": config.context_tokens,
@@ -466,6 +471,11 @@ def cmd_ask(args: argparse.Namespace) -> int:
             tokens_in=result.input_tokens,
             tokens_out=int(result.usage.get("output_tokens", 0) or 0),
             cost_usd=result.cost_usd,
+            # `cost_usd` already includes the abandoned hedge leg; these two say
+            # how much of it was estimated rather than billed, so a reader of
+            # the ledger is never guessing which rows blend the two.
+            hedge_cost_usd_est=float(result.usage.get("hedge_cost_usd_est", 0.0) or 0.0),
+            hedge_cost_source=str(result.usage.get("hedge_cost_source", "") or ""),
             questions=len(questions),
             state_tokens=shape.tokens,
             confidence=confidences,
@@ -727,6 +737,8 @@ def cmd_batch(args: argparse.Namespace) -> int:
             tokens_in=result.input_tokens,
             tokens_out=int(result.usage.get("output_tokens", 0) or 0),
             cost_usd=result.cost_usd,
+            hedge_cost_usd_est=float(result.usage.get("hedge_cost_usd_est", 0.0) or 0.0),
+            hedge_cost_source=str(result.usage.get("hedge_cost_source", "") or ""),
             questions=len(mapping),
             state_tokens=baseline,
             confidence=_confidences(result),

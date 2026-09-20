@@ -138,3 +138,95 @@ noise, because `http` is 92–96% of wall clock regardless.
 * **No attempt to outperform an LLM.** The README says so explicitly. Jev wins on
   structure, latency and fan-out; on raw accuracy against a frontier model it does
   not, and pretending otherwise would discredit the parts that are true.
+
+## ADR — `SKILL.md` is an instruction set, not a report (2026-09-20, 0.12.0)
+
+**Context.** At 0.11.0 `SKILL.md` was 499 lines against a documented ceiling of 500,
+and roughly two fifths of it addressed a *human* deciding whether this skill was
+worth keeping: a ledger walkthrough, an `advice` verdict table, a per-stage timing
+breakdown, a provider-comparison table, and an opening that argued the skill's own
+credibility ("Measured, not estimated"). An Agent Skill's body is loaded in full the
+moment the skill activates, so every one of those lines was spent from the same
+context window the actual instructions need — and none of them changed what an agent
+would do next. The critique is written up in
+[research-2026-09-20-jev-cu.md](research-2026-09-20-jev-cu.md) §2.3.
+
+**Decision.** The body is capped at **250 lines** and every paragraph has to earn
+its place by changing an agent's next action. Seven sections, in the order an agent
+needs them: *is this the right tool* → *the three primitives* → *how to call it* →
+*the four rules* → *how to read the answer* → *key and provider* → *constraints and
+the router*. There is now **one** default call path (the zero-install script, with
+`$SKILL_DIR` explained) instead of two competing ones, because choosing between
+them cost a turn. Measurement prose moved verbatim to
+[`references/measure.md`](../skills/jev/references/measure.md); provider tables were
+already in `api.md`.
+
+**Consequences.**
+- Figures are almost entirely gone from the body. The two fan-out ratios stay
+  (`12.4×`, `4.03×`) because `TestPublishedFiguresAreMeasured` requires them as the
+  standing proof that the 9.4× defect cannot return, and one cost figure stays
+  because "what does a decision cost?" changes whether an agent fans out or loops.
+  Every duration now lives in `benchmarks.md`, which publishes its method alongside.
+- The ceiling is enforced by `TestSkillIsADecisionGuide`, not by a sentence. The
+  previous ceiling *was* only a sentence, and the file sat one line under it.
+- A reference that no router row names now fails a test, so `references/` cannot
+  accumulate files nobody is routed to.
+- `allowed-tools` and the body are checked against each other: the field used to
+  say `Bash(python:*)` while every example was `jevskill …`.
+- The cost is indirection: an agent that wants the ledger must open a second file.
+  That is the correct trade for a document loaded on every activation.
+
+## ADR — `hot` is a client flag, not a `Config` mode (2026-09-20, 0.12.0)
+
+**Decision.** `JevClient(hot=True)` retunes the read timeout, connect timeout and
+retry count for a per-step agent loop. There is no `Config.hot()`.
+
+**Why.** A `Config` answers *where do I send this and with which key*. It is
+resolved once from the environment, shared by the CLI and by every client in a
+process, and may be handed around. Hot is not a fact about the endpoint; it is the
+call pattern of **one** client. Putting it on the constructor keeps a loop from
+retuning a config that a burst-mode caller is also using, and it makes the
+default path byte-identical to what it was: no extra thread, no extra field on the
+result, unless the caller asked. The knobs still live on `Config` (`hedge`,
+`hedge_after_ms`, `warm_mode`) so `doctor` can read them back and a caller can
+state them explicitly; hot only supplies different *defaults*.
+
+## ADR — hedging ships off, because it lost (2026-09-20, 0.12.0)
+
+**Decision.** A duplicate request after `hedge_after_ms` is implemented, tested,
+and **disabled by default** on every path including the hot one.
+
+**Why.** The plan expected a hedge to cover the tail once retries were zero. It was
+measured before being believed (`bench/cu_results.json`, 160 hedged calls on both
+providers plus a 320 ms probe): 66 duplicates fired and **none won**, and the calls
+that fired one were slower. Both legs share one multiplexed HTTP/2 connection to one
+provider, so the twin cannot escape a slow connection and makes the server do the
+work twice; it also starts late, so it can only beat a primary that is *stuck*, and
+the tail at large states is a property of the request, not noise. The code stays
+because the stuck case is real and unrepresented in the sample, and because a hedge
+over a second connection or a second provider is an experiment nobody has run. The
+abandoned leg is always costed — recording it as free would poison the ledger this
+project uses to claim savings.
+
+## ADR — perception reads the UIA tree through one `CacheRequest` (2026-09-20, 0.12.0)
+
+**Decision.** `jevskill.cu.observe` uses `comtypes` and a single
+`BuildUpdatedCache(TreeScope_Subtree)` per window; `uiautomation` and `pywinauto`
+are used only by the comparison bench.
+
+**Why.** Measured, three warm runs per app (`bench/cu_observe_results.json`): the
+two libraries read every property live — one cross-process call per node per
+property — and took 138–223 ms on a 34-node Notepad; one `CacheRequest` fetching
+sixteen properties for the whole window took 73–104 ms, and 42–52 ms on a 53-node
+Calculator. The cost that remains is the provider's and tracks its node count
+(~1 ms per node; a Notepad with 18 restored tabs cost 368–410 ms), and no
+client-side trick moved it. A lazy per-container descent tied on an idle machine
+and lost under load, so `strategy="subtree"` is the default and `"lazy"` is kept
+only for windows too large to fetch at once.
+
+**The split this enables.** Visible, enabled, on-screen, duplicated, *unchanged* —
+these are facts, and code settles facts faster and more reliably than a model: the
+`stuck` question the model was asked instead returned 0.42–0.60 on screens that had
+plainly changed. Everything a step can know without judgement is computed in
+`reduce`/`hashing`; the model is asked only which of the remaining controls the
+goal wants.

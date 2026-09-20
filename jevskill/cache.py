@@ -25,6 +25,8 @@ import hashlib
 import json
 import os
 import time
+
+from .config import DATACLASS_SLOTS
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -38,7 +40,7 @@ DEFAULT_TTL_S = 900.0
 SCHEMA = 1
 
 
-@dataclass(slots=True)
+@dataclass(**DATACLASS_SLOTS)
 class CacheEntry:
     """One stored response, with what it takes to report the hit honestly."""
 

@@ -46,7 +46,8 @@ Check **only for the presence** of a key. Never print its value.
 ```bash
 # any one of these is enough
 test -n "$OPENROUTER_API_KEY" && echo "openrouter key present"
-test -n "$TYPESAFE_API_KEY"   && echo "typesafe key present"
+test -n "$JEV_API_KEY"        && echo "vendor key present (JEV_API_KEY)"
+test -n "$TYPESAFE_API_KEY"   && echo "vendor key present (TYPESAFE_API_KEY)"
 ```
 
 If neither is set, tell the user and ask which they prefer:

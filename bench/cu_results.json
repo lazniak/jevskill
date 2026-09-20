@@ -1,0 +1,1359 @@
+{
+  "about": "Per-step decision benchmark for a computer-use loop. Written by bench/cu_bench.py; every number in skills/jev/references/hotloop.md comes from this file.",
+  "generated": "2026-09-20T22:12:18",
+  "host": {
+    "python": "3.13.2",
+    "platform": "Windows-11-10.0.26100-SP0",
+    "httpx": true,
+    "jevskill": "0.11.0"
+  },
+  "micro": {
+    "state": {
+      "elements": 60,
+      "chars": 6727,
+      "estimated_tokens": 4004,
+      "api_tokens_in_for_same_state_plus_questions": 6041
+    },
+    "redact_state_ms": {
+      "reps": 20,
+      "median": 0.642,
+      "min": 0.631,
+      "max": 1.271,
+      "median_with_emails": 0.699,
+      "cache_added": false,
+      "cache_threshold_ms": 2.0
+    },
+    "ledger_write_ms": {
+      "reps": 1000,
+      "buffered_median": 0.016,
+      "buffered_p95": 0.0182,
+      "buffered_max": 0.0878,
+      "unbuffered_median": 0.6155,
+      "unbuffered_p95": 0.9758,
+      "target_ms": 0.5
+    },
+    "host": {
+      "python": "3.13.2",
+      "platform": "Windows-11-10.0.26100-SP0",
+      "httpx": true,
+      "jevskill": "0.11.0"
+    }
+  },
+  "warm": [
+    {
+      "provider": "openrouter",
+      "mode": "decision",
+      "repeats": 5,
+      "n": 12,
+      "warm_ms_median": 357.9,
+      "warm_tokens_in_median": 310,
+      "warm_cost_usd_median": 1.302e-05,
+      "warm_cost_usd_total": 6.51e-05,
+      "first_decision_ms_median": 303.9,
+      "first_decision_ms": [
+        380.4,
+        754.2,
+        289.5,
+        303.9,
+        289.0
+      ],
+      "second_decision_ms_median": 298.9,
+      "warm_plus_first_ms": 661.8
+    },
+    {
+      "provider": "openrouter",
+      "mode": "head",
+      "repeats": 5,
+      "n": 12,
+      "warm_ms_median": 136.4,
+      "warm_tokens_in_median": 0,
+      "warm_cost_usd_median": 0.0,
+      "warm_cost_usd_total": 0,
+      "first_decision_ms_median": 313.7,
+      "first_decision_ms": [
+        313.0,
+        315.9,
+        313.7,
+        412.7,
+        274.4
+      ],
+      "second_decision_ms_median": 315.0,
+      "warm_plus_first_ms": 450.0
+    },
+    {
+      "provider": "openrouter",
+      "mode": "none",
+      "repeats": 5,
+      "n": 12,
+      "warm_ms_median": 0.0,
+      "warm_tokens_in_median": 0,
+      "warm_cost_usd_median": 0.0,
+      "warm_cost_usd_total": 0,
+      "first_decision_ms_median": 341.7,
+      "first_decision_ms": [
+        523.2,
+        341.7,
+        339.0,
+        361.9,
+        297.1
+      ],
+      "second_decision_ms_median": 301.0,
+      "warm_plus_first_ms": 341.7
+    },
+    {
+      "provider": "typesafe",
+      "mode": "decision",
+      "repeats": 5,
+      "n": 12,
+      "warm_ms_median": 693.1,
+      "warm_tokens_in_median": 310,
+      "warm_cost_usd_median": 1.302e-05,
+      "warm_cost_usd_total": 6.51e-05,
+      "first_decision_ms_median": 266.4,
+      "first_decision_ms": [
+        260.9,
+        266.4,
+        263.6,
+        267.8,
+        316.5
+      ],
+      "second_decision_ms_median": 309.8,
+      "warm_plus_first_ms": 959.6
+    },
+    {
+      "provider": "typesafe",
+      "mode": "head",
+      "repeats": 5,
+      "n": 12,
+      "warm_ms_median": 583.3,
+      "warm_tokens_in_median": 0,
+      "warm_cost_usd_median": 0.0,
+      "warm_cost_usd_total": 0,
+      "first_decision_ms_median": 292.5,
+      "first_decision_ms": [
+        295.9,
+        330.1,
+        292.5,
+        263.5,
+        279.1
+      ],
+      "second_decision_ms_median": 284.5,
+      "warm_plus_first_ms": 875.8
+    },
+    {
+      "provider": "typesafe",
+      "mode": "none",
+      "repeats": 5,
+      "n": 12,
+      "warm_ms_median": 0.0,
+      "warm_tokens_in_median": 0,
+      "warm_cost_usd_median": 0.0,
+      "warm_cost_usd_total": 0,
+      "first_decision_ms_median": 692.9,
+      "first_decision_ms": [
+        714.5,
+        692.9,
+        650.0,
+        732.8,
+        677.8
+      ],
+      "second_decision_ms_median": 304.3,
+      "warm_plus_first_ms": 692.9
+    }
+  ],
+  "runs": [
+    {
+      "provider": "openrouter",
+      "model": "typesafe/jev-1.13-20260917",
+      "n": 12,
+      "k": 10,
+      "ok": 10,
+      "errors": [],
+      "hot": true,
+      "hedge": false,
+      "hedge_after_ms": null,
+      "timeout_read_s": 1.5,
+      "tokens_in": 1723,
+      "cost_per_call_usd": 7.2366e-05,
+      "cost_total_usd": 0.00072366,
+      "hedge_cost_est_usd": 0.0,
+      "http_ms": {
+        "p50": 298.2,
+        "p95": 484.7,
+        "min": 257.0,
+        "max": 484.7
+      },
+      "total_ms": {
+        "p50": 298.3,
+        "p95": 484.8
+      },
+      "hedged_calls": 0,
+      "winners": {},
+      "target_top3": [
+        [
+          "e11",
+          0.99
+        ],
+        [
+          "none",
+          0.01
+        ],
+        [
+          "e5",
+          0.0
+        ]
+      ],
+      "target_confidence_p50": 0.985,
+      "target_choices": {
+        "e11": 10
+      },
+      "action_distribution": {
+        "click": 10
+      },
+      "goal_reached_p50": 0.04,
+      "stuck_p50": 0.455
+    },
+    {
+      "provider": "openrouter",
+      "model": "typesafe/jev-1.13-20260917",
+      "n": 30,
+      "k": 10,
+      "ok": 10,
+      "errors": [],
+      "hot": true,
+      "hedge": false,
+      "hedge_after_ms": null,
+      "timeout_read_s": 1.5,
+      "tokens_in": 3308,
+      "cost_per_call_usd": 0.000138936,
+      "cost_total_usd": 0.00138936,
+      "hedge_cost_est_usd": 0.0,
+      "http_ms": {
+        "p50": 307.1,
+        "p95": 437.0,
+        "min": 285.5,
+        "max": 437.0
+      },
+      "total_ms": {
+        "p50": 307.2,
+        "p95": 437.0
+      },
+      "hedged_calls": 0,
+      "winners": {},
+      "target_top3": [
+        [
+          "e11",
+          0.99
+        ],
+        [
+          "none",
+          0.01
+        ],
+        [
+          "e9",
+          0.0
+        ]
+      ],
+      "target_confidence_p50": 0.98,
+      "target_choices": {
+        "e11": 10
+      },
+      "action_distribution": {
+        "click": 10
+      },
+      "goal_reached_p50": 0.04,
+      "stuck_p50": 0.51
+    },
+    {
+      "provider": "openrouter",
+      "model": "typesafe/jev-1.13-20260917",
+      "n": 60,
+      "k": 10,
+      "ok": 10,
+      "errors": [],
+      "hot": true,
+      "hedge": false,
+      "hedge_after_ms": null,
+      "timeout_read_s": 1.5,
+      "tokens_in": 6041,
+      "cost_per_call_usd": 0.000253722,
+      "cost_total_usd": 0.00253722,
+      "hedge_cost_est_usd": 0.0,
+      "http_ms": {
+        "p50": 350.5,
+        "p95": 459.2,
+        "min": 316.3,
+        "max": 459.2
+      },
+      "total_ms": {
+        "p50": 350.7,
+        "p95": 459.3
+      },
+      "hedged_calls": 0,
+      "winners": {},
+      "target_top3": [
+        [
+          "e11",
+          0.99
+        ],
+        [
+          "none",
+          0.01
+        ],
+        [
+          "e22",
+          0.0
+        ]
+      ],
+      "target_confidence_p50": 0.98,
+      "target_choices": {
+        "e11": 10
+      },
+      "action_distribution": {
+        "click": 10
+      },
+      "goal_reached_p50": 0.04,
+      "stuck_p50": 0.56
+    },
+    {
+      "provider": "openrouter",
+      "model": "typesafe/jev-1.13-20260917",
+      "n": 120,
+      "k": 10,
+      "ok": 10,
+      "errors": [],
+      "hot": true,
+      "hedge": false,
+      "hedge_after_ms": null,
+      "timeout_read_s": 1.5,
+      "tokens_in": 11588,
+      "cost_per_call_usd": 0.000486696,
+      "cost_total_usd": 0.00486696,
+      "hedge_cost_est_usd": 0.0,
+      "http_ms": {
+        "p50": 368.8,
+        "p95": 490.5,
+        "min": 348.7,
+        "max": 490.5
+      },
+      "total_ms": {
+        "p50": 369.0,
+        "p95": 490.7
+      },
+      "hedged_calls": 0,
+      "winners": {},
+      "target_top3": [
+        [
+          "e11",
+          0.99
+        ],
+        [
+          "none",
+          0.01
+        ],
+        [
+          "e109",
+          0.0
+        ]
+      ],
+      "target_confidence_p50": 0.98,
+      "target_choices": {
+        "e11": 10
+      },
+      "action_distribution": {
+        "click": 10
+      },
+      "goal_reached_p50": 0.04,
+      "stuck_p50": 0.575
+    },
+    {
+      "provider": "openrouter",
+      "model": "typesafe/jev-1.13-20260917",
+      "n": 240,
+      "k": 10,
+      "ok": 10,
+      "errors": [],
+      "hot": true,
+      "hedge": false,
+      "hedge_after_ms": null,
+      "timeout_read_s": 1.5,
+      "tokens_in": 23081,
+      "cost_per_call_usd": 0.000969402,
+      "cost_total_usd": 0.00969402,
+      "hedge_cost_est_usd": 0.0,
+      "http_ms": {
+        "p50": 502.9,
+        "p95": 537.6,
+        "min": 463.1,
+        "max": 537.6
+      },
+      "total_ms": {
+        "p50": 503.1,
+        "p95": 537.9
+      },
+      "hedged_calls": 0,
+      "winners": {},
+      "target_top3": [
+        [
+          "e11",
+          0.98
+        ],
+        [
+          "e14",
+          0.01
+        ],
+        [
+          "none",
+          0.01
+        ]
+      ],
+      "target_confidence_p50": 0.97,
+      "target_choices": {
+        "e11": 10
+      },
+      "action_distribution": {
+        "click": 10
+      },
+      "goal_reached_p50": 0.04,
+      "stuck_p50": 0.595
+    },
+    {
+      "provider": "openrouter",
+      "model": "typesafe/jev-1.13-20260917",
+      "n": 12,
+      "k": 10,
+      "ok": 10,
+      "errors": [],
+      "hot": true,
+      "hedge": true,
+      "hedge_after_ms": 400.0,
+      "timeout_read_s": 1.5,
+      "tokens_in": 1723,
+      "cost_per_call_usd": 7.2366e-05,
+      "cost_total_usd": 0.00072366,
+      "hedge_cost_est_usd": 7.237e-05,
+      "http_ms": {
+        "p50": 336.8,
+        "p95": 407.9,
+        "min": 308.5,
+        "max": 407.9
+      },
+      "total_ms": {
+        "p50": 336.9,
+        "p95": 408.0
+      },
+      "hedged_calls": 1,
+      "winners": {
+        "primary": 1
+      },
+      "target_top3": [
+        [
+          "e11",
+          0.99
+        ],
+        [
+          "none",
+          0.01
+        ],
+        [
+          "e6",
+          0.0
+        ]
+      ],
+      "target_confidence_p50": 0.99,
+      "target_choices": {
+        "e11": 10
+      },
+      "action_distribution": {
+        "click": 10
+      },
+      "goal_reached_p50": 0.04,
+      "stuck_p50": 0.455
+    },
+    {
+      "provider": "openrouter",
+      "model": "typesafe/jev-1.13-20260917",
+      "n": 30,
+      "k": 10,
+      "ok": 10,
+      "errors": [],
+      "hot": true,
+      "hedge": true,
+      "hedge_after_ms": 400.0,
+      "timeout_read_s": 1.5,
+      "tokens_in": 3308,
+      "cost_per_call_usd": 0.000138936,
+      "cost_total_usd": 0.00138936,
+      "hedge_cost_est_usd": 0.0,
+      "http_ms": {
+        "p50": 310.2,
+        "p95": 389.2,
+        "min": 279.7,
+        "max": 389.2
+      },
+      "total_ms": {
+        "p50": 310.3,
+        "p95": 389.3
+      },
+      "hedged_calls": 0,
+      "winners": {},
+      "target_top3": [
+        [
+          "e11",
+          0.99
+        ],
+        [
+          "none",
+          0.01
+        ],
+        [
+          "e3",
+          0.0
+        ]
+      ],
+      "target_confidence_p50": 0.98,
+      "target_choices": {
+        "e11": 10
+      },
+      "action_distribution": {
+        "click": 10
+      },
+      "goal_reached_p50": 0.04,
+      "stuck_p50": 0.525
+    },
+    {
+      "provider": "openrouter",
+      "model": "typesafe/jev-1.13-20260917",
+      "n": 60,
+      "k": 10,
+      "ok": 10,
+      "errors": [],
+      "hot": true,
+      "hedge": true,
+      "hedge_after_ms": 400.0,
+      "timeout_read_s": 1.5,
+      "tokens_in": 6041,
+      "cost_per_call_usd": 0.000253722,
+      "cost_total_usd": 0.00253722,
+      "hedge_cost_est_usd": 0.00025372,
+      "http_ms": {
+        "p50": 344.7,
+        "p95": 799.9,
+        "min": 294.2,
+        "max": 799.9
+      },
+      "total_ms": {
+        "p50": 344.8,
+        "p95": 800.0
+      },
+      "hedged_calls": 1,
+      "winners": {
+        "primary": 1
+      },
+      "target_top3": [
+        [
+          "e11",
+          0.99
+        ],
+        [
+          "none",
+          0.01
+        ],
+        [
+          "e0",
+          0.0
+        ]
+      ],
+      "target_confidence_p50": 0.98,
+      "target_choices": {
+        "e11": 10
+      },
+      "action_distribution": {
+        "click": 10
+      },
+      "goal_reached_p50": 0.04,
+      "stuck_p50": 0.595
+    },
+    {
+      "provider": "openrouter",
+      "model": "typesafe/jev-1.13-20260917",
+      "n": 120,
+      "k": 10,
+      "ok": 10,
+      "errors": [],
+      "hot": true,
+      "hedge": true,
+      "hedge_after_ms": 400.0,
+      "timeout_read_s": 1.5,
+      "tokens_in": 11588,
+      "cost_per_call_usd": 0.000486696,
+      "cost_total_usd": 0.00486696,
+      "hedge_cost_est_usd": 0.00146009,
+      "http_ms": {
+        "p50": 385.3,
+        "p95": 789.2,
+        "min": 338.3,
+        "max": 789.2
+      },
+      "total_ms": {
+        "p50": 385.6,
+        "p95": 789.5
+      },
+      "hedged_calls": 3,
+      "winners": {
+        "primary": 3
+      },
+      "target_top3": [
+        [
+          "e11",
+          0.99
+        ],
+        [
+          "none",
+          0.01
+        ],
+        [
+          "e1",
+          0.0
+        ]
+      ],
+      "target_confidence_p50": 0.98,
+      "target_choices": {
+        "e11": 10
+      },
+      "action_distribution": {
+        "click": 10
+      },
+      "goal_reached_p50": 0.04,
+      "stuck_p50": 0.585
+    },
+    {
+      "provider": "openrouter",
+      "model": "typesafe/jev-1.13-20260917",
+      "n": 240,
+      "k": 10,
+      "ok": 10,
+      "errors": [],
+      "hot": true,
+      "hedge": true,
+      "hedge_after_ms": 400.0,
+      "timeout_read_s": 1.5,
+      "tokens_in": 23081,
+      "cost_per_call_usd": 0.000969402,
+      "cost_total_usd": 0.00969402,
+      "hedge_cost_est_usd": 0.00969402,
+      "http_ms": {
+        "p50": 875.5,
+        "p95": 967.1,
+        "min": 481.5,
+        "max": 967.1
+      },
+      "total_ms": {
+        "p50": 875.8,
+        "p95": 967.4
+      },
+      "hedged_calls": 10,
+      "winners": {
+        "primary": 10
+      },
+      "target_top3": [
+        [
+          "e11",
+          0.98
+        ],
+        [
+          "none",
+          0.01
+        ],
+        [
+          "e14",
+          0.01
+        ]
+      ],
+      "target_confidence_p50": 0.97,
+      "target_choices": {
+        "e11": 10
+      },
+      "action_distribution": {
+        "click": 10
+      },
+      "goal_reached_p50": 0.04,
+      "stuck_p50": 0.605
+    },
+    {
+      "provider": "typesafe",
+      "model": "jev-1.13.0",
+      "n": 12,
+      "k": 10,
+      "ok": 10,
+      "errors": [],
+      "hot": true,
+      "hedge": false,
+      "hedge_after_ms": null,
+      "timeout_read_s": 1.5,
+      "tokens_in": 1723,
+      "cost_per_call_usd": 7.2366e-05,
+      "cost_total_usd": 0.00072366,
+      "hedge_cost_est_usd": 0.0,
+      "http_ms": {
+        "p50": 304.2,
+        "p95": 344.2,
+        "min": 273.0,
+        "max": 344.2
+      },
+      "total_ms": {
+        "p50": 304.2,
+        "p95": 344.3
+      },
+      "hedged_calls": 0,
+      "winners": {},
+      "target_top3": [
+        [
+          "e11",
+          0.99
+        ],
+        [
+          "none",
+          0.01
+        ],
+        [
+          "e4",
+          0.0
+        ]
+      ],
+      "target_confidence_p50": 0.99,
+      "target_choices": {
+        "e11": 10
+      },
+      "action_distribution": {
+        "click": 10
+      },
+      "goal_reached_p50": 0.04,
+      "stuck_p50": 0.47
+    },
+    {
+      "provider": "typesafe",
+      "model": "jev-1.13.0",
+      "n": 30,
+      "k": 10,
+      "ok": 10,
+      "errors": [],
+      "hot": true,
+      "hedge": false,
+      "hedge_after_ms": null,
+      "timeout_read_s": 1.5,
+      "tokens_in": 3308,
+      "cost_per_call_usd": 0.000138936,
+      "cost_total_usd": 0.00138936,
+      "hedge_cost_est_usd": 0.0,
+      "http_ms": {
+        "p50": 284.3,
+        "p95": 324.0,
+        "min": 265.5,
+        "max": 324.0
+      },
+      "total_ms": {
+        "p50": 284.4,
+        "p95": 324.1
+      },
+      "hedged_calls": 0,
+      "winners": {},
+      "target_top3": [
+        [
+          "e11",
+          0.99
+        ],
+        [
+          "none",
+          0.01
+        ],
+        [
+          "e26",
+          0.0
+        ]
+      ],
+      "target_confidence_p50": 0.98,
+      "target_choices": {
+        "e11": 10
+      },
+      "action_distribution": {
+        "click": 10
+      },
+      "goal_reached_p50": 0.04,
+      "stuck_p50": 0.5
+    },
+    {
+      "provider": "typesafe",
+      "model": "jev-1.13.0",
+      "n": 60,
+      "k": 10,
+      "ok": 10,
+      "errors": [],
+      "hot": true,
+      "hedge": false,
+      "hedge_after_ms": null,
+      "timeout_read_s": 1.5,
+      "tokens_in": 6041,
+      "cost_per_call_usd": 0.000253722,
+      "cost_total_usd": 0.00253722,
+      "hedge_cost_est_usd": 0.0,
+      "http_ms": {
+        "p50": 292.3,
+        "p95": 401.7,
+        "min": 274.4,
+        "max": 401.7
+      },
+      "total_ms": {
+        "p50": 292.4,
+        "p95": 401.7
+      },
+      "hedged_calls": 0,
+      "winners": {},
+      "target_top3": [
+        [
+          "e11",
+          0.99
+        ],
+        [
+          "none",
+          0.01
+        ],
+        [
+          "e54",
+          0.0
+        ]
+      ],
+      "target_confidence_p50": 0.98,
+      "target_choices": {
+        "e11": 10
+      },
+      "action_distribution": {
+        "click": 10
+      },
+      "goal_reached_p50": 0.04,
+      "stuck_p50": 0.56
+    },
+    {
+      "provider": "typesafe",
+      "model": "jev-1.13.0",
+      "n": 120,
+      "k": 10,
+      "ok": 10,
+      "errors": [],
+      "hot": true,
+      "hedge": false,
+      "hedge_after_ms": null,
+      "timeout_read_s": 1.5,
+      "tokens_in": 11588,
+      "cost_per_call_usd": 0.000486696,
+      "cost_total_usd": 0.00486696,
+      "hedge_cost_est_usd": 0.0,
+      "http_ms": {
+        "p50": 325.4,
+        "p95": 402.0,
+        "min": 294.1,
+        "max": 402.0
+      },
+      "total_ms": {
+        "p50": 325.5,
+        "p95": 402.2
+      },
+      "hedged_calls": 0,
+      "winners": {},
+      "target_top3": [
+        [
+          "e11",
+          0.99
+        ],
+        [
+          "none",
+          0.01
+        ],
+        [
+          "e78",
+          0.0
+        ]
+      ],
+      "target_confidence_p50": 0.98,
+      "target_choices": {
+        "e11": 10
+      },
+      "action_distribution": {
+        "click": 10
+      },
+      "goal_reached_p50": 0.04,
+      "stuck_p50": 0.585
+    },
+    {
+      "provider": "typesafe",
+      "model": "jev-1.13.0",
+      "n": 240,
+      "k": 10,
+      "ok": 10,
+      "errors": [],
+      "hot": true,
+      "hedge": false,
+      "hedge_after_ms": null,
+      "timeout_read_s": 1.5,
+      "tokens_in": 23081,
+      "cost_per_call_usd": 0.000969402,
+      "cost_total_usd": 0.00969402,
+      "hedge_cost_est_usd": 0.0,
+      "http_ms": {
+        "p50": 429.2,
+        "p95": 462.3,
+        "min": 392.3,
+        "max": 462.3
+      },
+      "total_ms": {
+        "p50": 429.4,
+        "p95": 462.5
+      },
+      "hedged_calls": 0,
+      "winners": {},
+      "target_top3": [
+        [
+          "e11",
+          0.98
+        ],
+        [
+          "e14",
+          0.01
+        ],
+        [
+          "none",
+          0.01
+        ]
+      ],
+      "target_confidence_p50": 0.97,
+      "target_choices": {
+        "e11": 10
+      },
+      "action_distribution": {
+        "click": 10
+      },
+      "goal_reached_p50": 0.04,
+      "stuck_p50": 0.59
+    },
+    {
+      "provider": "typesafe",
+      "model": "jev-1.13.0",
+      "n": 12,
+      "k": 10,
+      "ok": 10,
+      "errors": [],
+      "hot": true,
+      "hedge": true,
+      "hedge_after_ms": 400.0,
+      "timeout_read_s": 1.5,
+      "tokens_in": 1723,
+      "cost_per_call_usd": 7.2366e-05,
+      "cost_total_usd": 0.00072366,
+      "hedge_cost_est_usd": 7.237e-05,
+      "http_ms": {
+        "p50": 295.0,
+        "p95": 423.5,
+        "min": 243.0,
+        "max": 423.5
+      },
+      "total_ms": {
+        "p50": 295.1,
+        "p95": 423.6
+      },
+      "hedged_calls": 1,
+      "winners": {
+        "primary": 1
+      },
+      "target_top3": [
+        [
+          "e11",
+          0.99
+        ],
+        [
+          "none",
+          0.01
+        ],
+        [
+          "e0",
+          0.0
+        ]
+      ],
+      "target_confidence_p50": 0.98,
+      "target_choices": {
+        "e11": 10
+      },
+      "action_distribution": {
+        "click": 10
+      },
+      "goal_reached_p50": 0.04,
+      "stuck_p50": 0.475
+    },
+    {
+      "provider": "typesafe",
+      "model": "jev-1.13.0",
+      "n": 30,
+      "k": 10,
+      "ok": 10,
+      "errors": [],
+      "hot": true,
+      "hedge": true,
+      "hedge_after_ms": 400.0,
+      "timeout_read_s": 1.5,
+      "tokens_in": 3308,
+      "cost_per_call_usd": 0.000138936,
+      "cost_total_usd": 0.00138936,
+      "hedge_cost_est_usd": 0.0,
+      "http_ms": {
+        "p50": 297.9,
+        "p95": 390.8,
+        "min": 264.4,
+        "max": 390.8
+      },
+      "total_ms": {
+        "p50": 298.0,
+        "p95": 390.8
+      },
+      "hedged_calls": 0,
+      "winners": {},
+      "target_top3": [
+        [
+          "e11",
+          0.99
+        ],
+        [
+          "none",
+          0.01
+        ],
+        [
+          "e3",
+          0.0
+        ]
+      ],
+      "target_confidence_p50": 0.98,
+      "target_choices": {
+        "e11": 10
+      },
+      "action_distribution": {
+        "click": 10
+      },
+      "goal_reached_p50": 0.04,
+      "stuck_p50": 0.525
+    },
+    {
+      "provider": "typesafe",
+      "model": "jev-1.13.0",
+      "n": 60,
+      "k": 10,
+      "ok": 10,
+      "errors": [],
+      "hot": true,
+      "hedge": true,
+      "hedge_after_ms": 400.0,
+      "timeout_read_s": 1.5,
+      "tokens_in": 6041,
+      "cost_per_call_usd": 0.000253722,
+      "cost_total_usd": 0.00253722,
+      "hedge_cost_est_usd": 0.0,
+      "http_ms": {
+        "p50": 308.5,
+        "p95": 338.0,
+        "min": 280.9,
+        "max": 338.0
+      },
+      "total_ms": {
+        "p50": 308.6,
+        "p95": 338.1
+      },
+      "hedged_calls": 0,
+      "winners": {},
+      "target_top3": [
+        [
+          "e11",
+          0.99
+        ],
+        [
+          "none",
+          0.01
+        ],
+        [
+          "e56",
+          0.0
+        ]
+      ],
+      "target_confidence_p50": 0.98,
+      "target_choices": {
+        "e11": 10
+      },
+      "action_distribution": {
+        "click": 10
+      },
+      "goal_reached_p50": 0.04,
+      "stuck_p50": 0.58
+    },
+    {
+      "provider": "typesafe",
+      "model": "jev-1.13.0",
+      "n": 120,
+      "k": 10,
+      "ok": 10,
+      "errors": [],
+      "hot": true,
+      "hedge": true,
+      "hedge_after_ms": 400.0,
+      "timeout_read_s": 1.5,
+      "tokens_in": 11588,
+      "cost_per_call_usd": 0.000486696,
+      "cost_total_usd": 0.00486696,
+      "hedge_cost_est_usd": 0.0,
+      "http_ms": {
+        "p50": 342.9,
+        "p95": 386.6,
+        "min": 305.0,
+        "max": 386.6
+      },
+      "total_ms": {
+        "p50": 343.1,
+        "p95": 386.8
+      },
+      "hedged_calls": 0,
+      "winners": {},
+      "target_top3": [
+        [
+          "e11",
+          0.98
+        ],
+        [
+          "none",
+          0.01
+        ],
+        [
+          "e10",
+          0.01
+        ]
+      ],
+      "target_confidence_p50": 0.98,
+      "target_choices": {
+        "e11": 10
+      },
+      "action_distribution": {
+        "click": 10
+      },
+      "goal_reached_p50": 0.04,
+      "stuck_p50": 0.57
+    },
+    {
+      "provider": "typesafe",
+      "model": "jev-1.13.0",
+      "n": 240,
+      "k": 10,
+      "ok": 10,
+      "errors": [],
+      "hot": true,
+      "hedge": true,
+      "hedge_after_ms": 400.0,
+      "timeout_read_s": 1.5,
+      "tokens_in": 23081,
+      "cost_per_call_usd": 0.000969402,
+      "cost_total_usd": 0.00969402,
+      "hedge_cost_est_usd": 0.00678581,
+      "http_ms": {
+        "p50": 435.4,
+        "p95": 612.1,
+        "min": 380.1,
+        "max": 612.1
+      },
+      "total_ms": {
+        "p50": 435.7,
+        "p95": 612.4
+      },
+      "hedged_calls": 7,
+      "winners": {
+        "primary": 7
+      },
+      "target_top3": [
+        [
+          "e11",
+          0.98
+        ],
+        [
+          "none",
+          0.02
+        ],
+        [
+          "e185",
+          0.0
+        ]
+      ],
+      "target_confidence_p50": 0.97,
+      "target_choices": {
+        "e11": 10
+      },
+      "action_distribution": {
+        "click": 10
+      },
+      "goal_reached_p50": 0.04,
+      "stuck_p50": 0.605
+    }
+  ],
+  "hedge_probes": [
+    {
+      "provider": "openrouter",
+      "model": "typesafe/jev-1.13-20260917",
+      "n": 12,
+      "k": 20,
+      "ok": 20,
+      "errors": [],
+      "hot": true,
+      "hedge": true,
+      "hedge_after_ms": 320.0,
+      "timeout_read_s": 1.5,
+      "tokens_in": 1723,
+      "cost_per_call_usd": 7.2366e-05,
+      "cost_total_usd": 0.00144732,
+      "hedge_cost_est_usd": 0.00115786,
+      "http_ms": {
+        "p50": 641.6,
+        "p95": 755.7,
+        "min": 279.5,
+        "max": 769.5
+      },
+      "total_ms": {
+        "p50": 641.7,
+        "p95": 755.8
+      },
+      "hedged_calls": 16,
+      "winners": {
+        "primary": 16
+      },
+      "target_top3": [
+        [
+          "e11",
+          0.99
+        ],
+        [
+          "none",
+          0.01
+        ],
+        [
+          "e6",
+          0.0
+        ]
+      ],
+      "target_confidence_p50": 0.98,
+      "target_choices": {
+        "e11": 20
+      },
+      "action_distribution": {
+        "click": 20
+      },
+      "goal_reached_p50": 0.04,
+      "stuck_p50": 0.45
+    },
+    {
+      "provider": "openrouter",
+      "model": "typesafe/jev-1.13-20260917",
+      "n": 30,
+      "k": 20,
+      "ok": 20,
+      "errors": [],
+      "hot": true,
+      "hedge": true,
+      "hedge_after_ms": 320.0,
+      "timeout_read_s": 1.5,
+      "tokens_in": 3308,
+      "cost_per_call_usd": 0.000138936,
+      "cost_total_usd": 0.00277872,
+      "hedge_cost_est_usd": 0.00166723,
+      "http_ms": {
+        "p50": 490.2,
+        "p95": 686.5,
+        "min": 274.3,
+        "max": 737.4
+      },
+      "total_ms": {
+        "p50": 490.3,
+        "p95": 686.6
+      },
+      "hedged_calls": 12,
+      "winners": {
+        "primary": 12
+      },
+      "target_top3": [
+        [
+          "e11",
+          0.99
+        ],
+        [
+          "none",
+          0.01
+        ],
+        [
+          "e7",
+          0.0
+        ]
+      ],
+      "target_confidence_p50": 0.98,
+      "target_choices": {
+        "e11": 20
+      },
+      "action_distribution": {
+        "click": 20
+      },
+      "goal_reached_p50": 0.04,
+      "stuck_p50": 0.52
+    },
+    {
+      "provider": "openrouter",
+      "model": "typesafe/jev-1.13-20260917",
+      "n": 60,
+      "k": 20,
+      "ok": 20,
+      "errors": [],
+      "hot": true,
+      "hedge": true,
+      "hedge_after_ms": 320.0,
+      "timeout_read_s": 1.5,
+      "tokens_in": 6041,
+      "cost_per_call_usd": 0.000253722,
+      "cost_total_usd": 0.00507444,
+      "hedge_cost_est_usd": 0.00380583,
+      "http_ms": {
+        "p50": 650.2,
+        "p95": 733.3,
+        "min": 298.9,
+        "max": 737.9
+      },
+      "total_ms": {
+        "p50": 650.4,
+        "p95": 733.6
+      },
+      "hedged_calls": 15,
+      "winners": {
+        "primary": 15
+      },
+      "target_top3": [
+        [
+          "e11",
+          0.99
+        ],
+        [
+          "none",
+          0.01
+        ],
+        [
+          "e39",
+          0.0
+        ]
+      ],
+      "target_confidence_p50": 0.98,
+      "target_choices": {
+        "e11": 20
+      },
+      "action_distribution": {
+        "click": 20
+      },
+      "goal_reached_p50": 0.04,
+      "stuck_p50": 0.55
+    }
+  ]
+}

@@ -1,0 +1,244 @@
+{
+ "measured_at": "2026-09-20T21:41:56",
+ "python": "3.13.2",
+ "runs": 3,
+ "cap": 60,
+ "apps": {
+  "notepad": {
+   "library": "comtypes+CacheRequest",
+   "strategy": "subtree",
+   "strategies": {
+    "subtree": {
+     "ms": [
+      83.4,
+      107.6,
+      101.3
+     ],
+     "median_ms": 101.3,
+     "nodes": 34,
+     "truncated": false
+    },
+    "lazy": {
+     "ms": [
+      102.5,
+      91.4,
+      98.0
+     ],
+     "median_ms": 98.0,
+     "nodes": 34,
+     "truncated": false
+    }
+   },
+   "budget_ms": 2000.0,
+   "over_default_budget": false,
+   "snapshot_ms": [
+    77.1,
+    72.6,
+    104.2
+   ],
+   "snapshot_ms_median": 77.1,
+   "nodes": 34,
+   "truncated": false,
+   "reduce_ms_median": 0.047,
+   "candidates": 16,
+   "tokens_full_state": 1358,
+   "tokens_reduced_state": 711,
+   "tree_hash": "d456a5872ce5741b44394d481c06f9ab",
+   "compare": {
+    "uiautomation": {
+     "ms": [
+      187.9,
+      193.4,
+      196.6
+     ],
+     "nodes": 68
+    },
+    "pywinauto": {
+     "ms": [
+      199.6,
+      223.3,
+      137.6
+     ],
+     "nodes": 45
+    }
+   },
+   "attempt": 1,
+   "fixture": "tests/fixtures/cu/notepad.json",
+   "containers": 11,
+   "hash_ms_median": 0.107,
+   "diff_ms_median": 0.138,
+   "element_bytes_all_keys": 10134,
+   "element_bytes_to_dict": 5769,
+   "payload_bytes_pretty": 10844,
+   "payload_bytes_compact": 7094,
+   "derived_from": "tests/fixtures/cu/notepad.json (post-scrub)"
+  },
+  "calculator": {
+   "library": "comtypes+CacheRequest",
+   "strategy": "subtree",
+   "strategies": {
+    "subtree": {
+     "ms": [
+      48.9,
+      53.6,
+      46.3
+     ],
+     "median_ms": 48.9,
+     "nodes": 53,
+     "truncated": false
+    },
+    "lazy": {
+     "ms": [
+      71.5,
+      69.6,
+      73.1
+     ],
+     "median_ms": 71.5,
+     "nodes": 53,
+     "truncated": false
+    }
+   },
+   "budget_ms": 2000.0,
+   "over_default_budget": false,
+   "snapshot_ms": [
+    51.6,
+    44.3,
+    42.4
+   ],
+   "snapshot_ms_median": 44.3,
+   "nodes": 53,
+   "truncated": false,
+   "reduce_ms_median": 0.095,
+   "candidates": 34,
+   "tokens_full_state": 2158,
+   "tokens_reduced_state": 1381,
+   "tree_hash": "59fd7a8fb994e633e179e8dd812917a1",
+   "compare": {
+    "uiautomation": {
+     "ms": [
+      144.0,
+      144.6,
+      160.6
+     ],
+     "nodes": 90
+    },
+    "pywinauto": {
+     "ms": [
+      123.0,
+      100.6,
+      110.6
+     ],
+     "nodes": 56
+    }
+   },
+   "attempt": 1,
+   "fixture": "tests/fixtures/cu/calculator.json",
+   "containers": 13,
+   "hash_ms_median": 0.166,
+   "diff_ms_median": 0.212,
+   "element_bytes_all_keys": 15975,
+   "element_bytes_to_dict": 9843,
+   "payload_bytes_pretty": 18639,
+   "payload_bytes_compact": 12222,
+   "derived_from": "tests/fixtures/cu/calculator.json (post-scrub)"
+  }
+ },
+ "foreground": {
+  "snapshot_ms": 339.8,
+  "nodes": 506,
+  "candidates": 60,
+  "truncated": false,
+  "tokens_reduced_state": 3093,
+  "note": "content deliberately not recorded"
+ },
+ "derived_at": "2026-09-20T22:28:11",
+ "live_rows": "Timing rows (apps.*.ms, apps.*.snapshot_ms, apps.*.strategies, apps.*.compare, foreground.snapshot_ms) were measured on the live pre-scrub windows and are NOT reproducible from the committed fixtures; they are left untouched. Node counts are identical before and after scrubbing \u2014 scrub() rewrites names and values, never the tree \u2014 so those timings still describe trees of the size the fixtures record. Every field listed under 'fixtures', and the same fields inside each app row, is recomputed offline by 'python bench/cu_observe_bench.py --from-fixtures' and carries 'derived_from'.",
+ "fixtures": {
+  "notepad": {
+   "nodes": 34,
+   "candidates": 16,
+   "containers": 11,
+   "tokens_full_state": 1358,
+   "tokens_reduced_state": 711,
+   "tree_hash": "d456a5872ce5741b44394d481c06f9ab",
+   "reduce_ms_median": 0.047,
+   "hash_ms_median": 0.107,
+   "diff_ms_median": 0.138,
+   "element_bytes_all_keys": 10134,
+   "element_bytes_to_dict": 5769,
+   "payload_bytes_pretty": 10844,
+   "payload_bytes_compact": 7094,
+   "derived_from": "tests/fixtures/cu/notepad.json (post-scrub)"
+  },
+  "calculator": {
+   "nodes": 53,
+   "candidates": 34,
+   "containers": 13,
+   "tokens_full_state": 2158,
+   "tokens_reduced_state": 1381,
+   "tree_hash": "59fd7a8fb994e633e179e8dd812917a1",
+   "reduce_ms_median": 0.095,
+   "hash_ms_median": 0.166,
+   "diff_ms_median": 0.212,
+   "element_bytes_all_keys": 15975,
+   "element_bytes_to_dict": 9843,
+   "payload_bytes_pretty": 18639,
+   "payload_bytes_compact": 12222,
+   "derived_from": "tests/fixtures/cu/calculator.json (post-scrub)"
+  },
+  "synthetic_50": {
+   "nodes": 50,
+   "candidates": 28,
+   "containers": 5,
+   "tokens_full_state": 1973,
+   "tokens_reduced_state": 1138,
+   "tree_hash": "e0b3bc2dfb2c2411a5c324ec4b789b87",
+   "reduce_ms_median": 0.083,
+   "hash_ms_median": 0.145,
+   "diff_ms_median": 0.203,
+   "element_bytes_all_keys": 13707,
+   "element_bytes_to_dict": 6317,
+   "payload_bytes_pretty": 13548,
+   "payload_bytes_compact": 8179,
+   "derived_from": "tests/fixtures/cu/synthetic_50.json (post-scrub)"
+  },
+  "synthetic_500": {
+   "nodes": 500,
+   "candidates": 60,
+   "containers": 21,
+   "tokens_full_state": 19815,
+   "tokens_reduced_state": 2497,
+   "tree_hash": "382d7a558bb9f43df798c54b5fb8d54c",
+   "reduce_ms_median": 0.708,
+   "hash_ms_median": 1.448,
+   "diff_ms_median": 2.045,
+   "element_bytes_all_keys": 139322,
+   "element_bytes_to_dict": 66304,
+   "payload_bytes_pretty": 117933,
+   "payload_bytes_compact": 70210,
+   "derived_from": "tests/fixtures/cu/synthetic_500.json (post-scrub)"
+  },
+  "synthetic_2000": {
+   "nodes": 2000,
+   "candidates": 60,
+   "containers": 73,
+   "tokens_full_state": 79672,
+   "tokens_reduced_state": 2488,
+   "tree_hash": "bc8dd0c9a70791c8cae6f9412d6bf0b1",
+   "reduce_ms_median": 3.041,
+   "hash_ms_median": 6.004,
+   "diff_ms_median": 9.134,
+   "element_bytes_all_keys": 561080,
+   "element_bytes_to_dict": 268404,
+   "payload_bytes_pretty": 457280,
+   "payload_bytes_compact": 272301,
+   "derived_from": "tests/fixtures/cu/synthetic_2000.json (post-scrub)"
+  }
+ },
+ "diff_identical_controls_ms": {
+  "500": 1.926,
+  "1000": 3.862,
+  "2000": 8.387,
+  "4000": 16.348
+ }
+}

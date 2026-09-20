@@ -28,7 +28,8 @@ own workload, so treat the shape as sound and the effect size as unknown.
 `unproven` — the code path is tested; the behaviour it exists for did not occur in
 testing. Numbers, method and threats to validity: `benchmarks.md`.
 
-Then: [composition](#composition-how-patterns-stack) ·
+Then: [the vendor's own patterns](#0-the-same-nine-in-typesafes-vocabulary) ·
+[composition](#composition-how-patterns-stack) ·
 [choosing between patterns](#choosing-between-patterns) ·
 [anti-patterns](#anti-patterns)
 
@@ -37,6 +38,54 @@ jevskill patterns            # human summary
 jevskill patterns --json     # the same data, for a harness
 jevskill plan "<problem>"    # picks a pattern and costs it, for free
 ```
+
+---
+
+## 0. The same nine, in TypeSafe's vocabulary
+
+These nine are a taxonomy of **problem shapes**. TypeSafe publishes four named
+**architectural patterns** and a cookbook library, and an agent that has read the
+vendor's skill will use those names. They are the same ideas at a different
+granularity, so here is the translation — use it, and cite the vendor's numbers
+rather than re-deriving them.
+
+The four named patterns ([index](https://docs.typesafe.ai/patterns.md)):
+
+| Vendor pattern | Its one-line definition | Nearest of ours |
+|---|---|---|
+| [Speculative Fan-Out](https://docs.typesafe.ai/patterns/fan-out.md) | "Send many questions in a single call, including speculative ones" | the mechanism under **every** pattern here |
+| [Confidence-Gated Routing](https://docs.typesafe.ai/patterns/confidence-routing.md) | "The answer tells you what; confidence tells you whether to act." | **guard**, **shortlist**, **route** |
+| [Composite Scoring](https://docs.typesafe.ai/patterns/composite-scoring.md) | "Break a complex judgment into atomic scores, combine with weights you control in code." | **verify**, **rank** |
+| [Intent Routing](https://docs.typesafe.ai/patterns/intent-routing.md) | "Classify incoming requests and route each to the optimal handler" | **triage**, **route** |
+
+And the cookbooks that back each of ours (all under
+`https://docs.typesafe.ai/cookbooks/<name>.md`):
+
+| Ours | Vendor pattern | Cookbooks |
+|---|---|---|
+| 1 **gate** | Speculative Fan-Out | [`llm_guardrails`](https://docs.typesafe.ai/cookbooks/llm_guardrails.md), [`function_calling`](https://docs.typesafe.ai/cookbooks/function_calling.md) |
+| 2 **triage** | Intent Routing | [`hierarchical_classification`](https://docs.typesafe.ai/cookbooks/hierarchical_classification.md), [`skill_suggestion`](https://docs.typesafe.ai/cookbooks/skill_suggestion.md) |
+| 3 **reduce** | Speculative Fan-Out | [`semantic_find`](https://docs.typesafe.ai/cookbooks/semantic_find.md), [`sde_cascade`](https://docs.typesafe.ai/cookbooks/sde_cascade.md) |
+| 4 **rank** | Composite Scoring | [`rerank_typesafe`](https://docs.typesafe.ai/cookbooks/rerank_typesafe.md) |
+| 5 **route** | Intent Routing + Confidence-Gated Routing | [`skill_suggestion`](https://docs.typesafe.ai/cookbooks/skill_suggestion.md), [`sde_cascade`](https://docs.typesafe.ai/cookbooks/sde_cascade.md) |
+| 6 **verify** | Composite Scoring | [`function_calling`](https://docs.typesafe.ai/cookbooks/function_calling.md), [`llm_guardrails`](https://docs.typesafe.ai/cookbooks/llm_guardrails.md) |
+| 7 **guard** | Confidence-Gated Routing | [`llm_guardrails`](https://docs.typesafe.ai/cookbooks/llm_guardrails.md) |
+| 8 **shortlist** | Confidence-Gated Routing | [`consistency_choice_cookbook`](https://docs.typesafe.ai/cookbooks/consistency_choice_cookbook.md), [`hierarchical_classification`](https://docs.typesafe.ai/cookbooks/hierarchical_classification.md) |
+| 9 **extract** | — (no named pattern; the docs treat it as a cascade) | [`function_calling`](https://docs.typesafe.ai/cookbooks/function_calling.md), [`semantic_find`](https://docs.typesafe.ai/cookbooks/semantic_find.md) |
+
+**The cookbooks that publish a number.** These are the vendor's measurements, not
+this repository's — quote them as such.
+
+| Cookbook | What it measured | Reported |
+|---|---|---|
+| [`parallel_questions`](https://docs.typesafe.ai/cookbooks/parallel_questions.md) | 13 questions over one article, one call vs 13 | `0.27s` / `$0.000497` vs `2.71s` / `$0.006090` — "batching: 12.2x cheaper, 10.0x faster" |
+| [`skill_suggestion`](https://docs.typesafe.ai/cookbooks/skill_suggestion.md) | picking one skill from a 182-skill catalogue | "Wrong loads fell from 16.8% to 7.3%", needless loads 9.8% → 4.0% |
+| [`hierarchical_classification`](https://docs.typesafe.ai/cookbooks/hierarchical_classification.md) | beam search (K=3) vs greedy over a taxonomy | "Beam search matched 4 of 4 expected leaves; greedy search matched 2 of 4." |
+| [`rerank_typesafe`](https://docs.typesafe.ai/cookbooks/rerank_typesafe.md) | one question per BM25 candidate, 40 legal queries | "raise top-1 accuracy from 5% to 18%", top-10 38% → 62%; 1,200 calls cost `$0.0645` |
+| [`consistency_choice_cookbook`](https://docs.typesafe.ai/cookbooks/consistency_choice_cookbook.md) | label agreement across 15 repeats, then a `0.60` floor | 90.8% raw; "agreement then rises to 99.2%, with automatic labels on 74.2%" |
+
+The full index of pages is [`llms.txt`](https://docs.typesafe.ai/llms.txt) — fetch
+that first if you need a cookbook this table does not list.
 
 ---
 
@@ -366,12 +415,36 @@ confidence = combine_weighted(
 )
 ```
 
-**This is the strongest pattern in the palette, and it has independent evidence.**
-A 2,000-email study found Jev's *single* verdict statistically worse than a small
-chat model (McNemar p < 0.0001) — but the same study found that **five cheap
-signal questions combined in a plain logistic regression reached 95.1%**. Atomic
-signals composed in code beat one broad judgement. This repository's own
-calibration run is consistent with that.
+**This is the strongest pattern in the palette, and it has independent evidence —
+which also says something uncomfortable about Jev.** The source is
+[`anisselbd/jev-phishing-bench`](https://github.com/anisselbd/jev-phishing-bench)
+(2,000 emails of PhishNChips v5.2, 17 September 2026). Read all four rows before
+you quote any of them:
+
+| On the same 2,000 emails | Accuracy |
+|---|---|
+| Jev, one verdict question | **62.6%** (AUROC 0.689, ECE 0.154) |
+| Claude Haiku 4.5, one prompt | **81.3%** (AUROC 0.837, ECE 0.097) |
+| Jev's five signal Nouls + logistic regression | **95.1%** (AUROC 0.988, ECE 0.027); **95.0%** [93.5, 96.2] on the held-out half |
+| Haiku asked the *same* five signals + the same regression | 93.2% [91.5, 94.6] — a statistical tie with Jev's (McNemar p = 0.063) |
+| A hand-written regex on links and sender domains | **91.8%** on the held-out half |
+
+Three conclusions, and only the first is flattering:
+
+1. **Decomposition is where the accuracy is.** One broad verdict scored 62.6%; the
+   same call's five atomic signals, combined in code, scored 95.1%. That is the
+   pattern on this page, measured by someone else.
+2. **Jev alone is markedly worse than a small chat model on this task** — 62.6% vs
+   81.3%, "McNemar p < 0.0001". Do not sell a single Jev verdict as an accuracy win.
+3. **The decomposition is not Jev's alone.** Haiku given the same five questions
+   ties it, and a two-feature regex already reaches 91.8%. What Jev keeps is the
+   price: the benchmark reports it "about 27 times cheaper and 5 times faster than
+   Haiku" for signals of comparable quality ($0.038 vs $0.462 per 1,000 emails,
+   p50 239 ms vs 687 ms).
+
+So reach for this pattern when you want many cheap signals per second, and check a
+deterministic baseline first. This repository's own calibration run is consistent
+with the decomposition result, not with a claim of superior accuracy.
 
 ---
 
@@ -504,21 +577,22 @@ jevskill plan "keep the 8 lines that matter from this log" --state-file build.lo
 
 ## Anti-patterns
 
+One table, deliberately: this list used to be two overlapping ones.
+
 | Anti-pattern | Fix |
 |---|---|
-| One question per call in a loop | one call, many questions |
-| One broad "analyse this" question | atomic signals, combine in code |
+| Looping one question per call | one call, many questions — measured **12.4× slower and 4.03× more tokens** for 8 questions in 8 calls (`bench/results.json`, `E3_fanout.speedup_x`, `E3_fanout.token_amplification_x`) |
+| One broad "analyse this / analyse everything" question | atomic gates and signals, combined in code — that is where the accuracy is (§6) |
 | Chunk score attributed to every line | real two-stage cascade with a line-level gate |
 | A line-gate question that does not name its line | point at it with a backticked path |
 | Assuming pre-filtering is free | measure recall, not just reduction |
 | Ranking N items in one question | one `score` per item, sort in code |
+| Asking whether the state changed, or how many there are | hash, diff and count in **code**; a `stuck` Noul scored 0.42–0.60 on a screen that had plainly changed (`prompting.md` §11) |
 | Accepting a 0.51 winner | narrow and re-ask |
 | No `unclear`/`none` option | always include an escape hatch |
 | Asking for prose or code | use the LLM |
 | Guard used as authorisation | guard + human confirmation |
 | Threshold copied from a doc | measure on your own labelled cases |
 | Sending the whole corpus | reduce first; 8K budget |
-| Looping one question per call | one call, many questions (9.4× slower, ~2× tokens) |
-| One giant "analyse everything" question | atomic gates, combine the answers in code |
 | Choosing options on the fly per call | fixed bundles: unstable and uncacheable otherwise |
-| Assuming Jev is more accurate than an LLM | it is not, on published evidence — use it for speed and cost, or to combine signals |
+| Assuming Jev is more accurate than an LLM | it is not, on published evidence — 62.6% vs 81.3% on [jev-phishing-bench](https://github.com/anisselbd/jev-phishing-bench); use it for speed and cost, or to combine signals |

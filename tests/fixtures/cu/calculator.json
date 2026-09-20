@@ -1,0 +1,1148 @@
+{
+ "note": "Real UIA snapshot of an app this script launched. Window title, every value and every content-bearing name are replaced; roles, rectangles, patterns and nesting are real.",
+ "snapshot": {
+  "app": "CalculatorApp.exe",
+  "elapsed_ms": 41.94809999989957,
+  "elements": [
+   {
+    "bbox": [
+     2820,
+     183,
+     984,
+     918
+    ],
+    "class_name": "ApplicationFrameWindow",
+    "id": "e0",
+    "name": "calculator",
+    "role": "window"
+   },
+   {
+    "automation_id": "TitleBar",
+    "bbox": [
+     3608,
+     184,
+     188,
+     32
+    ],
+    "class_name": "ApplicationFrameTitleBarWindow",
+    "depth": 1,
+    "id": "e1",
+    "name": "calculator",
+    "parent": "e0",
+    "patterns": [
+     "value"
+    ],
+    "region": "e0",
+    "role": "window",
+    "value": "<scrubbed>"
+   },
+   {
+    "automation_id": "Minimize",
+    "bbox": [
+     3658,
+     184,
+     46,
+     32
+    ],
+    "depth": 2,
+    "id": "e2",
+    "name": "calculator",
+    "parent": "e1",
+    "patterns": [
+     "invoke"
+    ],
+    "region": "e1",
+    "role": "button"
+   },
+   {
+    "automation_id": "Maximize",
+    "bbox": [
+     3704,
+     184,
+     46,
+     32
+    ],
+    "depth": 2,
+    "id": "e3",
+    "name": "calculator",
+    "parent": "e1",
+    "patterns": [
+     "invoke"
+    ],
+    "region": "e1",
+    "role": "button"
+   },
+   {
+    "automation_id": "Close",
+    "bbox": [
+     3750,
+     184,
+     46,
+     32
+    ],
+    "depth": 2,
+    "id": "e4",
+    "name": "calculator",
+    "parent": "e1",
+    "patterns": [
+     "invoke"
+    ],
+    "region": "e1",
+    "role": "button"
+   },
+   {
+    "bbox": [
+     2828,
+     184,
+     968,
+     909
+    ],
+    "class_name": "Windows.UI.Core.CoreWindow",
+    "depth": 1,
+    "focused": true,
+    "id": "e5",
+    "name": "calculator",
+    "parent": "e0",
+    "region": "e0",
+    "role": "window"
+   },
+   {
+    "automation_id": "AppName",
+    "bbox": [
+     2876,
+     192,
+     55,
+     16
+    ],
+    "class_name": "TextBlock",
+    "depth": 2,
+    "id": "e6",
+    "name": "calculator",
+    "parent": "e5",
+    "region": "e5",
+    "role": "text"
+   },
+   {
+    "automation_id": "NavView",
+    "bbox": [
+     2828,
+     213,
+     968,
+     880
+    ],
+    "depth": 2,
+    "id": "e7",
+    "parent": "e5",
+    "region": "e5",
+    "role": "custom"
+   },
+   {
+    "automation_id": "TogglePaneButton",
+    "bbox": [
+     2832,
+     222,
+     40,
+     36
+    ],
+    "class_name": "Button",
+    "depth": 3,
+    "id": "e8",
+    "name": "Otw\u00f3rz nawigacj\u0119",
+    "parent": "e7",
+    "patterns": [
+     "invoke"
+    ],
+    "region": "e5",
+    "role": "button"
+   },
+   {
+    "bbox": [
+     2828,
+     213,
+     968,
+     880
+    ],
+    "class_name": "LandmarkTarget",
+    "depth": 3,
+    "id": "e9",
+    "parent": "e7",
+    "region": "e5",
+    "role": "group"
+   },
+   {
+    "automation_id": "CalculatorResults",
+    "bbox": [
+     2828,
+     306,
+     648,
+     138
+    ],
+    "depth": 4,
+    "focused": true,
+    "id": "e10",
+    "name": "text 1",
+    "parent": "e9",
+    "patterns": [
+     "invoke"
+    ],
+    "region": "e9",
+    "role": "text"
+   },
+   {
+    "automation_id": "MemoryPanel",
+    "bbox": [
+     2832,
+     445,
+     398,
+     59
+    ],
+    "class_name": "NamedContainerAutomationPeer",
+    "depth": 4,
+    "id": "e11",
+    "name": "Elementy steruj\u0105ce pami\u0119ci",
+    "parent": "e9",
+    "region": "e9",
+    "role": "group"
+   },
+   {
+    "automation_id": "ClearMemoryButton",
+    "bbox": [
+     2832,
+     445,
+     78,
+     59
+    ],
+    "class_name": "Button",
+    "depth": 5,
+    "enabled": false,
+    "id": "e12",
+    "name": "Wyczy\u015b\u0107 ca\u0142\u0105 pami\u0119\u0107",
+    "parent": "e11",
+    "patterns": [
+     "invoke"
+    ],
+    "region": "e11",
+    "role": "button"
+   },
+   {
+    "automation_id": "MemRecall",
+    "bbox": [
+     2912,
+     445,
+     78,
+     59
+    ],
+    "class_name": "Button",
+    "depth": 5,
+    "enabled": false,
+    "id": "e13",
+    "name": "Przywo\u0142aj z pami\u0119ci",
+    "parent": "e11",
+    "patterns": [
+     "invoke"
+    ],
+    "region": "e11",
+    "role": "button"
+   },
+   {
+    "automation_id": "MemPlus",
+    "bbox": [
+     2992,
+     445,
+     78,
+     59
+    ],
+    "class_name": "Button",
+    "depth": 5,
+    "id": "e14",
+    "name": "Dodaj do pami\u0119ci",
+    "parent": "e11",
+    "patterns": [
+     "invoke"
+    ],
+    "region": "e11",
+    "role": "button"
+   },
+   {
+    "automation_id": "MemMinus",
+    "bbox": [
+     3072,
+     445,
+     78,
+     59
+    ],
+    "class_name": "Button",
+    "depth": 5,
+    "id": "e15",
+    "name": "Odejmij od pami\u0119ci",
+    "parent": "e11",
+    "patterns": [
+     "invoke"
+    ],
+    "region": "e11",
+    "role": "button"
+   },
+   {
+    "automation_id": "memButton",
+    "bbox": [
+     3152,
+     445,
+     78,
+     59
+    ],
+    "class_name": "Button",
+    "depth": 5,
+    "id": "e16",
+    "name": "Zachowaj w pami\u0119ci",
+    "parent": "e11",
+    "patterns": [
+     "invoke"
+    ],
+    "region": "e11",
+    "role": "button"
+   },
+   {
+    "automation_id": "DisplayControls",
+    "bbox": [
+     2832,
+     506,
+     640,
+     96
+    ],
+    "class_name": "NamedContainerAutomationPeer",
+    "depth": 4,
+    "id": "e17",
+    "name": "Elementy steruj\u0105ce wy\u015bwietlania",
+    "parent": "e9",
+    "region": "e9",
+    "role": "group"
+   },
+   {
+    "automation_id": "percentButton",
+    "bbox": [
+     2832,
+     506,
+     159,
+     96
+    ],
+    "class_name": "Button",
+    "depth": 5,
+    "id": "e18",
+    "name": "Procent",
+    "parent": "e17",
+    "patterns": [
+     "invoke"
+    ],
+    "region": "e17",
+    "role": "button"
+   },
+   {
+    "automation_id": "clearEntryButton",
+    "bbox": [
+     2993,
+     506,
+     158,
+     96
+    ],
+    "class_name": "Button",
+    "depth": 5,
+    "id": "e19",
+    "name": "Wyczy\u015b\u0107 wpis",
+    "parent": "e17",
+    "patterns": [
+     "invoke"
+    ],
+    "region": "e17",
+    "role": "button"
+   },
+   {
+    "automation_id": "clearButton",
+    "bbox": [
+     3153,
+     506,
+     159,
+     96
+    ],
+    "class_name": "Button",
+    "depth": 5,
+    "id": "e20",
+    "name": "Wyczy\u015b\u0107",
+    "parent": "e17",
+    "patterns": [
+     "invoke"
+    ],
+    "region": "e17",
+    "role": "button"
+   },
+   {
+    "automation_id": "backSpaceButton",
+    "bbox": [
+     3314,
+     506,
+     158,
+     96
+    ],
+    "class_name": "Button",
+    "depth": 5,
+    "id": "e21",
+    "name": "Backspace",
+    "parent": "e17",
+    "patterns": [
+     "invoke"
+    ],
+    "region": "e17",
+    "role": "button"
+   },
+   {
+    "automation_id": "StandardFunctions",
+    "bbox": [
+     2832,
+     604,
+     480,
+     95
+    ],
+    "class_name": "NamedContainerAutomationPeer",
+    "depth": 4,
+    "id": "e22",
+    "name": "Funkcje standardowe",
+    "parent": "e9",
+    "region": "e9",
+    "role": "group"
+   },
+   {
+    "automation_id": "invertButton",
+    "bbox": [
+     2832,
+     604,
+     159,
+     95
+    ],
+    "class_name": "Button",
+    "depth": 5,
+    "id": "e23",
+    "name": "Odwrotno\u015b\u0107",
+    "parent": "e22",
+    "patterns": [
+     "invoke"
+    ],
+    "region": "e22",
+    "role": "button"
+   },
+   {
+    "automation_id": "xpower2Button",
+    "bbox": [
+     2993,
+     604,
+     158,
+     95
+    ],
+    "class_name": "Button",
+    "depth": 5,
+    "id": "e24",
+    "name": "Kwadrat",
+    "parent": "e22",
+    "patterns": [
+     "invoke"
+    ],
+    "region": "e22",
+    "role": "button"
+   },
+   {
+    "automation_id": "squareRootButton",
+    "bbox": [
+     3153,
+     604,
+     159,
+     95
+    ],
+    "class_name": "Button",
+    "depth": 5,
+    "id": "e25",
+    "name": "Pierwiastek kwadratowy",
+    "parent": "e22",
+    "patterns": [
+     "invoke"
+    ],
+    "region": "e22",
+    "role": "button"
+   },
+   {
+    "automation_id": "StandardOperators",
+    "bbox": [
+     3314,
+     604,
+     158,
+     485
+    ],
+    "class_name": "NamedContainerAutomationPeer",
+    "depth": 4,
+    "id": "e26",
+    "name": "Operatory standardowe",
+    "parent": "e9",
+    "region": "e9",
+    "role": "group"
+   },
+   {
+    "automation_id": "divideButton",
+    "bbox": [
+     3314,
+     604,
+     158,
+     95
+    ],
+    "class_name": "Button",
+    "depth": 5,
+    "id": "e27",
+    "name": "Podziel przez",
+    "parent": "e26",
+    "patterns": [
+     "invoke"
+    ],
+    "region": "e26",
+    "role": "button"
+   },
+   {
+    "automation_id": "multiplyButton",
+    "bbox": [
+     3314,
+     701,
+     158,
+     96
+    ],
+    "class_name": "Button",
+    "depth": 5,
+    "id": "e28",
+    "name": "Pomn\u00f3\u017c przez",
+    "parent": "e26",
+    "patterns": [
+     "invoke"
+    ],
+    "region": "e26",
+    "role": "button"
+   },
+   {
+    "automation_id": "minusButton",
+    "bbox": [
+     3314,
+     799,
+     158,
+     95
+    ],
+    "class_name": "Button",
+    "depth": 5,
+    "id": "e29",
+    "name": "Minus",
+    "parent": "e26",
+    "patterns": [
+     "invoke"
+    ],
+    "region": "e26",
+    "role": "button"
+   },
+   {
+    "automation_id": "plusButton",
+    "bbox": [
+     3314,
+     896,
+     158,
+     96
+    ],
+    "class_name": "Button",
+    "depth": 5,
+    "id": "e30",
+    "name": "Plus",
+    "parent": "e26",
+    "patterns": [
+     "invoke"
+    ],
+    "region": "e26",
+    "role": "button"
+   },
+   {
+    "automation_id": "equalButton",
+    "bbox": [
+     3314,
+     994,
+     158,
+     95
+    ],
+    "class_name": "Button",
+    "depth": 5,
+    "id": "e31",
+    "name": "R\u00f3wna si\u0119",
+    "parent": "e26",
+    "patterns": [
+     "invoke"
+    ],
+    "region": "e26",
+    "role": "button"
+   },
+   {
+    "automation_id": "NumberPad",
+    "bbox": [
+     2832,
+     701,
+     480,
+     388
+    ],
+    "class_name": "NamedContainerAutomationPeer",
+    "depth": 4,
+    "id": "e32",
+    "name": "Klawiatura numeryczna",
+    "parent": "e9",
+    "region": "e9",
+    "role": "group"
+   },
+   {
+    "automation_id": "num0Button",
+    "bbox": [
+     2993,
+     994,
+     159,
+     95
+    ],
+    "class_name": "Button",
+    "depth": 5,
+    "id": "e33",
+    "name": "Zero",
+    "parent": "e32",
+    "patterns": [
+     "invoke"
+    ],
+    "region": "e32",
+    "role": "button"
+   },
+   {
+    "automation_id": "num1Button",
+    "bbox": [
+     2832,
+     896,
+     159,
+     96
+    ],
+    "class_name": "Button",
+    "depth": 5,
+    "id": "e34",
+    "name": "Jeden",
+    "parent": "e32",
+    "patterns": [
+     "invoke"
+    ],
+    "region": "e32",
+    "role": "button"
+   },
+   {
+    "automation_id": "num2Button",
+    "bbox": [
+     2993,
+     896,
+     159,
+     96
+    ],
+    "class_name": "Button",
+    "depth": 5,
+    "id": "e35",
+    "name": "Dwa",
+    "parent": "e32",
+    "patterns": [
+     "invoke"
+    ],
+    "region": "e32",
+    "role": "button"
+   },
+   {
+    "automation_id": "num3Button",
+    "bbox": [
+     3154,
+     896,
+     158,
+     96
+    ],
+    "class_name": "Button",
+    "depth": 5,
+    "id": "e36",
+    "name": "Trzy",
+    "parent": "e32",
+    "patterns": [
+     "invoke"
+    ],
+    "region": "e32",
+    "role": "button"
+   },
+   {
+    "automation_id": "num4Button",
+    "bbox": [
+     2832,
+     799,
+     159,
+     95
+    ],
+    "class_name": "Button",
+    "depth": 5,
+    "id": "e37",
+    "name": "Cztery",
+    "parent": "e32",
+    "patterns": [
+     "invoke"
+    ],
+    "region": "e32",
+    "role": "button"
+   },
+   {
+    "automation_id": "num5Button",
+    "bbox": [
+     2993,
+     799,
+     159,
+     95
+    ],
+    "class_name": "Button",
+    "depth": 5,
+    "id": "e38",
+    "name": "Pi\u0119\u0107",
+    "parent": "e32",
+    "patterns": [
+     "invoke"
+    ],
+    "region": "e32",
+    "role": "button"
+   },
+   {
+    "automation_id": "num6Button",
+    "bbox": [
+     3154,
+     799,
+     158,
+     95
+    ],
+    "class_name": "Button",
+    "depth": 5,
+    "id": "e39",
+    "name": "Sze\u015b\u0107",
+    "parent": "e32",
+    "patterns": [
+     "invoke"
+    ],
+    "region": "e32",
+    "role": "button"
+   },
+   {
+    "automation_id": "num7Button",
+    "bbox": [
+     2832,
+     701,
+     159,
+     96
+    ],
+    "class_name": "Button",
+    "depth": 5,
+    "id": "e40",
+    "name": "Siedem",
+    "parent": "e32",
+    "patterns": [
+     "invoke"
+    ],
+    "region": "e32",
+    "role": "button"
+   },
+   {
+    "automation_id": "num8Button",
+    "bbox": [
+     2993,
+     701,
+     159,
+     96
+    ],
+    "class_name": "Button",
+    "depth": 5,
+    "id": "e41",
+    "name": "Osiem",
+    "parent": "e32",
+    "patterns": [
+     "invoke"
+    ],
+    "region": "e32",
+    "role": "button"
+   },
+   {
+    "automation_id": "num9Button",
+    "bbox": [
+     3154,
+     701,
+     158,
+     96
+    ],
+    "class_name": "Button",
+    "depth": 5,
+    "id": "e42",
+    "name": "Dziewi\u0119\u0107",
+    "parent": "e32",
+    "patterns": [
+     "invoke"
+    ],
+    "region": "e32",
+    "role": "button"
+   },
+   {
+    "automation_id": "decimalSeparatorButton",
+    "bbox": [
+     3154,
+     994,
+     158,
+     95
+    ],
+    "class_name": "Button",
+    "depth": 5,
+    "id": "e43",
+    "name": "Separator dziesi\u0119tny",
+    "parent": "e32",
+    "patterns": [
+     "invoke"
+    ],
+    "region": "e32",
+    "role": "button"
+   },
+   {
+    "automation_id": "negateButton",
+    "bbox": [
+     2832,
+     994,
+     159,
+     95
+    ],
+    "class_name": "Button",
+    "depth": 4,
+    "id": "e44",
+    "name": "Dodatnie/ujemne",
+    "parent": "e9",
+    "patterns": [
+     "invoke"
+    ],
+    "region": "e9",
+    "role": "button"
+   },
+   {
+    "automation_id": "DockPanel",
+    "bbox": [
+     3476,
+     213,
+     320,
+     880
+    ],
+    "class_name": "NamedContainerAutomationPeer",
+    "depth": 4,
+    "id": "e45",
+    "name": "Listy historii i pami\u0119ci",
+    "parent": "e9",
+    "region": "e9",
+    "role": "group"
+   },
+   {
+    "automation_id": "DockPivot",
+    "bbox": [
+     3476,
+     213,
+     320,
+     880
+    ],
+    "class_name": "Pivot",
+    "depth": 5,
+    "id": "e46",
+    "parent": "e45",
+    "patterns": [
+     "scroll"
+    ],
+    "region": "e45",
+    "role": "tab"
+   },
+   {
+    "automation_id": "HistoryLabel",
+    "bbox": [
+     3476,
+     213,
+     72,
+     48
+    ],
+    "class_name": "PivotItem",
+    "depth": 6,
+    "id": "e47",
+    "name": "tabitem 1",
+    "parent": "e46",
+    "patterns": [
+     "select"
+    ],
+    "region": "e46",
+    "role": "tabitem"
+   },
+   {
+    "automation_id": "HistoryEmpty",
+    "bbox": [
+     3488,
+     279,
+     284,
+     814
+    ],
+    "class_name": "TextBlock",
+    "depth": 7,
+    "id": "e48",
+    "name": "text 2",
+    "parent": "e47",
+    "region": "e46",
+    "role": "text"
+   },
+   {
+    "automation_id": "MemoryLabel",
+    "bbox": [
+     3548,
+     213,
+     68,
+     48
+    ],
+    "class_name": "PivotItem",
+    "depth": 6,
+    "id": "e49",
+    "name": "tabitem 2",
+    "parent": "e46",
+    "patterns": [
+     "select"
+    ],
+    "region": "e46",
+    "role": "tabitem"
+   },
+   {
+    "automation_id": "Header",
+    "bbox": [
+     2876,
+     225,
+     119,
+     27
+    ],
+    "class_name": "TextBlock",
+    "depth": 3,
+    "id": "e50",
+    "name": "text 3",
+    "parent": "e7",
+    "region": "e5",
+    "role": "text"
+   },
+   {
+    "automation_id": "NormalAlwaysOnTopButton",
+    "bbox": [
+     3005,
+     224,
+     32,
+     32
+    ],
+    "class_name": "Button",
+    "depth": 3,
+    "id": "e51",
+    "name": "Zostaw na wierzchu",
+    "parent": "e7",
+    "patterns": [
+     "invoke"
+    ],
+    "region": "e5",
+    "role": "button"
+   },
+   {
+    "bbox": [
+     2828,
+     216,
+     968,
+     877
+    ],
+    "class_name": "ApplicationFrameInputSinkWindow",
+    "depth": 1,
+    "id": "e52",
+    "parent": "e0",
+    "region": "e0",
+    "role": "pane"
+   }
+  ],
+  "hwnd": 12389984,
+  "pid": 43520,
+  "taken_at": 1789933326.8375764,
+  "truncated": false,
+  "window_title": "calculator"
+ },
+ "source": "bench/cu_observe_bench.py --save-fixtures",
+ "state": {
+  "app": "CalculatorApp.exe",
+  "elements": {
+   "e1": {
+    "bbox": "r0c7",
+    "name": "calculator",
+    "role": "window",
+    "value": "<scrubbed>"
+   },
+   "e10": {
+    "bbox": "r1c2",
+    "focused": true,
+    "name": "text 1",
+    "role": "text"
+   },
+   "e14": {
+    "bbox": "r2c1",
+    "name": "Dodaj do pami\u0119ci",
+    "role": "button"
+   },
+   "e15": {
+    "bbox": "r2c2",
+    "name": "Odejmij od pami\u0119ci",
+    "role": "button"
+   },
+   "e16": {
+    "bbox": "r2c3",
+    "name": "Zachowaj w pami\u0119ci",
+    "role": "button"
+   },
+   "e18": {
+    "bbox": "r3c0",
+    "name": "Procent",
+    "role": "button"
+   },
+   "e19": {
+    "bbox": "r3c2",
+    "name": "Wyczy\u015b\u0107 wpis",
+    "role": "button"
+   },
+   "e2": {
+    "bbox": "r0c7",
+    "dup": 2,
+    "name": "calculator",
+    "role": "button"
+   },
+   "e20": {
+    "bbox": "r3c3",
+    "name": "Wyczy\u015b\u0107",
+    "role": "button"
+   },
+   "e21": {
+    "bbox": "r3c4",
+    "name": "Backspace",
+    "role": "button"
+   },
+   "e23": {
+    "bbox": "r4c0",
+    "name": "Odwrotno\u015b\u0107",
+    "role": "button"
+   },
+   "e24": {
+    "bbox": "r4c2",
+    "name": "Kwadrat",
+    "role": "button"
+   },
+   "e25": {
+    "bbox": "r4c3",
+    "name": "Pierwiastek kwadratowy",
+    "role": "button"
+   },
+   "e27": {
+    "bbox": "r4c4",
+    "name": "Podziel przez",
+    "role": "button"
+   },
+   "e28": {
+    "bbox": "r4c4",
+    "name": "Pomn\u00f3\u017c przez",
+    "role": "button"
+   },
+   "e29": {
+    "bbox": "r5c4",
+    "name": "Minus",
+    "role": "button"
+   },
+   "e30": {
+    "bbox": "r6c4",
+    "name": "Plus",
+    "role": "button"
+   },
+   "e31": {
+    "bbox": "r7c4",
+    "name": "R\u00f3wna si\u0119",
+    "role": "button"
+   },
+   "e33": {
+    "bbox": "r7c2",
+    "name": "Zero",
+    "role": "button"
+   },
+   "e34": {
+    "bbox": "r6c0",
+    "name": "Jeden",
+    "role": "button"
+   },
+   "e35": {
+    "bbox": "r6c2",
+    "name": "Dwa",
+    "role": "button"
+   },
+   "e36": {
+    "bbox": "r6c3",
+    "name": "Trzy",
+    "role": "button"
+   },
+   "e37": {
+    "bbox": "r5c0",
+    "name": "Cztery",
+    "role": "button"
+   },
+   "e38": {
+    "bbox": "r5c2",
+    "name": "Pi\u0119\u0107",
+    "role": "button"
+   },
+   "e39": {
+    "bbox": "r5c3",
+    "name": "Sze\u015b\u0107",
+    "role": "button"
+   },
+   "e40": {
+    "bbox": "r4c0",
+    "name": "Siedem",
+    "role": "button"
+   },
+   "e41": {
+    "bbox": "r4c2",
+    "name": "Osiem",
+    "role": "button"
+   },
+   "e42": {
+    "bbox": "r4c3",
+    "name": "Dziewi\u0119\u0107",
+    "role": "button"
+   },
+   "e43": {
+    "bbox": "r7c3",
+    "name": "Separator dziesi\u0119tny",
+    "role": "button"
+   },
+   "e44": {
+    "bbox": "r7c0",
+    "name": "Dodatnie/ujemne",
+    "role": "button"
+   },
+   "e47": {
+    "bbox": "r0c5",
+    "name": "tabitem 1",
+    "role": "tabitem"
+   },
+   "e49": {
+    "bbox": "r0c6",
+    "name": "tabitem 2",
+    "role": "tabitem"
+   },
+   "e51": {
+    "bbox": "r0c1",
+    "name": "Zostaw na wierzchu",
+    "role": "button"
+   },
+   "e8": {
+    "bbox": "r0c0",
+    "name": "Otw\u00f3rz nawigacj\u0119",
+    "role": "button"
+   }
+  },
+  "window_title": "calculator"
+ }
+}

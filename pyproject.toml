@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "jevskill"
-version = "0.10.2"
+version = "0.12.0"
 description = "Teach your coding agent to stop burning context: Jev (System One) decisions via OpenRouter for routing, triage, classification, gating and reducing large data before it reaches your LLM. A/B tested: 99.3% fewer model input tokens with accuracy up, not down."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -22,6 +22,11 @@ dependencies = []
 [project.optional-dependencies]
 fast = ["httpx[http2]>=0.27", "orjson>=3.9"]
 dev = ["pytest>=8", "httpx[http2]>=0.27", "orjson>=3.9"]
+# jevskill.cu (Windows computer-use perception). comtypes only: the UI
+# Automation client is measured 2-3x faster through a CacheRequest than through
+# uiautomation or pywinauto, both of which read every property live. The marker
+# keeps `pip install "jevskill[cu]"` a no-op elsewhere rather than an error.
+cu = ['comtypes>=1.2; sys_platform == "win32"']
 
 [project.urls]
 Homepage = "https://github.com/lazniak/jevskill"
