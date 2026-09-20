@@ -119,7 +119,7 @@ Measured on one 20-line window containing exactly one real `ERROR`:
 
 The first variant produces plausible numbers that discriminate nothing. Naming the
 value with a backticked path (a documented TypeSafe convention) restores it, and
-stays batched. Full detail: `skill/references/prompting.md` §1.
+stays batched. Full detail: `skills/jev/references/prompting.md` §1.
 
 ## E5 — Guard accuracy and calibration
 

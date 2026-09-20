@@ -1,0 +1,286 @@
+{
+  "benchmarked_at": "2026-09-20T12:23:51",
+  "answering_model": "google/gemini-2.5-flash-lite",
+  "answering_model_price_per_mtok": {
+    "input": 0.1,
+    "output": 0.4
+  },
+  "jev_price_per_mtok_input": 0.042,
+  "runs_per_arm": 3,
+  "method": "Same model in every arm; the only variable is what the model reads. Token counts are provider-reported usage. Answers graded by substring match against an exact oracle value in the fixture.",
+  "workloads": [
+    {
+      "workload": "log_needle",
+      "oracle": "ZX-40217",
+      "runs": 3,
+      "fixture_tokens": 27472,
+      "arms": {
+        "direct": {
+          "correct": 3,
+          "of": 3,
+          "prompt_tokens_mean": 27015.7,
+          "completion_tokens_mean": 33.3,
+          "total_tokens_mean": 27049.0,
+          "model_cost_usd": 0.0027149,
+          "jev_cost_usd": 0.0,
+          "total_cost_usd": 0.0027149,
+          "ms_mean": 928.0,
+          "context_chars_mean": 46153.0
+        },
+        "grep": {
+          "correct": 3,
+          "of": 3,
+          "prompt_tokens_mean": 97.0,
+          "completion_tokens_mean": 32.3,
+          "total_tokens_mean": 129.3,
+          "model_cost_usd": 2.263e-05,
+          "jev_cost_usd": 0.0,
+          "total_cost_usd": 2.263e-05,
+          "ms_mean": 446.5,
+          "context_chars_mean": 110.0
+        },
+        "jev": {
+          "correct": 3,
+          "of": 3,
+          "prompt_tokens_mean": 97.0,
+          "completion_tokens_mean": 26.7,
+          "total_tokens_mean": 123.7,
+          "model_cost_usd": 2.037e-05,
+          "jev_cost_usd": 0.00353947,
+          "total_cost_usd": 0.00355983,
+          "ms_mean": 511.0,
+          "context_chars_mean": 110.0
+        }
+      }
+    },
+    {
+      "workload": "csv_outlier",
+      "oracle": "u_88214",
+      "runs": 3,
+      "fixture_tokens": 12065,
+      "arms": {
+        "direct": {
+          "correct": 3,
+          "of": 3,
+          "prompt_tokens_mean": 19195.0,
+          "completion_tokens_mean": 29.7,
+          "total_tokens_mean": 19224.7,
+          "model_cost_usd": 0.00193137,
+          "jev_cost_usd": 0.0,
+          "total_cost_usd": 0.00193137,
+          "ms_mean": 617.2,
+          "context_chars_mean": 20270.0
+        },
+        "grep": {
+          "correct": 3,
+          "of": 3,
+          "prompt_tokens_mean": 70.7,
+          "completion_tokens_mean": 34.0,
+          "total_tokens_mean": 104.7,
+          "model_cost_usd": 2.067e-05,
+          "jev_cost_usd": 0.0,
+          "total_cost_usd": 2.067e-05,
+          "ms_mean": 594.0,
+          "context_chars_mean": 21.0
+        },
+        "jev": {
+          "correct": 3,
+          "of": 3,
+          "prompt_tokens_mean": 191.3,
+          "completion_tokens_mean": 33.0,
+          "total_tokens_mean": 224.3,
+          "model_cost_usd": 3.233e-05,
+          "jev_cost_usd": 0.00628585,
+          "total_cost_usd": 0.00631818,
+          "ms_mean": 448.5,
+          "context_chars_mean": 149.3
+        }
+      }
+    },
+    {
+      "workload": "test_output",
+      "oracle": "test_invoice_rounding.py::test_tax_is_rounded_per_line",
+      "runs": 3,
+      "fixture_tokens": 19882,
+      "arms": {
+        "direct": {
+          "correct": 3,
+          "of": 3,
+          "prompt_tokens_mean": 16543.7,
+          "completion_tokens_mean": 19.0,
+          "total_tokens_mean": 16562.7,
+          "model_cost_usd": 0.00166197,
+          "jev_cost_usd": 0.0,
+          "total_cost_usd": 0.00166197,
+          "ms_mean": 656.1,
+          "context_chars_mean": 33402.0
+        },
+        "grep": {
+          "correct": 3,
+          "of": 3,
+          "prompt_tokens_mean": 102.3,
+          "completion_tokens_mean": 40.3,
+          "total_tokens_mean": 142.7,
+          "model_cost_usd": 2.637e-05,
+          "jev_cost_usd": 0.0,
+          "total_cost_usd": 2.637e-05,
+          "ms_mean": 501.4,
+          "context_chars_mean": 160.0
+        },
+        "jev": {
+          "correct": 3,
+          "of": 3,
+          "prompt_tokens_mean": 65.0,
+          "completion_tokens_mean": 41.0,
+          "total_tokens_mean": 106.0,
+          "model_cost_usd": 2.29e-05,
+          "jev_cost_usd": 0.0039879,
+          "total_cost_usd": 0.0040108,
+          "ms_mean": 438.4,
+          "context_chars_mean": 61.0
+        }
+      }
+    },
+    {
+      "workload": "json_drift",
+      "oracle": "svc-183",
+      "runs": 3,
+      "fixture_tokens": 23888,
+      "arms": {
+        "direct": {
+          "correct": 2,
+          "of": 3,
+          "prompt_tokens_mean": 20535.0,
+          "completion_tokens_mean": 31.0,
+          "total_tokens_mean": 20566.0,
+          "model_cost_usd": 0.0020659,
+          "jev_cost_usd": 0.0,
+          "total_cost_usd": 0.0020659,
+          "ms_mean": 817.6,
+          "context_chars_mean": 40133.0
+        },
+        "grep": {
+          "correct": 3,
+          "of": 3,
+          "prompt_tokens_mean": 70.0,
+          "completion_tokens_mean": 19.7,
+          "total_tokens_mean": 89.7,
+          "model_cost_usd": 1.487e-05,
+          "jev_cost_usd": 0.0,
+          "total_cost_usd": 1.487e-05,
+          "ms_mean": 446.5,
+          "context_chars_mean": 56.0
+        },
+        "jev": {
+          "correct": 3,
+          "of": 3,
+          "prompt_tokens_mean": 90.0,
+          "completion_tokens_mean": 13.0,
+          "total_tokens_mean": 103.0,
+          "model_cost_usd": 1.42e-05,
+          "jev_cost_usd": 0.01104613,
+          "total_cost_usd": 0.01106033,
+          "ms_mean": 413.6,
+          "context_chars_mean": 92.7
+        }
+      }
+    },
+    {
+      "workload": "yaml_drift",
+      "oracle": "flag_0512",
+      "runs": 3,
+      "fixture_tokens": 20302,
+      "arms": {
+        "direct": {
+          "correct": 0,
+          "of": 3,
+          "prompt_tokens_mean": 14411.0,
+          "completion_tokens_mean": 6.7,
+          "total_tokens_mean": 14417.7,
+          "model_cost_usd": 0.00144377,
+          "jev_cost_usd": 0.0,
+          "total_cost_usd": 0.00144377,
+          "ms_mean": 674.0,
+          "context_chars_mean": 34108.0
+        },
+        "grep": {
+          "correct": 0,
+          "of": 3,
+          "prompt_tokens_mean": 889.0,
+          "completion_tokens_mean": 9.0,
+          "total_tokens_mean": 898.0,
+          "model_cost_usd": 9.25e-05,
+          "jev_cost_usd": 0.0,
+          "total_cost_usd": 9.25e-05,
+          "ms_mean": 361.4,
+          "context_chars_mean": 2000.0
+        },
+        "jev": {
+          "correct": 0,
+          "of": 3,
+          "prompt_tokens_mean": 46.0,
+          "completion_tokens_mean": 20.7,
+          "total_tokens_mean": 66.7,
+          "model_cost_usd": 1.287e-05,
+          "jev_cost_usd": 0.01077758,
+          "total_cost_usd": 0.01079044,
+          "ms_mean": 444.2,
+          "context_chars_mean": 0.0
+        }
+      }
+    },
+    {
+      "workload": "html_alert",
+      "oracle": "queue_depth_p99",
+      "runs": 3,
+      "fixture_tokens": 22064,
+      "arms": {
+        "direct": {
+          "correct": 3,
+          "of": 3,
+          "prompt_tokens_mean": 12082.7,
+          "completion_tokens_mean": 39.7,
+          "total_tokens_mean": 12122.3,
+          "model_cost_usd": 0.00122413,
+          "jev_cost_usd": 0.0,
+          "total_cost_usd": 0.00122413,
+          "ms_mean": 871.8,
+          "context_chars_mean": 37069.0
+        },
+        "grep": {
+          "correct": 3,
+          "of": 3,
+          "prompt_tokens_mean": 106.0,
+          "completion_tokens_mean": 39.7,
+          "total_tokens_mean": 145.7,
+          "model_cost_usd": 2.647e-05,
+          "jev_cost_usd": 0.0,
+          "total_cost_usd": 2.647e-05,
+          "ms_mean": 579.2,
+          "context_chars_mean": 193.0
+        },
+        "jev": {
+          "correct": 3,
+          "of": 3,
+          "prompt_tokens_mean": 106.0,
+          "completion_tokens_mean": 40.7,
+          "total_tokens_mean": 146.7,
+          "model_cost_usd": 2.687e-05,
+          "jev_cost_usd": 0.00163758,
+          "total_cost_usd": 0.00166445,
+          "ms_mean": 523.1,
+          "context_chars_mean": 193.0
+        }
+      }
+    }
+  ],
+  "totals": {
+    "direct_tokens_mean": 109942.4,
+    "jev_tokens_mean": 770.4,
+    "token_change_pct": 99.3,
+    "direct_correct": 14,
+    "jev_correct": 15,
+    "grep_correct": 15,
+    "of": 18
+  }
+}

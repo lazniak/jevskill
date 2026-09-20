@@ -118,22 +118,84 @@ If the answer is prose, code, or an open-ended set → use your LLM.
 
 ## 🔥 Install (30 seconds)
 
+### One command, into 20+ agents
+
+```bash
+npx skills add lazniak/jevskill -g
+```
+
+That installs the skill for **Claude Code, Codex, Cursor, Gemini CLI, Windsurf,
+Cline, Copilot, OpenCode, Amp, Goose, Zed, VS Code** and more, via the open
+[Agent Skills](https://agentskills.io) registry. No account, no key, nothing to
+compile — the bundled scripts use only the Python standard library.
+
+Claude Code plugin marketplace users can instead do:
+
+```bash
+/plugin marketplace add lazniak/jevskill
+/plugin install jev@jevskill
+```
+
+### Or from source
+
 ```bash
 git clone https://github.com/lazniak/jevskill && cd jevskill
-python -m pip install -e ".[fast]"
+python -m pip install -e ".[fast]"          # the measurement half (ledger, stats)
 export OPENROUTER_API_KEY=sk-or-v1-...      # Windows: setx OPENROUTER_API_KEY "..."
 
 jevskill doctor          # verifies key, endpoint, latency, live cost
 ```
 
-### Wire it into your harness
+### Ask a decision immediately (zero install)
+
+The skill carries its own stdlib-only caller, so this works right after
+`npx skills add`:
 
 ```bash
-pwsh -File install.ps1        # auto-detects Claude Code, DSH, generic skill dirs
+cd ~/.agents/skills/jev
+
+# a gate
+python scripts/jev_query.py --state-file diff.txt \
+  --question-type noul --name breaks_api \
+  --instructions "Does the diff change a public API signature?"
+
+# reduce 900 log lines to the 8 that matter, reversibly
+python scripts/jev_query.py --state-file build.log --reduce \
+  --instructions 'Does the item at `L{i}` report a problem worth investigating?'
+# REDUCE: 900 items -> 8 kept (98.8% fewer tokens: 34906 -> 414)
+#   rejected 892 items stored; retrieve with:
+#   python scripts/jev_recovery.py rc_92110309381a --grep <pattern>
 ```
+
+Pass `--json` for machine-readable output.
 
 Then your agent just... uses it. `SKILL.md` teaches it when to reach for Jev and
 — just as importantly — when **not** to.
+
+---
+
+## ♻️ Reversible by default — a reduction you can undo
+
+Most context reduction is a **bet**: keep 1% and hope it was the right 1%. Jev
+does not have to work that way. `--reduce` writes every rejected item to a local
+store and hands back a handle.
+
+```
+REDUCE: 900 items -> 8 kept (98.8% fewer tokens: 34906 -> 414)
+  rejected 892 items stored; retrieve with:
+  python scripts/jev_recovery.py rc_92110309381a --grep <pattern>
+```
+
+```bash
+python scripts/jev_recovery.py rc_92110309381a --summary   # what was dropped
+python scripts/jev_recovery.py rc_92110309381a --grep "WARN|ERROR|FATAL"
+python scripts/jev_recovery.py rc_92110309381a --index 42 43
+```
+
+**Measured, not asserted:** on the 900-line log benchmark the gate kept 8 of 14
+salient lines — and recovery surfaced the **6 it had missed**. A 57%-recall gate
+becomes a **100%-recoverable** pipeline. The rejected bytes never leave your
+machine.
 
 ---
 
@@ -187,7 +249,7 @@ A repo that only reports wins isn't measuring. So:
 * **The first REDUCE design failed**: 99% context reduction while keeping **1 of
   8** wanted lines. The failing design is preserved behind
   `bench/run.py --legacy-reduce` so you can reproduce it. The fix is documented in
-  `skill/references/prompting.md`.
+  `skills/jev/references/prompting.md`.
 * **Pre-filtering chunks is a cost/recall trade**, not a free win: 2.1× cheaper,
   5 fewer lines found. Pick by what a miss costs you.
 * **The `shortlist` narrowing loop never fired** in testing — both cases resolved
@@ -282,18 +344,25 @@ leverage is better questions and less state. So the Skill teaches both.
 ## 📁 What's inside
 
 ```
-jevskill/          CLI + library (stdlib only, no dependencies required)
-  client.py        Decisions API — warm HTTP/2, retries, per-stage timings
-  primitives.py    noul / choice / score, with validation that prevents 400s
-  orchestrate.py   pattern selection, profiling, chunking, iteration rules
-  stats.py         the effectiveness ledger
-  cli.py           doctor · plan · patterns · ask · outcome · stats
-skill/
-  SKILL.md         what your harness loads
-  references/      api · patterns · prompting · benchmarks
-bench/run.py       the suite that produced every number above
-tests/             211 tests, offline, green
-docs/DESIGN.md     architecture + the mistakes that shaped it
+skills/jev/            the Agent Skill — works with NOTHING installed
+  SKILL.md             what your harness loads
+  references/          api · patterns · prompting · benchmarks
+  scripts/
+    jev_query.py       stdlib-only caller: decisions + reversible REDUCE
+    jev_recovery.py    read back everything REDUCE rejected
+    jev.py             delegates to the full CLI when the package is installed
+jevskill/              the Python package — the measurement half
+  client.py            Decisions API — warm HTTP/2, retries, per-stage timings
+  primitives.py        noul / choice / score, with validation that prevents 400s
+  orchestrate.py       pattern selection, profiling, chunking, iteration rules
+  stats.py             the effectiveness ledger
+  cli.py               doctor · plan · patterns · ask · outcome · stats
+bench/
+  run.py               E1–E7 microbenchmarks (latency, fan-out, REDUCE, guards)
+  ab.py                the A/B evaluation vs the model doing it alone
+tests/                 211 tests, offline, green
+docs/DESIGN.md         architecture + the mistakes that shaped it
+AGENTS.md              conventions for agents working on this repo
 ```
 
 ## 🧭 Status & known limits — `v0.2.0`
@@ -317,11 +386,11 @@ complete. What is **not** proven, so you can judge for yourself:
 | | |
 |---|---|
 | [`README.md`](README.md) | you're here |
-| [`skill/SKILL.md`](skill/SKILL.md) | the Skill your agent loads |
-| [`skill/references/api.md`](skill/references/api.md) | exact API shapes, every field, error codes |
-| [`skill/references/patterns.md`](skill/references/patterns.md) | all 9 patterns, worked questions |
-| [`skill/references/prompting.md`](skill/references/prompting.md) | 10 rules, each backed by a measurement |
-| [`skill/references/benchmarks.md`](skill/references/benchmarks.md) | every number + threats to validity |
+| [`skills/jev/SKILL.md`](skills/jev/SKILL.md) | the Skill your agent loads |
+| [`skills/jev/references/api.md`](skills/jev/references/api.md) | exact API shapes, every field, error codes |
+| [`skills/jev/references/patterns.md`](skills/jev/references/patterns.md) | all 9 patterns, worked questions |
+| [`skills/jev/references/prompting.md`](skills/jev/references/prompting.md) | 10 rules, each backed by a measurement |
+| [`skills/jev/references/benchmarks.md`](skills/jev/references/benchmarks.md) | every number + threats to validity |
 | [`CHANGELOG.md`](CHANGELOG.md) | versioned history |
 | [`docs/DESIGN.md`](docs/DESIGN.md) | why it's built this way |
 

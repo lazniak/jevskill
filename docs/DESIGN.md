@@ -20,7 +20,7 @@ that second question, and the answer is mostly measurement infrastructure.
 ## Layer map
 
 ```
-skill/SKILL.md          the decision guide a harness actually reads
+skills/jev/SKILL.md          the decision guide a harness actually reads
         │
         ├── references/         api · patterns · prompting · benchmarks
         │

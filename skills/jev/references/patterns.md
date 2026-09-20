@@ -7,6 +7,24 @@ the questions.
 
 The palette is also machine-readable:
 
+## Contents
+
+| | Pattern | Shape |
+|---|---|---|
+| [1](#1-gate--one-boolean-about-one-text) | **gate** | one boolean about one text |
+| [2](#2-triage--many-items-to-one-bounded-category-each) | **triage** | many items → one bounded category each |
+| [3](#3-reduce--a-large-sequence-to-a-small-shortlist) | **reduce** | large sequence → small shortlist |
+| [4](#4-rank--several-items-to-an-order) | **rank** | several items → an order |
+| [5](#5-route--one-task-to-one-tier-of-effort) | **route** | one task → one tier of effort |
+| [6](#6-verify--one-artifact-to-a-rubric-score) | **verify** | one artifact → a rubric score |
+| [7](#7-guard--one-proposed-action-to-safe--unsafe) | **guard** | one proposed action → safe/unsafe |
+| [8](#8-shortlist--a-close-call-becomes-a-narrower-question) | **shortlist** | a close call → ask again, narrower |
+| [9](#9-extract--unstructured-text-to-fixed-fields) | **extract** | unstructured text → fixed fields |
+
+Then: [composition](#composition-how-patterns-stack) ·
+[choosing between patterns](#choosing-between-patterns) ·
+[anti-patterns](#anti-patterns)
+
 ```bash
 jevskill patterns            # human summary
 jevskill patterns --json     # the same data, for a harness
@@ -128,6 +146,38 @@ the hot chunks" mostly keeps everything's neighbours.
 **Choose by what a miss costs you**, not by the reduction percentage. Gate every
 line when a miss is unacceptable; pre-filter when the corpus is homogeneous and
 the call budget matters.
+
+### Always keep the rejected part retrievable
+
+Jev is not an oracle. Measured on 900 synthetic log lines with evenly scattered
+signal, the gate found **8 of 14** genuinely salient lines. Good, not perfect.
+
+So reduction must be **reversible**. `--reduce` writes every rejected item to a
+local store and prints a handle:
+
+```bash
+python scripts/jev_query.py --state-file build.log --reduce \
+  --instructions 'Does the item at `L{i}` report a problem worth investigating?'
+# REDUCE: 900 items -> 8 kept (98.8% fewer tokens: 34906 -> 414)
+#   rejected 892 items stored; retrieve with:
+#   python scripts/jev_recovery.py rc_92110309381a --grep <pattern>
+```
+
+```bash
+python scripts/jev_recovery.py rc_92110309381a --summary
+python scripts/jev_recovery.py rc_92110309381a --grep "WARN|ERROR|FATAL"
+python scripts/jev_recovery.py rc_92110309381a --index 42 43
+python scripts/jev_recovery.py --list
+```
+
+On the measurement above, recovery surfaced the **6 salient lines the gate had
+missed** — which turns a 57% recall gate into a 100% recoverable pipeline. That is
+the difference between an optimisation and a bet: **a reduction you cannot reverse
+is a bet.**
+
+This is the one structural advantage a mechanical compressor has over a decision
+model (it can always hand back the original bytes). Keeping the rejected items
+costs disk and nothing else, and closes the gap.
 
 ### The stage-2 question must name its target
 

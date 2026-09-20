@@ -42,21 +42,36 @@ the answer is text.
 
 ## 0. Run this first
 
+**No install needed.** This skill ships scripts that use only the Python standard
+library, so they run straight out of the skill folder:
+
 ```bash
-jevskill doctor                     # key, endpoint, warm latency, live cost
-jevskill plan "<what you are about to do>"   # free: is Jev even right here?
+python scripts/jev_query.py --state-file diff.txt --question-type noul --name breaks_api \
+  --instructions "Does the diff change a public API signature?" \
+  --true-text "A public name or signature changes." \
+  --false-text "Only internals, comments or formatting change."
 ```
 
-If `doctor` fails, the key is missing — every command needs one:
+That is the whole dependency: Python 3.9+, a key, and network access. For the
+recovery of reduced data use `scripts/jev_recovery.py` (see §3).
+
+**Install the package for the measurement half** — the ledger, stage timings,
+`plan`, `patterns`, `stats` and `outcome`:
 
 ```bash
 export OPENROUTER_API_KEY=sk-or-v1-...   # Windows: setx OPENROUTER_API_KEY "..."
 python -m pip install -e .               # or: pip install -e ".[fast]"
+
+jevskill doctor                              # key, endpoint, warm latency, live cost
+jevskill plan "<what you are about to do>"   # free: is Jev even right here?
 ```
 
 `setx` does not affect shells that are already open. On Windows the client also
 reads the user registry, so a key set yesterday works in a terminal opened before
 it.
+
+Without the install, `scripts/jev.py` delegates to the package if it can find it,
+so either path works.
 
 Do **not** reach for Jev before reading §2. The most common way to waste a round
 trip is using it on a task whose answer is text.

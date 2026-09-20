@@ -94,7 +94,7 @@ benchmark suite whose numbers are all reproduced from live API calls.
 - **Question primitives** (`primitives.py`): `noul`/`choice`/`score` with
   validation that refuses the shapes the API rejects, so a malformed question
   costs zero round trips.
-- **`skill/SKILL.md`** and four references: `api.md` (exact shapes, every field,
+- **`skills/jev/SKILL.md`** and four references: `api.md` (exact shapes, every field,
   error codes, cost arithmetic), `patterns.md` (nine patterns with worked
   questions), `prompting.md` (ten rules, each backed by a measurement),
   `benchmarks.md` (every number with method and threats to validity).

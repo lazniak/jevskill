@@ -1,0 +1,21 @@
+{
+  "name": "jevskill",
+  "owner": {
+    "name": "lazniak"
+  },
+  "metadata": {
+    "description": "Jev decision-model skills for coding agents",
+    "version": "0.3.0"
+  },
+  "plugins": [
+    {
+      "name": "jev",
+      "description": "Stop paying a frontier model to make decisions. Use the Jev decision model (System One, via OpenRouter) for routing, triage, classification, gating, rubric grading, ranking, and reducing large data before it reaches your model. Includes a reversible REDUCE pipeline and a measured effectiveness ledger.",
+      "source": "./",
+      "strict": false,
+      "skills": [
+        "./skills/jev"
+      ]
+    }
+  ]
+}

@@ -4,7 +4,7 @@
 #   pwsh -File install.ps1 -Target dsh  # only the DeepSeek Harness skills dir
 #   pwsh -File install.ps1 -DryRun      # show what would happen
 #
-# The Skill itself (skill/SKILL.md + references) is copied; the CLI is installed
+# The Skill itself (skills/jev/SKILL.md + references) is copied; the CLI is installed
 # in editable mode so `jevskill` resolves from this checkout.
 
 [CmdletBinding()]
@@ -30,7 +30,7 @@ Write-Step "repo: $RepoRoot"
 # ---------------------------------------------------------------- skill sources
 $SkillSource = Join-Path $RepoRoot 'skill'
 if (-not (Test-Path (Join-Path $SkillSource 'SKILL.md'))) {
-    throw "skill/SKILL.md not found under $RepoRoot — run this from the repository root."
+    throw "skills/jev/SKILL.md not found under $RepoRoot — run this from the repository root."
 }
 
 # ---------------------------------------------------------------- destinations
