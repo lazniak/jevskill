@@ -91,3 +91,39 @@ class TestPublishedTestCount:
         match = re.search(r"# (\d+) tests, offline", src)
         assert match, "AGENTS.md lost its test count"
         assert int(match.group(1)) == collected_test_count()
+
+
+class TestChangelogStructure:
+    """The changelog's shape has broken twice, both times by tooling.
+
+    First, anchoring each new entry on the `## [Unreleased]` heading *moved* it down
+    the file. Then a global substitution on that heading also matched prose quoting it
+    inside older entries, duplicating a section and leaving lines that render as stray
+    headings. A heading must therefore match the whole line to count as one.
+    """
+
+    HEADING = re.compile(r"^## \[(Unreleased|\d+\.\d+\.\d+)\](?: — \d{4}-\d{2}-\d{2})?$")
+
+    def headings(self) -> list[str]:
+        src = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+        return [line for line in src.splitlines() if line.startswith("## [")]
+
+    def test_every_bracketed_heading_is_a_real_section(self):
+        offenders = [line for line in self.headings() if not self.HEADING.match(line)]
+        assert not offenders, (
+            "lines render as sections but are not: "
+            + "; ".join(f"{line[:70]!r}" for line in offenders))
+
+    def test_unreleased_comes_first(self):
+        assert self.headings()[0] == "## [Unreleased]"
+
+    def test_versions_descend(self):
+        versions = [
+            tuple(int(part) for part in re.match(r"^## \[([\d.]+)\]", line).group(1).split("."))
+            for line in self.headings()[1:]
+        ]
+        assert versions == sorted(versions, reverse=True), versions
+
+    def test_no_version_is_listed_twice(self):
+        seen = [re.match(r"^## \[([^\]]+)\]", line).group(1) for line in self.headings()]
+        assert len(seen) == len(set(seen)), seen

@@ -8,6 +8,46 @@ Because this project's value is its *measurements*, entries that change publishe
 numbers say so explicitly, and superseded figures are named rather than quietly
 replaced.
 
+## [Unreleased]
+
+### Planned- A genuinely ambiguous case for the `shortlist` pattern, so narrowing can be
+  demonstrated rather than only unit-tested.
+- Per-repository ledger merging (`jevskill stats --merge`).
+- Live verification of the vendor endpoint. It is verified by 51 unit tests plus
+  endpoint existence, but not by a real call — no TypeSafe key was available.
+- A `doctor` contract probe and further providers (Cloudflare Workers AI, Vercel AI
+  Gateway). Both need a schema or an account to verify against, so neither is
+  shipped as a guess — see the note in 0.9.0.
+- Block mode on **deep** nesting, and on formats whose blocks are not delimited by
+  indentation (minified JSON, unformatted XML). One workload proves the fix, not the
+  generality.
+
+## [0.10.2] — 2026-09-20
+
+### Added — the official model page, linked where the model is introduced
+
+The README linked `docs.typesafe.ai` and `api.typesafe.ai` but never
+**`typesafe.ai`** — the official page of the model this whole skill exists to call.
+It is now at the top three ways: a line under the headline naming it as the official
+model page, a badge in the top row, and a link on the first mention of Jev in the body.
+
+```text
+**Jev** is TypeSafe's *System One* decision model, and it is the whole engine here.
+Official model page: **typesafe.ai** · API docs
+```
+
+Checked before publishing: `https://typesafe.ai/` returns 200.
+
+### Note — a self-inflicted bug in this entry's own tooling
+
+Writing it used a global `-replace` on the changelog targeting the Unreleased heading,
+which also matched the *prose* that quotes that heading inside two older entries: it
+duplicated the new section and left two lines that begin with the heading, rendering as
+stray sections. Restored from git and redone with a strict heading pattern instead of a
+global substitution, and `tests/test_published_metadata.py` now asserts that every
+bracketed heading is a real section and that sections are ordered newest-first with
+Unreleased on top.
+
 ## [0.10.1] — 2026-09-20
 
 ### Fixed — four published figures were wrong, and are now checked by a test
@@ -41,20 +81,6 @@ about the work through a model on OpenRouter, the same route this skill uses —
 [`pablogfx.com/timeif`](https://pablogfx.com/timeif), a cinematic retro-style game.
 Both links were fetched before being published; a dead link in a README is a claim
 that was not checked.
-
-## [Unreleased]
-
-### Planned- A genuinely ambiguous case for the `shortlist` pattern, so narrowing can be
-  demonstrated rather than only unit-tested.
-- Per-repository ledger merging (`jevskill stats --merge`).
-- Live verification of the vendor endpoint. It is verified by 51 unit tests plus
-  endpoint existence, but not by a real call — no TypeSafe key was available.
-- A `doctor` contract probe and further providers (Cloudflare Workers AI, Vercel AI
-  Gateway). Both need a schema or an account to verify against, so neither is
-  shipped as a guess — see the note in 0.9.0.
-- Block mode on **deep** nesting, and on formats whose blocks are not delimited by
-  indentation (minified JSON, unformatted XML). One workload proves the fix, not the
-  generality.
 
 ## [0.10.0] — 2026-09-20
 
@@ -405,7 +431,6 @@ is corrected.
   flagged an otherwise-confident answer, proving the band is live and not inert.
 - No published number changes.
 
-
 ## [0.6.2] — 2026-09-20
 
 Auditing the recovery handle end to end — the one feature whose entire promise is
@@ -741,7 +766,6 @@ REDUCE and a measured ledger. README and `api.md` both recommend installing both
   the one exercised live.
 - Measurements with **no external replication** are named as such: the REDUCE recall
   figures (`8/14` in the A/B suite, `3/14` pre-filter) and the guard accuracy run.
-
 
 ## [0.3.0] — 2026-09-20
 

@@ -23,12 +23,16 @@ tokens on decisions — and start making them for **$0.000013** in **325 ms**.
 
 **A/B tested: 99.3% fewer input tokens, and accuracy up, not down (18/18 vs 15/18).**
 
-[![tests](https://img.shields.io/badge/tests-516%20passing-brightgreen)](#-does-it-actually-help-ab-tested)
+**Jev** is TypeSafe's *System One* decision model, and it is the whole engine here.
+Official model page: **[typesafe.ai](https://typesafe.ai/)** · [API docs](https://docs.typesafe.ai/)
+
+[![tests](https://img.shields.io/badge/tests-520%20passing-brightgreen)](#-does-it-actually-help-ab-tested)
 [![A/B](https://img.shields.io/badge/A%2FB-99.3%25%20fewer%20tokens-blue)](#-does-it-actually-help-ab-tested)
 [![cost](https://img.shields.io/badge/decision-%240.000013-success)](#-cost-per-decision)
 [![license](https://img.shields.io/badge/license-MIT-informational)](LICENSE)
 [![python](https://img.shields.io/badge/python-3.9%2B-blue)](pyproject.toml)
 [![skills.sh](https://img.shields.io/badge/skills.sh-install-7c3aed)](https://skills.sh/lazniak/jevskill)
+[![Jev](https://img.shields.io/badge/Jev-TypeSafe%20System%20One-0d9488)](https://typesafe.ai/)
 
 ```bash
 npx skills add lazniak/jevskill -g     # nothing to compile, no account
@@ -60,8 +64,8 @@ JEV shortlist (3 lines) █                                              320 tok
                                                                    ↑ 99.1% gone
 ```
 
-`jevskill` asks **Jev** — TypeSafe's *System One* decision model — to find the 3
-lines that matter. Your expensive model never sees the other 897.
+`jevskill` asks **[Jev](https://typesafe.ai/)** — TypeSafe's *System One* decision model
+— to find the 3 lines that matter. Your expensive model never sees the other 897.
 
 ```
 Without jevskill   5 logs into the session   ████████████████████████  186,945 tok
@@ -665,15 +669,15 @@ jevskill/              the Python package — the measurement half
 bench/
   run.py               E1–E7 microbenchmarks (latency, fan-out, REDUCE, guards)
   ab.py                the A/B evaluation vs the model doing it alone
-tests/                 516 tests, offline, green
+tests/                 520 tests, offline, green
 docs/install.md        install guide an agent reads and executes
 docs/DESIGN.md         architecture + the mistakes that shaped it
 AGENTS.md              conventions for agents working on this repo
 ```
 
-## 🧭 Status & known limits — `v0.10.1`
+## 🧭 Status & known limits — `v0.10.2`
 
-CLI, skill, bundled scripts, ledger and reference docs (516 offline tests) are
+CLI, skill, bundled scripts, ledger and reference docs (520 offline tests) are
 complete, and there are now two benchmark suites. What is **not** proven:
 
 * **Redaction is not a PII policy.** It catches credential-shaped strings, not

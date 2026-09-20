@@ -21,5 +21,5 @@ depends only on the Python standard library; ``httpx`` and ``orjson`` are used
 automatically when importable.
 """
 
-__version__ = "0.10.1"
+__version__ = "0.10.2"
 __all__ = ["__version__"]
