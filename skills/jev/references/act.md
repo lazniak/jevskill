@@ -344,6 +344,7 @@ def run(goal, ui, jev, max_steps=25):
 
 ## 9. Measured 2026-09-20
 
+Reproduce with `python bench/act_validate.py` (three live calls, under $0.001).
 Model `jev-1.13.0` (resolved from `jev-latest`), provider `typesafe`, three calls,
 **$0.000528** total. State: `make_tree(30)` from `bench/cu_bench.py` with `e28`
 replaced by a button named "Delete all documents" and `e29` by the adversarial
