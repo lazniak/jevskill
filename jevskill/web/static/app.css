@@ -123,7 +123,9 @@ body {
 
 .columns {
   display: grid;
-  grid-template-columns: var(--panel-w) minmax(0, 1fr);
+  /* The state is the thing being judged; give it real width. --panel-w is the
+     floor, not the size. */
+  grid-template-columns: minmax(var(--panel-w), 1fr) minmax(0, 1.15fr);
   gap: var(--gutter);
   align-items: start;
 }
@@ -222,11 +224,14 @@ input:focus, textarea:focus, select:focus, button:focus { border-color: var(--li
   font-family: var(--mono);
   font-size: 12.5px;
   line-height: 1.55;
-  min-height: 260px;
+  min-height: min(44vh, 520px);
   resize: vertical;
-  white-space: pre;
-  overflow-wrap: normal;
-  overflow-x: auto;
+  /* Wrap, do not scroll sideways: a diff line longer than the panel is still
+     readable, and a horizontal scrollbar under a placeholder looked broken at
+     375px and 440px. */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  overflow-x: hidden;
 }
 
 .dropzone.is-over { border-color: var(--gold); }

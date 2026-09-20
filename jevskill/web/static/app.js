@@ -441,13 +441,37 @@ function questionCount() {
   return Object.keys(currentBundle()).length;
 }
 
+/* The first card the server would reject, named so the hint can say which one.
+ * `validate_questions` on the server stays the authority; this only spares a
+ * round trip for the gaps a person can see: an empty instruction, a choice with
+ * one option, a score with one level. JSON mode is checked by the server. */
+function firstIncomplete() {
+  if (state.jsonMode) return null;
+  for (let i = 0; i < state.cards.length; i += 1) {
+    const card = state.cards[i];
+    const label = 'question ' + (i + 1);
+    if (!card.instructions.trim()) return label + ' needs instructions';
+    if (card.type === 'choice' && card.options.filter((o) => o.key.trim()).length < 2) {
+      return label + ' needs two options';
+    }
+    if (card.type === 'score' && card.levels.filter((l) => l.trim()).length < 2) {
+      return label + ' needs two levels';
+    }
+  }
+  return null;
+}
+
 function updateRunState() {
   const hasKey = state.doctor && state.doctor.key_found;
-  const ok = hasKey && !state.running && state.jsonValid && questionCount() > 0;
+  const incomplete = firstIncomplete();
+  const ok = hasKey && !state.running && state.jsonValid && questionCount() > 0 && !incomplete;
   $('#run').disabled = !ok;
-  $('#run-hint').textContent = !hasKey
-    ? 'no key — run disabled'
-    : (!state.jsonValid ? 'fix the JSON to run' : (questionCount() ? 'ctrl + enter' : 'add a question'));
+  let hint = 'ctrl + enter';
+  if (!hasKey) hint = 'no key — run disabled';
+  else if (!state.jsonValid) hint = 'fix the JSON to run';
+  else if (!questionCount()) hint = 'add a question';
+  else if (incomplete) hint = incomplete;
+  $('#run-hint').textContent = hint;
 }
 
 function showError(where, payload) {
@@ -844,7 +868,9 @@ function wire() {
 
 async function boot() {
   wire();
-  state.cards = [newCard('noul')];
+  // Start empty: the quick gate is the fast path, a template the second, and an
+  // empty card only produced a 400 from the server on the first click.
+  state.cards = [];
   refresh();
   renderTotals();
   try {
