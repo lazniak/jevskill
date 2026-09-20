@@ -411,7 +411,8 @@ def _step(index: int, state: _LoopState, result: RunResult, options: RunOptions,
         return _escalate(state, result, record, finish, escalate, goal, snapshot,
                          cands, decision, verdict, executor, options,
                          "done_unverified", confirm_gate=confirm_gate,
-                         current_hash=current_hash, thresholds=thresholds)
+                         current_hash=current_hash, reduced=reduced,
+                         thresholds=thresholds)
     state.done_streak = 0
 
     if not verdict.ok:
@@ -427,7 +428,8 @@ def _step(index: int, state: _LoopState, result: RunResult, options: RunOptions,
         return _escalate(state, result, record, finish, escalate, goal, snapshot,
                          cands, decision, verdict, executor, options,
                          verdict.reason, confirm_gate=confirm_gate,
-                         current_hash=current_hash, thresholds=thresholds)
+                         current_hash=current_hash, reduced=reduced,
+                         thresholds=thresholds)
     state.invalid_streak = 0
 
     # act.md §3, the row the reference loop left out: the op is not `done`, but
@@ -464,7 +466,8 @@ def _step(index: int, state: _LoopState, result: RunResult, options: RunOptions,
             return _escalate(state, result, record, finish, escalate, goal,
                              snapshot, cands, decision, verdict, executor,
                              options, "no_chord", confirm_gate=confirm_gate,
-                             current_hash=current_hash, thresholds=thresholds)
+                             current_hash=current_hash, reduced=reduced,
+                             thresholds=thresholds)
         action.key = chord.key
         record.note = (record.note + "; key %s (%s)"
                        % (chord.key, chord.why)).strip("; ")
@@ -485,7 +488,8 @@ def _step(index: int, state: _LoopState, result: RunResult, options: RunOptions,
                              snapshot, cands, decision, verdict, executor,
                              options, "type_without_needs_text",
                              confirm_gate=confirm_gate,
-                             current_hash=current_hash, thresholds=thresholds)
+                             current_hash=current_hash, reduced=reduced,
+                             thresholds=thresholds)
         try:
             action.text = write_text(goal, element)
         except Exception as exc:
@@ -493,7 +497,8 @@ def _step(index: int, state: _LoopState, result: RunResult, options: RunOptions,
                              snapshot, cands, decision, verdict, executor,
                              options, "needs_text:%s" % type(exc).__name__,
                              confirm_gate=confirm_gate,
-                             current_hash=current_hash, thresholds=thresholds)
+                             current_hash=current_hash, reduced=reduced,
+                             thresholds=thresholds)
         if action.op != "type":
             # The model said `click`, `needs_text` said otherwise and the
             # target holds text: code, not Jev, chose what happens next. That
@@ -563,7 +568,8 @@ def _step(index: int, state: _LoopState, result: RunResult, options: RunOptions,
             return _escalate(state, result, record, finish, escalate, goal,
                              snapshot, cands, decision, verdict, executor,
                              options, "act_failed", confirm_gate=confirm_gate,
-                             current_hash=current_hash, thresholds=thresholds)
+                             current_hash=current_hash, reduced=reduced,
+                             thresholds=thresholds)
         return finish("", note)
     state.act_failures = 0
 
@@ -701,6 +707,7 @@ def _escalate(state: _LoopState, result: RunResult, record: StepRecord, finish,
               decision: Decision, verdict: Any, executor, options: RunOptions,
               reason: str, *, confirm_gate=_deny,
               current_hash: Optional[str] = None,
+              reduced: Sequence[UIElement] = (),
               thresholds: Mapping[str, float] = THRESHOLDS) -> _StepOutcome:
     """Hand the step to something bigger, or stop the run.
 
@@ -779,7 +786,10 @@ def _escalate(state: _LoopState, result: RunResult, record: StepRecord, finish,
         state.pre_hash = current_hash
         state.pre_ignore = act_module.settle_ignore_for(action.op)
         if state.pre_ignore != DEFAULT_IGNORE:
-            state.pre_hash = tree_hash(cands, ignore=state.pre_ignore)
+            # Over the *whole* reduced screen, which is what `current_hash` and
+            # the next step's comparison cover — after a cascade `cands` is one
+            # region, and hashing that would make every next step differ.
+            state.pre_hash = tree_hash(reduced or cands, ignore=state.pre_ignore)
         state.pre_title = snapshot.window_title
     act_result = executor(action, snapshot, dry_run=options.dry_run)
     record.executed = bool(getattr(act_result, "ok", False))
