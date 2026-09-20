@@ -73,8 +73,8 @@ Switch it on only if settle is genuinely long on your app, and set
 
 ## 5.2 Self-consistency — two phrasings are not two opinions
 
-**The idea.** `act.md` §9 measured the per-element destructive Noul at 0.78 and
-0.82 for a button named "Delete all documents" — under the 0.85 gate, on the
+**The idea.** `act.md` §9 measured the per-element destructive Noul at 0.79 and
+0.76 for a button named "Delete all documents" — under the 0.85 gate, on the
 least ambiguous control anyone could construct. So ask three ways in one call
 and require agreement: the shipped wording, the same judgement with `criteria`
 reordered and `focus` rephrased, and the negation "is activating it reversible

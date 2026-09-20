@@ -1,7 +1,8 @@
 """Ask the destructive question three ways in one call (plan item 5.2).
 
 The measured problem this exists for is in `act.md` §9: the per-element Noul
-returned **0.78 and 0.82** for a button literally named "Delete all documents"
+returned **0.79 and 0.76** for a button literally named "Delete all documents"
+(`bench/act_validate_out.json`, adversarial and control runs)
 — below the 0.85 gate, on the least ambiguous destructive control anyone could
 construct. One phrasing is one sample of a jagged surface, and the vendor says
 so itself: prompting.md §0 mode 10, *"don't hold the model to arithmetic

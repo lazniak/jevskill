@@ -229,6 +229,41 @@ teardown confined to `%TEMP%\jevcu`; success is graded by the oracle alone, neve
 by the agent's own `done`/`goal_reached`. Method, metrics and threats to validity
 in `bench/cu_tasks.md`.
 
+### Fixed — what the review of the loop found (before release)
+
+- **Escalation bypassed the destructive gate.** An `escalate` handler's `Action`
+  was executed with no `validate`, no name-list check and no `confirm`; a probe
+  clicked "Delete all documents" with `destructive_gates == 0`. It now goes through
+  the same validation and gate as a model decision.
+- **`type` always read as "unchanged".** The settle hash ignored `value`, so a
+  successful `type` looked like a no-op, the run ended `blocked` and no macro was
+  learned. `type`/`select` now settle with `value`/`selected` counted.
+- **`op = key` could never execute** — the loop never chose a chord, so every such
+  step hit the backend's refusal and the run escalated after two failures (the live
+  Notepad case *is* `op = key`). `act.chord_for` derives it in code (dialog with a
+  dismissing goal → Escape; focused default button, or a dialog → Enter; menu
+  target → Alt; otherwise escalate), and Enter is gated when a destructive control
+  is on screen. Accelerators such as Ctrl+S are deliberately not inferred.
+- A command control the destructive noul was never asked about (the cap is 12) was
+  indistinguishable from a measured "safe" — `Decision.asked_destructive` now
+  records the set, unasked returns `None`, and an unasked command control is gated.
+  `Verdict.log_only` (the "act above 0.85 and log" policy the design rejected) is
+  deleted. Escalation no longer claims `outcome="changed"` before anything was
+  measured. Two processes sharing `cu_macros.json` no longer overwrite each other
+  (`mkstemp` + reload-and-merge with tombstones). `decided_by = "code"` is actually
+  produced. The role tables in `act.md` §1/§4/§8 are generated from
+  `decide.ALLOWED_ROLES`/`ALLOWED_PATTERNS` by a test.
+- **Settle cap: published the 800 ms.** A poll here is a `snapshot()` walk
+  (44–77 ms measured), so the 50 ms cap `act.md` published could not hold one
+  observation; `settle_cap_for` survives as a per-op floor (a combobox raises a
+  shorter ceiling to 200 ms).
+- **`act.md` §9 now quotes a committed artifact.** `bench/act_validate_out.json`
+  was never in the repository; it is now, from a fresh run, and every §9 figure is
+  pinned by `tests/test_act_published_numbers.py`. Superseded: target confidence
+  0.99 (now 0.98), needs_text 0.26 (0.24), destructive_e28 0.78 (0.79) and the
+  "0.82" quoted from an uncommitted run, stuck 0.32 (0.31), HTTP 496/284/278 ms
+  (511/304/314).
+
 ### Added — Phase 5, measured and switched off (`references/speculate.md`)
 
 Three ideas from the research were built, measured on the committed fixtures
