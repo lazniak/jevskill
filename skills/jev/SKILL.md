@@ -13,7 +13,7 @@ description: >-
 license: MIT
 allowed-tools: Bash(python:*) Bash(python3:*) Bash(jevskill:*)
 metadata:
-  version: "0.12.0"
+  version: "0.13.0"
   requirements: >-
     Python 3.9+, standard library only — no install, no dependencies. Needs
     network access and one key: JEV_API_KEY or TYPESAFE_API_KEY (vendor) or

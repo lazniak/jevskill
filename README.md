@@ -753,13 +753,14 @@ bench/
   cu_observe_bench.py  UIA walk: comtypes CacheRequest vs uiautomation vs pywinauto → cu_observe_results.json
   cu_tasks.json        10 Windows computer-use tasks with oracles (+ cu_tasks.md)
   cu_run.py            the task harness: --dry-run (default, synthetic) · --live; cu_report.py renders it
+  web_live.json        the one live decision behind CHANGELOG 0.13.0 "Measured live": a ledger row, which=web
 tests/                 1367 tests, offline, green
 docs/install.md        install guide an agent reads and executes
 docs/DESIGN.md         architecture + the mistakes that shaped it
 AGENTS.md              conventions for agents working on this repo
 ```
 
-## 🧭 Status & known limits — `v0.12.0`
+## 🧭 Status & known limits — `v0.13.0`
 
 CLI, skill, bundled scripts, ledger, reference docs and the computer-use half
 (`jevskill.cu`: observe · reduce · hashing · decide · act · loop · macros) are

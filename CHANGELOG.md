@@ -10,7 +10,9 @@ replaced.
 
 ## [Unreleased]
 
-### Planned- A genuinely ambiguous case for the `shortlist` pattern, so narrowing can be
+### Planned
+
+- A genuinely ambiguous case for the `shortlist` pattern, so narrowing can be
   demonstrated rather than only unit-tested.
 - Per-repository ledger merging (`jevskill stats --merge`).
 - A `doctor` contract probe and further providers (Cloudflare Workers AI, Vercel AI
@@ -20,15 +22,7 @@ replaced.
   indentation (minified JSON, unformatted XML). One workload proves the fix, not the
   generality.
 
-## [0.13.0]
-
-*Unreleased.* The version is not bumped in `pyproject.toml` or
-`jevskill/__init__.py` yet; this entry describes what is on the branch.
-
-(The heading carries no date because this repository's changelog structure is
-tested: `tests/test_published_metadata.py::TestChangelogStructure` requires every
-`## [...]` line to be either `[Unreleased]` or a version with an optional ISO
-date, so "— unreleased" as a suffix would render as a section the test rejects.)
+## [0.13.0] — 2026-09-21
 
 ### Added — a local web console
 
@@ -85,12 +79,13 @@ blocked, respects `prefers-reduced-motion`, and collapses to one column under
 
 ### Measured live
 
-One real decision through `POST /api/decide` against the vendor endpoint
-(`jev-1.13.0`, key fingerprint `284b77e4`): a three-line diff, one `noul` asking
-whether the return value changes, answered `0.99` in **659.6 ms** for **336
-input tokens** and **$0.000014112**, `cost_source: "computed"` (the vendor
-reports no `cost`). The row landed in the ledger and `jevskill stats` reported
-it under pattern `web`.
+One real decision issued from the page against the vendor endpoint, recorded by
+the shared ledger writer and copied verbatim to `bench/web_live.json`: a quick
+gate asking whether a three-line diff changes a public function signature, one
+`noul`, answered *yes* at **0.95** in **747 ms** for **320 input tokens** and
+**$0.0000134** (the vendor reports no `cost`, so the figure is computed from the
+published rate). The row carries `which: "web"` and `jevskill stats` counts it
+with the CLI's own.
 
 ## [0.12.0] — 2026-09-20
 
