@@ -243,7 +243,7 @@ Questions share one state and are evaluated **in parallel**. Adding a question
 costs a few input tokens and almost no latency.
 
 Measured: **8 questions in one call = 1 call's worth of latency.** Eight
-sequential calls cost **9.4×** the time and **~1.9×** the tokens, because you pay
+sequential calls cost **12.4×** the time and **4.03×** the tokens, because you pay
 for the same state eight times.
 
 ```
@@ -278,9 +278,9 @@ generator you query broadly, not an oracle you query once.
 
 ### Rule 3 — Budget the state, and cut it with code first.
 
-Latency is essentially **flat** with respect to state size — measured, growing the
-state from ~330 to ~5,000 tokens moved p50 by *less than 10 ms*. Cost is not:
-it scales linearly with input tokens.
+Latency grows far slower than state — measured, a 22× state moved p50 from
+*353 ms to 468 ms* as input went from 324 to 7,020 tokens. Cost does not: it
+scales linearly with input tokens.
 
 So the constraint is **accuracy and cost, not speed**. Irrelevant state is a
 distractor that degrades the decision, and it is billed. Default budget: 8,000
