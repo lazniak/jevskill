@@ -64,8 +64,7 @@ python scripts/jev_query.py --state-file diff.txt --question-type noul --name br
   --false-text "Only internals, comments or formatting change."
 ```
 
-That is the whole dependency: Python 3.9+, a key, network access. For reduced data
-use `scripts/jev_recovery.py` (see §3).
+Dependencies: Python 3.9+, a key, network. Reduced data: `scripts/jev_recovery.py` (§3).
 
 **Install the package for the measurement half** — the ledger, stage timings,
 `plan`, `patterns`, `stats` and `outcome`:
@@ -80,8 +79,7 @@ jevskill plan "<what you are about to do>"   # free: is Jev even right here?
 
 ### Two endpoints serve this model — pick one
 
-The same model is served through OpenRouter and through TypeSafe's own API. Both
-work identically from this skill; the provider is chosen for you, or explicitly:
+Both endpoints work identically from this skill; the provider is chosen for you, or explicitly:
 
 ```bash
 jevskill doctor                        # auto-detect from the key shape
@@ -109,8 +107,7 @@ way. Model names are translated automatically; the wrong one is a 404 or a 422.
 so a key set yesterday works in a terminal opened before it. Without the install,
 `scripts/jev.py` delegates to the package if it can find it.
 
-Do **not** reach for Jev before reading §2: the most common waste is using it on a
-task whose answer is text.
+Read §2 before reaching for Jev: the most common waste is a task whose answer is text.
 
 ### No key? Ask — never simulate silently
 
@@ -148,9 +145,8 @@ and ask in their language:
 | `1` | Input, key, API or protocol error | fix the call |
 
 `2` is deliberately not an error: a harness must tell *"the model hesitated"* apart
-from *"the call failed"* without parsing output. The thresholds behind it
-(`--review-below 0.75`, `--review-margin 0.10`) are **illustrative heuristics, not
-calibrated guarantees** — tune them on held-out data via `jevskill outcome`.
+from *"the call failed"* without parsing output. Its thresholds (`--review-below
+0.75`, `--review-margin 0.10`) are **illustrative heuristics** — tune them on held-out data via `jevskill outcome`.
 
 ---
 
