@@ -31,7 +31,7 @@ miss — most importantly, one reports a billed cost and the other does not.
 | Key variable | `OPENROUTER_API_KEY` etc. | `JEV_API_KEY`, `TYPESAFE_API_KEY` |
 | Key shape | `sk-or-v1-…` | vendor-issued (`apikey_…`, 108 chars observed) |
 | `session_id` in the body | accepted | **HTTP 400 `api_usage_error`** — the client omits it |
-| Measured live (2026-09-20, Poland, warm p50) | 325–371 ms | **292–320 ms** |
+| Measured live (2026-09-20, Poland, hot client, 60-element state, p50) | 350 ms | **292 ms** — every size in `references/hotloop.md`, rows in `bench/cu_results.json` |
 | Context | 32,000 tokens | **64,000** per request; 32,000 for state + longest question |
 | Price | $0.042 / Mtok input, output free | **identical** — $0.042 / Mtok, output free |
 | Rate limits | not documented here | 250,000 tok/s, 1,200 req/min, **dynamic** |
@@ -136,8 +136,9 @@ TypeSafe documents the same `state` + `questions` shape, so the request body thi
 skill builds is **identical for both providers** — only the URL, the `model` name
 and the optional `session_id` differ. First real decision against the vendor:
 **2026-09-20** — `model: "jev-1.13.0"`, `usage: {"input_tokens": 311,
-"output_tokens": 21}`, no `id`, no `cost`, warm p50 292–320 ms from Poland (the
-OpenRouter route measured 325–371 ms in the same minutes). Both `/v1/systemone` and
+"output_tokens": 21}`, no `id`, no `cost`, p50 284–304 ms from Poland at 12–60 elements (the
+OpenRouter route measured 298–350 ms in the same sweep — `bench/cu_results.json`,
+`references/hotloop.md`). Both `/v1/systemone` and
 `/v1/models` return a structured `401` for an invalid key:
 
 ```json

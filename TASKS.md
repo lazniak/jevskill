@@ -10,30 +10,30 @@ Uzasadnienie każdego zadania: [docs/research-2026-09-20-jev-cu.md](docs/researc
 | T0.2 | 0 | `session_id` tylko do OpenRouter (vendor: 400) | done 2026-09-20 | fable | `agent/fable/vendor-key-and-plan` |
 | T0.3 | 0 | `doctor` bez fragmentów klucza (`key_name`/`key_source`/`key_fingerprint`) | done 2026-09-20 | fable | `agent/fable/vendor-key-and-plan` |
 | T0.4 | 0 | `bench/cu_bench.py` + pomiar obu końcówek; raport research; plan | done 2026-09-20 | fable | `agent/fable/vendor-key-and-plan` |
-| T1.1 | 1 | Ujednolicić 9.4×/12.4× i „<10 ms"/„353→468 ms" | todo | | |
-| T1.2 | 1 | Test krzyżowy liczb `SKILL.md` ↔ `bench/*.json` | todo | | |
-| T1.3 | 1 | Źródło i liczby „2 000 e-maili" (62.6%, 91.8% regex) | todo | | |
-| T1.4 | 1 | `api.md`: każdy wiersz tabeli providerów z cytatem docs | todo | | |
-| T1.5 | 1 | Sekcja „Znane słabości modelu" (11 trybów) w `prompting.md` | todo | | |
-| T1.6 | 1 | Reguła „diff stanu robi kod" + `bench/cu_results.json` | todo | | |
+| T1.1 | 1 | Ujednolicić 9.4×/12.4× i „<10 ms"/„353→468 ms" | done 2026-09-20 | opus5/A1 | `agent/fable/vendor-key-and-plan` |
+| T1.2 | 1 | Test krzyżowy liczb `SKILL.md` ↔ `bench/*.json` | done 2026-09-20 | opus5/A2 | `agent/fable/vendor-key-and-plan` |
+| T1.3 | 1 | Źródło i liczby „2 000 e-maili" (62.6%, 91.8% regex) | done 2026-09-20 | opus5/A1 | `agent/fable/vendor-key-and-plan` |
+| T1.4 | 1 | `api.md`: każdy wiersz tabeli providerów z cytatem docs | done 2026-09-20 | opus5/A1 | `agent/fable/vendor-key-and-plan` |
+| T1.5 | 1 | Sekcja „Znane słabości modelu" (11 trybów) w `prompting.md` | done 2026-09-20 | opus5/A1 | `agent/fable/vendor-key-and-plan` |
+| T1.6 | 1 | Reguła „diff stanu robi kod" + `bench/cu_results.json` | done 2026-09-20 | opus5/A1+A3 | `agent/fable/vendor-key-and-plan` |
 | T1.7 | 1 | `allowed-tools` zgodne z komendami | todo | | |
-| T1.8 | 1 | Eksport API Pythona albo usunięcie snippetów z `SKILL.md` | todo | | |
+| T1.8 | 1 | Eksport API Pythona albo usunięcie snippetów z `SKILL.md` | done 2026-09-20 | opus5/A2 | `agent/fable/vendor-key-and-plan` |
 | T1.9 | 1 | Ścieżka do skryptów poza Claude Code (`$SKILL_DIR`) | todo | | |
-| T1.10 | 1 | `warm()` na vendorze ~600 ms: HEAD vs mini-decyzja | todo | | |
+| T1.10 | 1 | `warm()` na vendorze ~600 ms: HEAD vs mini-decyzja | done 2026-09-20 | opus5/A3 | `agent/fable/vendor-key-and-plan` |
 | T2.1 | 2 | `SKILL.md` ≤ 250 linii, jedna ścieżka wywołania | todo | | |
 | T2.2 | 2 | §6 → `references/measure.md`; dupcheck | todo | | |
-| T2.3 | 2 | Mapowanie 9 wzorców ↔ 4 oficjalne + cookbooki | todo | | |
-| T2.4 | 2 | Jedna tabela anty-wzorców | todo | | |
-| T2.5 | 2 | `llms.txt`, SDK, `~typesafe/jev-latest`, `claude plugin install` | todo | | |
+| T2.3 | 2 | Mapowanie 9 wzorców ↔ 4 oficjalne + cookbooki | done 2026-09-20 | opus5/A1 | `agent/fable/vendor-key-and-plan` |
+| T2.4 | 2 | Jedna tabela anty-wzorców | done 2026-09-20 | opus5/A1 | `agent/fable/vendor-key-and-plan` |
+| T2.5 | 2 | `llms.txt`, SDK, `~typesafe/jev-latest`, `claude plugin install` | done 2026-09-20 | opus5/A1 | `agent/fable/vendor-key-and-plan` |
 | T2.6 | 2 | Test: brak stałych latencji w `SKILL.md` | todo | | |
-| T3.1 | 3 | `JevClient(hot=True)`: timeout 1.5 s, hedging, async | todo | | |
-| T3.2 | 3 | Ledger poza gorącą ścieżką | todo | | |
-| T3.3 | 3 | Rozgrzewka mini-decyzją | todo | | |
-| T3.4 | 3 | Koszt redakcji na 6k tokenów | todo | | |
-| T3.5 | 3 | `references/act.md` | todo | | |
-| T3.6 | 3 | `cu_bench.py`: `--provider`, `--hedge`, N do 240, JSON | todo | | |
-| T4.1 | 4 | `cu/observe.py` UIA + pomiar per aplikacja | todo | | |
-| T4.2 | 4 | `cu/reduce.py` filtr + kaskada | todo | | |
+| T3.1 | 3 | `JevClient(hot=True)`: timeout 1.5 s, hedging, async | done 2026-09-20 | opus5/A3 | `agent/fable/vendor-key-and-plan` |
+| T3.2 | 3 | Ledger poza gorącą ścieżką | done 2026-09-20 | opus5/A3 | `agent/fable/vendor-key-and-plan` |
+| T3.3 | 3 | Rozgrzewka mini-decyzją | done 2026-09-20 | opus5/A3 | `agent/fable/vendor-key-and-plan` |
+| T3.4 | 3 | Koszt redakcji na 6k tokenów | done 2026-09-20 | opus5/A3 | `agent/fable/vendor-key-and-plan` |
+| T3.5 | 3 | `references/act.md` | done 2026-09-20 | opus5/A4 | `agent/fable/vendor-key-and-plan` |
+| T3.6 | 3 | `cu_bench.py`: `--provider`, `--hedge`, N do 240, JSON | done 2026-09-20 | opus5/A3 | `agent/fable/vendor-key-and-plan` |
+| T4.1 | 4 | `cu/observe.py` UIA + pomiar per aplikacja | in progress | opus5/A5 | worktree (wave A) |
+| T4.2 | 4 | `cu/reduce.py` filtr + kaskada | in progress | opus5/A5 | worktree (wave A) |
 | T4.3 | 4 | `cu/decide.py` bundle + progi + hedging | todo | | |
 | T4.4 | 4 | `cu/act.py` UIA patterns / SendInput + lista nieodwracalnych | todo | | |
 | T4.5 | 4 | `cu/loop.py` stop-warunki + log kroku | todo | | |
