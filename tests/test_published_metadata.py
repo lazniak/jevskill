@@ -478,3 +478,206 @@ class TestPublishedFiguresAreMeasured:
         assert "9.4×" not in src and "9.4x" not in src
         assert "less than 10 ms" not in src
         assert "12.4×" in src and "4.03×" in src
+
+
+# --------------------------------------------------------------------------- #
+# SKILL.md is a decision guide, not a report
+#
+# AGENTS.md: "SKILL.md is a decision guide for an agent, not documentation for a
+# human." At 0.11.0 it was 499 lines and roughly two fifths of it was measurement
+# prose written for a person deciding whether the skill was worth keeping — a
+# ledger walkthrough, an `advice` verdict table, a per-stage timing breakdown. None
+# of that changes what an agent does in the next thirty seconds, and all of it
+# competed for the context window the actual instructions need. 0.12.0 moved it to
+# `references/measure.md` and put a ceiling on the file.
+#
+# The checks below make that structural decision executable, because prose ceilings
+# decay: the previous one ("under 500 lines") was stated in AGENTS.md, nothing
+# enforced it, and the file sat at 499.
+# --------------------------------------------------------------------------- #
+
+REFERENCES = ROOT / "skills" / "jev" / "references"
+
+#: The ceiling AGENTS.md states. A number here and nowhere else would be a second
+#: source of truth, so the AGENTS.md sentence is checked against it below.
+SKILL_MAX_LINES = 250
+
+#: `TestPublishedFiguresAreMeasured.test_the_skill_does_not_quote_the_withdrawn_figures`
+#: *requires* these two to be present: they are the corrected values of the two
+#: defects that motivated the figures checker, and dropping them would let the
+#: original 9.4× drift back in unnoticed. They are E3's measured fan-out ratios,
+#: backed by `bench/results.json`, and they are the whole allowance — any other
+#: multiple in SKILL.md belongs in `references/benchmarks.md`.
+ALLOWED_SKILL_MULTIPLES = {"12.4", "4.03"}
+
+#: The one cost figure kept inline, because "what does a decision cost?" changes
+#: whether an agent fans out or loops. Backed by `results.json` E1.
+ALLOWED_SKILL_MONEY = {"0.000013"}
+
+#: Latency is the figure that went stale fastest: "~325 ms (p50)" was one machine in
+#: one country on one day, printed as if it were a property of the model. There is no
+#: allowance — every duration lives in `benchmarks.md`, which states its method.
+_SKILL_MS_RE = re.compile(rf"(?<![\w.]){_NUM}\s*ms(?![\w])")
+_SKILL_MULTIPLE_RE = re.compile(rf"(?<![\w.$])({_NUM})\s*(?:×|x(?![\w]))")
+_SKILL_MONEY_RE = re.compile(rf"\$\s*({_NUM})")
+
+
+def _skill_src() -> str:
+    return SKILL.read_text(encoding="utf-8")
+
+
+def _frontmatter(src: str) -> dict:
+    """The YAML frontmatter, parsed without a YAML dependency.
+
+    Only the shapes this file uses: `key: value` and `key: >-` folded blocks, one
+    level of nesting. A real parser would be better; a test-only dependency on one
+    would not.
+    """
+    body = src.split("---\n", 2)[1]
+    fields: dict = {}
+    key = None
+    indent = 0
+    for raw in body.splitlines():
+        if not raw.strip():
+            continue
+        match = re.match(r"^(\s*)([\w.-]+):\s*(.*)$", raw)
+        if match and (key is None or len(match.group(1)) <= indent):
+            indent = len(match.group(1))
+            key, value = match.group(2), match.group(3).strip()
+            fields[key] = "" if value in (">-", "|", ">", "") else value.strip('"')
+        elif key is not None:
+            fields[key] = (fields[key] + " " + raw.strip()).strip()
+    return fields
+
+
+def _fenced_blocks(src: str):
+    """Yield `(language, [lines])` for every fenced block."""
+    language, buffer, inside = "", [], False
+    for line in src.splitlines():
+        if line.lstrip().startswith("```"):
+            if inside:
+                yield language, buffer
+                language, buffer, inside = "", [], False
+            else:
+                language, inside = line.lstrip()[3:].strip().lower(), True
+            continue
+        if inside:
+            buffer.append(line)
+
+
+class TestSkillIsADecisionGuide:
+    """SKILL.md must stay short, runnable, and honest about where numbers live."""
+
+    def test_skill_md_is_under_the_ceiling(self):
+        lines = _skill_src().splitlines()
+        assert len(lines) <= SKILL_MAX_LINES, (
+            f"SKILL.md is {len(lines)} lines, ceiling {SKILL_MAX_LINES}; "
+            "move a section into references/ rather than raising this")
+
+    def test_agents_md_states_the_same_ceiling(self):
+        """Two places state the ceiling; a test is cheaper than remembering both."""
+        src = AGENTS.read_text(encoding="utf-8")
+        match = re.search(r"imperative and under (\d+) lines", src)
+        assert match, "AGENTS.md lost the SKILL.md length rule"
+        assert int(match.group(1)) == SKILL_MAX_LINES
+
+    def test_skill_md_quotes_no_latency_figure(self):
+        offenders = _SKILL_MS_RE.findall(_skill_src())
+        assert not offenders, (
+            f"SKILL.md quotes latency figures {offenders}; durations belong in "
+            "references/benchmarks.md, which publishes their method with them")
+
+    def test_skill_md_quotes_no_unlisted_multiple(self):
+        found = set(_SKILL_MULTIPLE_RE.findall(_skill_src()))
+        assert found <= ALLOWED_SKILL_MULTIPLES, (
+            "SKILL.md quotes ratio figures "
+            f"{sorted(found - ALLOWED_SKILL_MULTIPLES)}; cite benchmarks.md instead")
+
+    def test_skill_md_quotes_no_unlisted_cost(self):
+        found = set(_SKILL_MONEY_RE.findall(_skill_src()))
+        assert found <= ALLOWED_SKILL_MONEY, (
+            f"SKILL.md quotes cost figures {sorted(found - ALLOWED_SKILL_MONEY)}")
+
+    def test_the_figure_regexes_do_not_flag_counts_or_prices(self):
+        """A checker that flagged `32,000 tokens` would be deleted within a week."""
+        harmless = ("Context is 32,000 tokens on OpenRouter, 64,000 on the vendor; "
+                    "a decision costs about $0.000013 and the budget is 8,000 tokens. "
+                    "Python 3.9+, version 0.11.0, a 0.85 threshold, 1,200 requests.")
+        assert not _SKILL_MS_RE.findall(harmless)
+        assert not _SKILL_MULTIPLE_RE.findall(harmless)
+        assert set(_SKILL_MONEY_RE.findall(harmless)) <= ALLOWED_SKILL_MONEY
+        # ...and they do catch what they are for.
+        assert _SKILL_MS_RE.findall("in ~325 ms (p50)") == ["325 ms"]
+        assert _SKILL_MULTIPLE_RE.findall("cost 9.4× the time") == ["9.4"]
+
+    def test_the_description_is_short_and_carries_the_triggers(self):
+        """The description is the only part loaded every session: it answers "what
+        is this for / when do I load it", and nothing else. The policy sentence
+        that used to live here is in the body, where a loaded skill acts on it."""
+        description = _frontmatter(_skill_src())["description"]
+        assert len(description) <= 700, f"description is {len(description)} chars"
+        assert "Jev" in description
+        triggers = [
+            "classify", "categorize", "which of these", "route", "triage", "gate",
+            "should we", "rank", "prioritize", "grade", "too many logs",
+            "reduce the data", "save tokens", "batch decisions", "is it safe to",
+        ]
+        present = [trigger for trigger in triggers if trigger in description.lower()]
+        assert len(present) >= 5, f"only {present} survived the rewrite"
+
+    def test_every_reference_file_is_routed(self):
+        """A reference nobody links is a file nobody reads.
+
+        Asserted over the files that exist rather than a hard-coded list, so a new
+        reference — `hotloop.md` is being written as this lands — either appears in
+        the router or fails here.
+        """
+        src = _skill_src()
+        orphans = sorted(
+            path.name for path in REFERENCES.glob("*.md")
+            if f"references/{path.name}" not in src)
+        assert not orphans, f"references not named in SKILL.md's router: {orphans}"
+
+    def test_every_shell_command_matches_allowed_tools(self):
+        """`allowed-tools` is a promise about what the skill will run.
+
+        At 0.11.0 it said `Bash(python:*)` while every example in the body was a
+        `jevskill …` invocation — the field and the document disagreed, and the
+        field is the one a harness enforces.
+        """
+        src = _skill_src()
+        raw = _frontmatter(src)["allowed-tools"]
+        # Agent Skills spec: "A space-separated string of tools that are
+        # pre-approved to run", e.g. `Bash(git:*) Bash(jq:*) Read`.
+        # https://agentskills.io/specification
+        allowed = {match.group(1) for match in re.finditer(r"Bash\(([\w.-]+):\*\)", raw)}
+        assert allowed == {"python", "python3", "jevskill"}, allowed
+
+        commands: list = []
+        for language, lines in _fenced_blocks(src):
+            if language not in ("", "bash", "sh", "shell", "console"):
+                continue
+            continued = False
+            for line in lines:
+                stripped = line.strip()
+                was_continued, continued = continued, stripped.endswith("\\")
+                if was_continued or not stripped or stripped.startswith("#"):
+                    continue
+                commands.append((stripped.split()[0], stripped))
+
+        assert commands, "no shell commands found in SKILL.md; the scanner broke"
+        strays = sorted({name for name, _ in commands if name not in allowed})
+        assert not strays, (
+            f"SKILL.md runs {strays}, which allowed-tools does not cover: {raw}")
+
+        # A command substitution runs a second program that `allowed-tools` has not
+        # named, so the promise is only as good as what hides inside `$(...)`.
+        # Reading a file is the one form the examples need.
+        nested = {
+            match.group(1)
+            for _, line in commands
+            for match in re.finditer(r"\$\((\w+)", line)
+        }
+        assert nested <= {"cat"}, (
+            f"SKILL.md substitutes {sorted(nested)} inside a command; keep the "
+            "examples to what allowed-tools names, plus reading a file")
