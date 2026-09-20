@@ -371,8 +371,6 @@ ALLOW_LIST = [
                 "artifact)"),
     ("ms", 320, "unbacked - flagged 2026-09-20 (vendor-endpoint range, same missing "
                 "artifact)"),
-    ("ms", 300, "unbacked - flagged 2026-09-20 (rounds the measured 288 ms batched call "
-                "up; AGENTS.md forbids rounding up)"),
     ("%", 92, "unbacked - flagged 2026-09-20 (stage share read from a local ledger, "
               "which no committed artifact holds)"),
     ("%", 96, "unbacked - flagged 2026-09-20 (same local stage report)"),

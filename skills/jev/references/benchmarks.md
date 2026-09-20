@@ -362,8 +362,9 @@ Jev's case is not "cheaper than a chat model per call":
   retry logic to maintain;
 * every answer carries a **calibrated probability distribution**, so code can
   branch on uncertainty, which a chat model's single label does not offer;
-* **fan-out** makes it practical to ask 20 atomic questions in one 300 ms call,
-  which is what enables the large context reductions in E4 at all.
+* **fan-out** makes it practical to ask 20 atomic questions for the price of one
+  round trip (E3: eight questions answered in one 288 ms call), which is what
+  enables the large context reductions in E4 at all.
 
 Against a frontier model on a large state the token arithmetic changes sharply in
 Jev's favour, because Jev never needs the corpus pasted into a chat context — that
