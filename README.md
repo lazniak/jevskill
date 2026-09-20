@@ -486,12 +486,31 @@ complete, and there are now two benchmark suites. What is **not** proven:
 |---|---|
 | [`README.md`](README.md) | you're here |
 | [`skills/jev/SKILL.md`](skills/jev/SKILL.md) | the Skill your agent loads |
-| [`skills/jev/references/api.md`](skills/jev/references/api.md) | exact API shapes, every field, error codes |
+| [`skills/jev/references/api.md`](skills/jev/references/api.md) | exact API shapes, both providers, every field, error codes |
 | [`skills/jev/references/patterns.md`](skills/jev/references/patterns.md) | all 9 patterns, worked questions |
 | [`skills/jev/references/prompting.md`](skills/jev/references/prompting.md) | 10 rules, each backed by a measurement |
 | [`skills/jev/references/benchmarks.md`](skills/jev/references/benchmarks.md) | every number + threats to validity |
 | [`CHANGELOG.md`](CHANGELOG.md) | versioned history |
 | [`docs/DESIGN.md`](docs/DESIGN.md) | why it's built this way |
+
+## 🔗 Related — install both
+
+TypeSafe publishes [its own agent skill](https://docs.typesafe.ai/agent-skill), and
+it is **complementary to this one**, not a competitor:
+
+```bash
+npx skills add typesafe-ai/skills --skill typesafe-ai
+```
+
+| | Their skill | This skill |
+|---|---|---|
+| Purpose | **build apps with** Jev | **use** Jev during a session |
+| Gives the agent | live docs + cookbook routing | a running CLI and bundled scripts |
+| Context reduction | — | reversible REDUCE, measured 98.8% |
+| Measurement | — | per-stage ledger + A/B suite |
+
+Theirs if you are writing an application that calls Jev. This one if you want your
+coding agent to reach for Jev while working.
 
 ## 🤝 Contributing
 

@@ -290,6 +290,41 @@ ergonomic. `model` in the response is the resolved snapshot id, not your alias.
 * **`score`** is a weighted mean, so it lands between levels. Do not round it away
   before you have used it — `1.4` vs `1.6` is signal.
 
+Three sharper points, from the vendor's own guidance, that change how you should
+read these fields:
+
+* **`confidence` measures distribution concentration, not correctness.** It
+  summarizes how peaked the probabilities are. It is *not* a statement about
+  whether the workflow is right, and it is not permission to act. Several
+  genuinely acceptable alternatives also spread probability, so low confidence on
+  a harmless preference choice is expected and does not invalidate it.
+* **`noul` near 0.5 means "as likely yes as no", not "medium intensity".** Do not
+  read a 0.5 gate as a middling severity score — it is a coin flip, and the right
+  response is to escalate or supply more state.
+* **A Choice cannot select a value you did not offer.** If you build candidates in
+  code and let the model pick one, check *candidate coverage* first: an omitted
+  value is unreachable, and the model will confidently pick the nearest option it
+  was given. This is the same failure mode as a missing `unclear` option, one
+  level up.
+
+### Also worth reading
+
+TypeSafe publishes its own agent skill, and it is **complementary to this one**
+rather than a competitor:
+
+```bash
+npx skills add typesafe-ai/skills --skill typesafe-ai
+```
+
+*Theirs* teaches an agent how to **build applications with** Jev — it routes to the
+live docs and cookbooks and covers architecture patterns (reranking, hierarchical
+classification, extraction cascades, function calling).
+*This one* is operational: it **runs Jev during a session**, reduces the harness's
+context with a reversible REDUCE pipeline, and records measured statistics.
+
+Install both. Theirs if you are writing an app that calls Jev; this one if you want
+your coding agent to reach for Jev while working.
+
 ## Errors
 
 | Code | Provider | Meaning | What to do |

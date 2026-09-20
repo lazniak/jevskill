@@ -10,6 +10,34 @@ replaced.
 
 ## [Unreleased]
 
+### Added
+- **Confidence semantics, sharpened against the vendor's own guidance.** Three
+  clarifications that change how answers should be read, now in `api.md`:
+  `confidence` measures *distribution concentration*, not correctness and not
+  permission to act; a `noul` near 0.5 means "as likely yes as no", **not** medium
+  intensity; and a `Choice` cannot select a value you never offered, so **check
+  candidate coverage** before relying on it — the model will confidently pick the
+  nearest option it was given.
+- **External corroboration section** in `benchmarks.md`. TypeSafe's own
+  parallel-questions cookbook reports batching 13 questions into one call as
+  **12.2× cheaper and 10.0× faster with no change in answers**; this repo measured
+  **12.4× faster and 4.03× fewer tokens** on 8 questions. Different workloads and
+  providers, same effect and near-identical latency multiple. The token multiple
+  differs because their state is large and shared. Also linked: the vendor's own
+  [Jev 1.13 jaggedness](https://docs.typesafe.ai/model-jaggedness/jev-1.13) page,
+  which documents this model version's known weaknesses.
+- **The vendor's own agent skill** is documented and linked as *complementary*, not
+  competing: theirs teaches an agent to **build applications with** Jev (docs and
+  cookbook routing); this one **uses** Jev during a session (running CLI, reversible
+  REDUCE, measured ledger). Install both.
+
+### Notes
+- Vendor research confirmed both the 64K/32K context split and the absent `cost`
+  field independently of the third-party guide, so the provider delta table in
+  `api.md` now rests on the vendor's primary documentation.
+- Named the measurements that have **no** external replication: the REDUCE recall
+  figures (`8/14` in the A/B suite, `3/14` pre-filter) and the guard accuracy run.
+
 ### Planned
 - A genuinely ambiguous case for the `shortlist` pattern, so narrowing can be
   demonstrated rather than only unit-tested.

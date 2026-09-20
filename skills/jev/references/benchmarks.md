@@ -112,6 +112,34 @@ whole four-line block, so the name survived.
   direction — there the question was too vague, here it was too precise about the
   wrong attribute.
 
+## External corroboration
+
+Two independent sources measured the same structural effect this suite measures,
+which is worth recording because a single author's numbers deserve scepticism.
+
+**The vendor, on fan-out.** TypeSafe's own
+[parallel-questions cookbook](https://docs.typesafe.ai/cookbooks/parallel_questions)
+runs 13 questions over a regulatory briefing and reports that batching every
+question into one call is **12.2× cheaper on input tokens and 10.0× faster, with no
+change in answers**.
+
+This repository measured the same pattern independently in E3: **12.4× faster on
+latency and 4.03× fewer tokens** for 8 questions in one call versus 8 sequential
+calls. Different workloads, different question counts, different providers — and
+the direction and rough magnitude agree. The token multiple differs because their
+workload is 13 questions against one large state, where the shared state dominates;
+the latency multiple is nearly identical.
+
+**The vendor, on their own model's limits.** TypeSafe publishes a
+[Jev 1.13 jaggedness](https://docs.typesafe.ai/model-jaggedness/jev-1.13) page
+listing known weaknesses of this model version. Worth reading before trusting it
+with anything consequential — a vendor documenting its model's failure modes is a
+better signal than any benchmark.
+
+**Where no external check exists.** Our REDUCE recall figures (`8/14`, `3/14`) and
+the guard accuracy run have no independent replication. Treat them as one careful
+measurement on synthetic data, not as established properties of the model.
+
 ## Threats to validity
 
 1. **Synthetic fixtures.** Generated, not harvested. Real logs have messier
