@@ -14,9 +14,10 @@ them the model's:
   matched case-folded, as a substring, against the control's name. It fires
   before any probability is read. The per-element Noul in
   :mod:`jevskill.cu.decide` is a second opinion that *adds* to the list, and it
-  is measurably not a boundary: 0.78 and 0.76 (act.md §9) and 0.82 (the
-  2026-09-20 review run) for a button named literally "Delete all documents" —
-  all three below the 0.85 bar an automatic policy would need.
+  is measurably not a boundary: 0.79 and 0.76 for a button named literally
+  "Delete all documents" (act.md §9, out of the committed
+  ``bench/act_validate_out.json``) — both below the 0.85 bar an automatic
+  policy would need.
 * **Prefer the platform's patterns to synthetic input.** ``Invoke``,
   ``SetValue``, ``Toggle``, ``SelectionItem.Select`` and ``ScrollItem`` act on
   the control directly: they work when the window is occluded, they cannot land
@@ -614,7 +615,7 @@ def settle(observe: Callable[[], Snapshot], prev_hash: Optional[str], *,
     """Poll the tree hash until it differs from ``prev_hash`` or time runs out.
 
     This is the code-side ``stuck`` detector, and it is the whole reason the
-    bundle has no ``stuck`` question: asked, that question returned 0.31-0.60 on
+    bundle has no ``stuck`` question: asked, that question returned 0.29-0.60 on
     screens that had plainly changed (act.md §9, prompting.md §11). Hashing two
     trees answers it exactly, in microseconds.
 

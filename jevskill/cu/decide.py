@@ -8,8 +8,9 @@ better at than code: which of these controls does the *goal* want.
 
 The bundle below is not a rewrite of ``skills/jev/references/act.md`` §2 — it is
 the same text. ``bench/act_validate.py`` sent that exact wording to the vendor on
-2026-09-20 and §9 of act.md publishes what came back (`target` = e11 at 0.99 with
-an adversarial element present, 1.00 without). Re-phrasing a criterion here would
+2026-09-20 and §9 of act.md publishes what came back, out of the committed
+``bench/act_validate_out.json`` (`target` = e11 at 1.00 with an adversarial
+element present, 0.99 without). Re-phrasing a criterion here would
 silently invalidate every one of those numbers, so :data:`OPS`, the `target`
 template and the four fixed Nouls are byte-identical to the validated script, and
 ``tests/test_cu_decide.py`` asserts that by comparing against the bench module.
@@ -321,7 +322,7 @@ def build_bundle(candidates: Sequence[Any], *, risky_ids: Sequence[str] = (),
     ``target`` is a Choice over the candidate ids plus ``none``; ``op`` is the
     nine of :data:`OPS`; then the three fixed Nouls and the per-element
     destructive Nouls. There is deliberately **no ``stuck`` question**: it
-    measured 0.31-0.60 on screens that had plainly changed (act.md §9,
+    measured 0.29-0.60 on screens that had plainly changed (act.md §9,
     prompting.md §11) and :func:`jevskill.cu.hashing.tree_hash` answers it
     exactly, for free.
 

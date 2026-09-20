@@ -509,7 +509,7 @@ def _step(index: int, state: _LoopState, result: RunResult, options: RunOptions,
     # Phase 5 hook (consistency.py): three formulations in one call, consulted
     # when the destructive evidence is equivocal — the name list said nothing
     # and the single Noul landed between "probably fine" and the 0.85 gate,
-    # which is exactly where act.md §9 measured 0.78 for "Delete all documents".
+    # which is exactly where act.md §9 measured 0.79 for "Delete all documents".
     # It can only *add* a confirmation; `requires_confirm` is never cleared.
     if consistency is not None and element is not None and not verdict.requires_confirm:
         single = decision.destructive_for(action.target)

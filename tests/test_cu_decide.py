@@ -26,9 +26,10 @@ from pathlib import Path
 import pytest
 
 from jevskill.client import Answer, Decisions
-from jevskill.cu.decide import (COMMAND_ROLES, DESTRUCTIVE_QUESTION_CAP, OPS,
-                                THRESHOLDS, Decision, build_bundle, build_state,
-                                decide, decide_cascade, destructive_ids,
+from jevskill.cu.decide import (ALLOWED_PATTERNS, ALLOWED_ROLES, COMMAND_ROLES,
+                                DESTRUCTIVE_QUESTION_CAP, OPS, THRESHOLDS,
+                                Decision, build_bundle, build_state, decide,
+                                decide_cascade, destructive_ids,
                                 element_criteria, from_decisions, goal_verdict,
                                 noul_confidence, noul_margin,
                                 text_sanity_question, validate)
@@ -185,12 +186,68 @@ class TestBundleIsTheValidatedBundle:
         assert mine["op"]["instructions"] == theirs["op"]["instructions"]
 
     def test_stuck_is_never_asked(self):
-        # Measured 0.31-0.60 on screens that had plainly changed; the hash does
+        # Measured 0.29-0.60 on screens that had plainly changed; the hash does
         # it exactly, for free. act.md §2's table of what is deliberately absent.
         bundle = build_bundle(screen(), risky_ids=["e2"])
         assert "stuck" not in bundle
         assert not any("chang" in json.dumps(q).lower() and name.startswith("stuck")
                        for name, q in bundle.items())
+
+
+class TestActMdQuotesTheCodesRoleTable:
+    """One table, three places that used to restate it — in three versions.
+
+    act.md §4 said `type` went only into `textbox`/`combobox`. ``textbox`` is
+    not a role :data:`jevskill.cu.types.CONTROL_TYPES` can emit, so the rule as
+    published forbade typing into anything at all; §8's listing meanwhile
+    allowed ``document`` and the code also allowed ``spinner``. The document's
+    table is now generated from the constants here, so a change to either one
+    fails until act.md is regenerated with it.
+    """
+
+    ACT_MD = (REPO / "skills" / "jev" / "references" / "act.md").read_text(
+        encoding="utf-8")
+
+    @staticmethod
+    def expected_row(op):
+        roles = ", ".join("`%s`" % role for role in sorted(ALLOWED_ROLES[op]))
+        patterns = ", ".join("`%s`" % p for p in sorted(ALLOWED_PATTERNS[op]))
+        return "| `%s` | %s | %s |" % (op, roles, patterns)
+
+    @pytest.mark.parametrize("op", ["click", "type", "select"])
+    def test_the_published_row_is_the_code_s_row(self, op):
+        assert self.expected_row(op) in self.ACT_MD, (
+            "act.md §4 no longer matches ALLOWED_ROLES/ALLOWED_PATTERNS; "
+            "the row should read:\n%s" % self.expected_row(op))
+
+    def test_no_rule_or_example_still_names_a_role_the_pipeline_cannot_emit(self):
+        """The prose may *name* the superseded value; no rule may still use it.
+
+        `AGENTS.md` asks for the replaced figure to be named rather than
+        quietly dropped, so "said `textbox` until 2026-09-20" has to survive.
+        What must not is a `"role": "textbox"` in an example or a `textbox` in
+        a table row, both of which are read as instructions.
+        """
+        from jevskill.cu.types import CONTROL_TYPES
+
+        assert "textbox" not in CONTROL_TYPES.values()
+        assert '"role": "textbox"' not in self.ACT_MD
+        offenders = [line for line in self.ACT_MD.splitlines()
+                     if line.startswith("|") and "textbox" in line]
+        assert offenders == []
+
+    def test_section_8_imports_the_table_instead_of_restating_it(self):
+        listing = self.ACT_MD.split("## 8. The loop")[1].split("```")[1]
+        assert "ALLOWED_ROLES" in listing and "ALLOWED_PATTERNS" in listing
+        assert 'ALLOWED = {' not in listing
+
+    def test_the_example_state_uses_a_real_role(self):
+        example = self.ACT_MD.split("## 1. State schema")[1].split("```")[1]
+        from jevskill.cu.types import CONTROL_TYPES
+
+        roles = {line.split('"role": "')[1].split('"')[0]
+                 for line in example.splitlines() if '"role": "' in line}
+        assert roles and roles <= set(CONTROL_TYPES.values())
 
 
 class TestBundleShape:
