@@ -1,0 +1,55 @@
+{
+  "what": "One live decision issued from the web console (POST /api/decide, quick gate, one noul) and recorded by the CLI's shared ledger writer with which=\"web\". The figures in CHANGELOG.md under 0.13.0 'Measured live' are read from this row.",
+  "when": "2026-09-21T00:41:00 (local time, Poland)",
+  "provider": "typesafe",
+  "endpoint": "https://api.typesafe.ai/v1/systemone",
+  "key": {
+    "name": "JEV_API_KEY",
+    "source": "registry",
+    "fingerprint_sha256_8hex": "284b77e4",
+    "note": "the fingerprint is the non-secret value /api/doctor shows; no key material is stored here"
+  },
+  "observed_in_page": {
+    "question_type": "noul",
+    "p_true": 0.95,
+    "verdict": "yes",
+    "note": "the ledger row does not store the distribution; this is what the page rendered"
+  },
+  "cost_note": "the vendor response carries no cost field; cost_usd is computed from the published $0.042/Mtok input rate",
+  "reproduce": "python -m jevskill web --no-open; open http://127.0.0.1:8765; paste a three-line diff as state and run the quick gate with the intent below. Tokens and cost are deterministic for the same state and question; latency varies per call.",
+  "ledger_row": {
+    "decision_id": "d_cd8540b00049",
+    "ts": "2026-09-21T00:41:00",
+    "which": "web",
+    "intent": "Does the diff at `state` change a public function signature?",
+    "stages_ms": {
+      "t_decision": 0.01,
+      "profile": 0.119,
+      "plan": 0.041,
+      "build": 0.006,
+      "http": 746.917,
+      "act": 0.029,
+      "(serialize)": 0.042,
+      "(parse)": 0.044,
+      "(client_total)": 746.869
+    },
+    "latency_ms": 746.869,
+    "tokens_in": 320,
+    "tokens_out": 28,
+    "cost_usd": 1.3440000000000002e-05,
+    "hedge_cost_usd_est": 0.0,
+    "hedge_cost_source": "",
+    "questions": 1,
+    "state_tokens": 83,
+    "confidence": {},
+    "baseline_tokens": 167,
+    "baseline_cost_usd": 0.002451,
+    "baseline_data_cost_usd": 0.000501,
+    "data_cost_at_jev_rates_usd": 7.01e-06,
+    "outcome": "",
+    "outcome_detail": "",
+    "session_id": "",
+    "version": "0.12.0",
+    "extra": {}
+  }
+}

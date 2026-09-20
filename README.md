@@ -26,7 +26,7 @@ tokens on decisions — and start making them for **$0.000013** in **325 ms**.
 **Jev** is TypeSafe's *System One* decision model, and it is the whole engine here.
 Official model page: **[typesafe.ai](https://typesafe.ai/)** · [API docs](https://docs.typesafe.ai/)
 
-[![tests](https://img.shields.io/badge/tests-1328%20passing-brightgreen)](#-does-it-actually-help-ab-tested)
+[![tests](https://img.shields.io/badge/tests-1367%20passing-brightgreen)](#-does-it-actually-help-ab-tested)
 [![A/B](https://img.shields.io/badge/A%2FB-99.3%25%20fewer%20tokens-blue)](#-does-it-actually-help-ab-tested)
 [![cost](https://img.shields.io/badge/decision-%240.000013-success)](#-cost-per-decision)
 [![license](https://img.shields.io/badge/license-MIT-informational)](LICENSE)
@@ -689,6 +689,39 @@ Every number: [`hotloop.md`](skills/jev/references/hotloop.md) and
 [`bench/cu_results.json`](bench/cu_results.json). The loop itself — what code owns
 and what Jev is asked — is [`act.md`](skills/jev/references/act.md).
 
+## 🖥️ Web console
+
+```bash
+jevskill web                 # http://127.0.0.1:8765, opens your browser
+jevskill web --no-open       # just print the URL
+```
+
+A local page for the half of this that is genuinely awkward on a command line:
+writing a question bundle by hand, and reading the distribution back. State on
+the left with a live token estimate and a budget bar; question cards on the
+right (noul / choice / score) with the nine patterns as one-click templates, a
+`+ unclear` button for the escape hatch, and a JSON view that stays in sync with
+the cards. Answers come back as bars — `noul` labelled as a probability rather
+than a verdict, the winning `choice` in gold with its confidence *and* its
+margin, a **needs review** badge that says which number tripped it — over a mono
+footer with `serialize / http / parse / total`, tokens, cost and its source,
+model, provider and `decision_id`. There is a quick-gate box that turns one
+typed yes/no question into a decision in one keystroke.
+
+Every decision is written to the **same ledger** as `jevskill ask`, tagged
+`which=web`, so `jevskill stats` counts it. With no key the page still loads,
+names the variable to set, and disables Run — it will never draw a simulated
+answer.
+
+**It is localhost-only, single-user and unauthenticated, on purpose.** It binds
+`127.0.0.1` and there is deliberately no `--host` flag: binding an
+unauthenticated endpoint that spends your API key to a routable address is not a
+preference worth offering. Use an SSH tunnel if you need it from elsewhere.
+
+Design: pure black, hairlines, one gold accent spent only on the winner, the
+primary button and the focus ring — no framework, no build step, and it renders
+correctly with web fonts blocked.
+
 ## 📁 What's inside
 
 ```
@@ -706,8 +739,9 @@ jevskill/              the Python package — the measurement half
   redact.py            scrub credential-shaped strings before state is sent
   review.py            which answers are too close to call (exit code 2)
   stats.py             the effectiveness ledger
-  cli.py               doctor · plan · patterns · ask · batch · outcome · stats · advice
+  cli.py               doctor · plan · patterns · ask · batch · outcome · stats · advice · web
   jevtask.py           batching: N items, one question set, measured saving
+  web/                 the local console: stdlib server (127.0.0.1 only) + static/ page, no build step
   cu/                  computer use: observe (Windows UIA, `[cu]` extra) · reduce · hashing · decide · act · loop · macros · contract · speculate · consistency · beam
 bench/
   run.py               E1–E7 microbenchmarks (latency, fan-out, REDUCE, guards)
@@ -719,13 +753,14 @@ bench/
   cu_observe_bench.py  UIA walk: comtypes CacheRequest vs uiautomation vs pywinauto → cu_observe_results.json
   cu_tasks.json        10 Windows computer-use tasks with oracles (+ cu_tasks.md)
   cu_run.py            the task harness: --dry-run (default, synthetic) · --live; cu_report.py renders it
-tests/                 1328 tests, offline, green
+  web_live.json        the one live decision behind CHANGELOG 0.13.0 "Measured live": a ledger row, which=web
+tests/                 1367 tests, offline, green
 docs/install.md        install guide an agent reads and executes
 docs/DESIGN.md         architecture + the mistakes that shaped it
 AGENTS.md              conventions for agents working on this repo
 ```
 
-## 🧭 Status & known limits — `v0.12.0`
+## 🧭 Status & known limits — `v0.13.0`
 
 CLI, skill, bundled scripts, ledger, reference docs and the computer-use half
 (`jevskill.cu`: observe · reduce · hashing · decide · act · loop · macros) are

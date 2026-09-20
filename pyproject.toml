@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "jevskill"
-version = "0.12.0"
+version = "0.13.0"
 description = "Teach your coding agent to stop burning context: Jev (System One) decisions via OpenRouter for routing, triage, classification, gating and reducing large data before it reaches your LLM. A/B tested: 99.3% fewer model input tokens with accuracy up, not down."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -37,6 +37,13 @@ jevskill = "jevskill.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["jevskill*"]
+
+# The web console's three assets are code, not documentation: without them
+# `jevskill web` serves a 404 from an installed wheel while working perfectly
+# from a checkout. They are read through importlib.resources, so they have to
+# ship inside the package.
+[tool.setuptools.package-data]
+jevskill = ["web/static/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

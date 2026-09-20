@@ -17,6 +17,7 @@ Two halves, deliberately separate:
 | `skills/jev/` | the Skill: `SKILL.md`, `references/`, and stdlib-only `scripts/` |
 | `jevskill/` | the Python package: client, primitives, orchestration, ledger, CLI |
 | `jevskill/cu/` | the computer-use half: `observe` (Windows UIA through `comtypes`, the `cu` extra), `reduce`, `hashing` — everything but `snapshot()` is pure Python and runs on Linux CI |
+| `jevskill/web/` | the local console: a stdlib `ThreadingHTTPServer` and the three static files it serves (`web/static/`, shipped as package data) |
 
 The Skill must work with **no install** (stdlib only). The package adds the
 measurement half (ledger, `stats`, `outcome`, `plan`). Keep that boundary: if you
@@ -87,7 +88,7 @@ one honestly:
 ## Running things
 
 ```bash
-python -m pytest -q                       # 1328 tests, offline, must stay green
+python -m pytest -q                       # 1367 tests, offline, must stay green
 python bench/run.py --legacy-reduce       # live API: E1-E7, writes bench/results.json
 python bench/ab.py --runs 3               # live API: the A/B evaluation, writes bench/ab_results.json
 
@@ -131,6 +132,20 @@ calibrated against the live API (a prose rule of thumb under-counted logs by
 
 **Ledger writes are append-only.** Outcomes are stored as separate patch records
 keyed by `decision_id`, never by rewriting a decision line.
+
+**The web console is local, stdlib and shares the CLI's writer.** `jevskill/web/`
+binds `127.0.0.1` only — `make_server` raises `ValueError` on any other address and
+the CLI offers no `--host` — because the endpoint is unauthenticated and spends a
+live key; a `Host` check and an `Origin` check close DNS rebinding and CSRF, which
+loopback alone does not. It imports nothing outside the standard library, and its
+three static files under `web/static/` are **package data** (`pyproject.toml`), not
+documentation: drop that entry and `jevskill web` 404s from a wheel while working
+from a checkout. Content types are stated, never guessed — `mimetypes` reads the
+Windows registry, where `.js` is routinely `text/plain`. Above all it does not
+re-implement `ask`: redaction, the review thresholds, `count_tokens` and the ledger
+writer are the CLI's own functions, so a console decision is one row of the same
+shape, tagged `which="web"`. Adding a field to one row format and not the other is
+how a ledger starts describing two different things.
 
 **Explicit paths mean exactly those paths.** `load_records([p])` must not merge
 the global ledger; that silently contaminated a per-project report once.

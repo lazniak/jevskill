@@ -10,7 +10,9 @@ replaced.
 
 ## [Unreleased]
 
-### Planned- A genuinely ambiguous case for the `shortlist` pattern, so narrowing can be
+### Planned
+
+- A genuinely ambiguous case for the `shortlist` pattern, so narrowing can be
   demonstrated rather than only unit-tested.
 - Per-repository ledger merging (`jevskill stats --merge`).
 - A `doctor` contract probe and further providers (Cloudflare Workers AI, Vercel AI
@@ -19,6 +21,71 @@ replaced.
 - Block mode on **deep** nesting, and on formats whose blocks are not delimited by
   indentation (minified JSON, unformatted XML). One workload proves the fix, not the
   generality.
+
+## [0.13.0] — 2026-09-21
+
+### Added — a local web console
+
+`jevskill web` serves a single-user page on `http://127.0.0.1:8765` for the half
+of this project that is genuinely awkward on a command line: writing a question
+bundle by hand, and reading the distribution back. State with a live token
+estimate and a budget bar; cards for `noul` / `choice` / `score` with the
+patterns from `references/patterns.md` as one-click templates, a `+ unclear`
+button for the escape hatch, and a JSON view two-way synced with the cards;
+answers drawn as bars with the confidence, the top-1 − top-2 margin and a
+**needs review** badge whose reason names the number that tripped it.
+
+Three decisions in it are worth stating, because each one is a trade rather than
+an oversight:
+
+- **Loopback only, and no `--host` flag.** The console has no authentication and
+  spends a live API key. `make_server` raises `ValueError` on any other address,
+  and the CLI's help says why rather than leaving the omission to be read as a
+  gap. A `Host` check and an `Origin` check close DNS rebinding and CSRF, which
+  binding to loopback alone does not — a page already open in the user's browser
+  can reach `127.0.0.1`.
+- **One ledger writer, shared with `ask`.** Redaction, the review thresholds,
+  `count_tokens` and `stats.record_decision` are the CLI's own functions, so a
+  browser decision is one row of exactly the same shape, tagged `which="web"`,
+  and `jevskill stats` counts it. A second row format would have drifted from
+  the first the next time a field was added — in the file this project uses to
+  claim its savings.
+- **With no key, nothing is simulated.** The page still loads, reports the
+  doctor result, names `JEV_API_KEY` / `OPENROUTER_API_KEY`, and disables Run.
+  `POST /api/decide` answers `503` carrying the doctor payload.
+
+`GET /api/doctor` reports the variable name, where it lived (`env` / `registry` /
+`file`) and an 8-hex SHA-256 fingerprint — **never key material**. The test that
+guards it sets a key containing the marker `TESTKEY` and asserts the marker is
+absent from *every* response, not from the field expected to hold it.
+
+The page is vanilla ES2020 with no framework and no build step, in the visual
+language of lazniak.com simplified: pure black, hairlines, Pixelify Sans for the
+wordmark, JetBrains Mono for every number, and gold spent only on the winning
+bar, the primary button and the focus ring. It renders correctly with web fonts
+blocked, respects `prefers-reduced-motion`, and collapses to one column under
+900px. The three assets ship as package data so an installed wheel serves them.
+
+### Fixed
+
+- The console's startup banner was invisible when stdout was a pipe
+  (`jevskill web | tee run.log` printed nothing until Ctrl+C): stdout is
+  block-buffered there and the next thing the process does is block in
+  `serve_forever`. It is now one flushed write.
+- At a 375px viewport the history note — which carries an absolute ledger path,
+  one unbreakable token — widened the document to 468px. `overflow-x: hidden`
+  hid the scrollbar but not the cause; `overflow-wrap: anywhere` fixes it, and
+  the re-measured `scrollWidth` is 375 with no element exceeding the viewport.
+
+### Measured live
+
+One real decision issued from the page against the vendor endpoint, recorded by
+the shared ledger writer and copied verbatim to `bench/web_live.json`: a quick
+gate asking whether a three-line diff changes a public function signature, one
+`noul`, answered *yes* at **0.95** in **747 ms** for **320 input tokens** and
+**$0.0000134** (the vendor reports no `cost`, so the figure is computed from the
+published rate). The row carries `which: "web"` and `jevskill stats` counts it
+with the CLI's own.
 
 ## [0.12.0] — 2026-09-20
 

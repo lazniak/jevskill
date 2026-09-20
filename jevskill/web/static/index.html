@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>jev · console</title>
+<!-- One remote origin, and only for type. Everything else is served from this
+     process, so the console keeps working with the network blocked: the font
+     stacks in app.css all name a system fallback. -->
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500&family=Pixelify+Sans:wght@400;500;600&family=Space+Grotesk:wght@300;400;500&display=swap">
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<div class="grain" aria-hidden="true"></div>
+
+<div class="shell">
+
+  <header class="topbar">
+    <h1 class="wordmark">jev · console</h1>
+    <span class="pill" id="doctor-pill">connecting…</span>
+    <div class="totals" aria-live="polite">
+      <div>calls<b id="t-calls">0</b></div>
+      <div>tokens<b id="t-tokens">0</b></div>
+      <div>cost<b id="t-cost">$0.00000000</b></div>
+      <div>last<b id="t-latency">— ms</b></div>
+    </div>
+  </header>
+
+  <div id="banner"></div>
+
+  <main class="columns">
+
+    <!-- ------------------------------------------------------- state -->
+    <section class="panel dropzone" id="state-panel">
+      <p class="microlabel">
+        state
+        <span class="spacer"></span>
+        <button type="button" class="tiny" id="pick-file">load file…</button>
+        <button type="button" class="tiny" id="clear-state">clear</button>
+      </p>
+      <label class="microlabel hidden" for="state">State sent to the model</label>
+      <textarea id="state" spellcheck="false" placeholder="Paste the diff, log, ticket or JSON the decision is about.&#10;Drop a file anywhere on this panel."></textarea>
+      <input type="file" id="file-input" class="hidden" accept=".txt,.log,.json,.md,.diff,.patch,.yaml,.yml,.csv,text/*,application/json">
+
+      <div class="budget" role="presentation"><span class="budget-fill" id="budget-fill"></span></div>
+      <p class="note mono" id="estimate">0 tokens · 0 chars</p>
+      <p class="note is-warn hidden" id="over-budget">
+        over budget — cut it in code first, or run REDUCE from the CLI
+      </p>
+
+      <p style="margin-top:14px">
+        <label class="switch"><input type="checkbox" id="redact" checked> redact secrets</label>
+      </p>
+      <p class="note mono" id="redaction-report"></p>
+    </section>
+
+    <!-- --------------------------------------------------- questions -->
+    <section class="panel" id="questions-panel">
+      <p class="microlabel">
+        quick gate
+      </p>
+      <input type="text" id="quick" placeholder="Ask a yes/no question about the state…  (Enter runs it)" autocomplete="off">
+
+      <p class="microlabel" style="margin-top:20px">
+        questions
+        <span class="spacer"></span>
+        <span class="menu">
+          <button type="button" class="tiny" id="templates-btn" aria-haspopup="true" aria-expanded="false">templates ▾</button>
+          <div class="menu-list hidden" id="templates-menu" role="menu"></div>
+        </span>
+        <button type="button" class="tiny" id="add-question">+ question</button>
+        <button type="button" class="tiny" id="toggle-json" aria-pressed="false">json</button>
+      </p>
+
+      <div id="cards"></div>
+      <div id="json-editor" class="hidden">
+        <textarea id="bundle-json" spellcheck="false" aria-label="Question bundle as JSON"></textarea>
+        <p class="note is-warn hidden mono" id="json-error"></p>
+      </div>
+
+      <div class="btn-row" style="margin-top:14px">
+        <button type="button" class="btn-primary" id="run">run</button>
+        <span class="note mono" id="run-cost" style="margin:0"></span>
+        <span class="note mono spacer" id="run-hint" style="margin:0 0 0 auto">ctrl + enter</span>
+      </div>
+      <div id="run-error"></div>
+    </section>
+  </main>
+
+  <!-- ------------------------------------------------------- result -->
+  <section class="panel result hidden" id="result-panel">
+    <p class="microlabel">
+      result
+      <span class="spacer"></span>
+      <button type="button" class="tiny" id="toggle-raw" aria-pressed="false">raw json</button>
+      <button type="button" class="tiny" id="copy-cli">copy as cli</button>
+      <button type="button" class="tiny" id="copy-curl">copy as curl</button>
+    </p>
+    <div id="answers"></div>
+    <p class="footer-line" id="result-footer"></p>
+    <pre class="raw hidden" id="raw-json"></pre>
+  </section>
+
+  <!-- ------------------------------------------------------ history -->
+  <section class="panel result" id="history-panel">
+    <p class="microlabel">
+      history — console decisions in this ledger
+      <span class="spacer"></span>
+      <button type="button" class="tiny" id="refresh-history">refresh</button>
+    </p>
+    <div id="history"></div>
+    <p class="note mono" id="history-note"></p>
+  </section>
+
+</div>
+
+<script src="/app.js"></script>
+</body>
+</html>
