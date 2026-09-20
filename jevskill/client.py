@@ -872,8 +872,21 @@ class JevClient(_DecisionCore):
                 with legs_lock:
                     legs["slot"] = True
                     legs["outstanding"] += 1
-                hedged = True
-                threading.Thread(target=attempt, args=("hedge",), daemon=True).start()
+                try:
+                    threading.Thread(
+                        target=attempt, args=("hedge",), daemon=True
+                    ).start()
+                except Exception:  # pragma: no cover - thread exhaustion
+                    # The slot is released by the leg that takes it; a leg that
+                    # never started cannot, and a leaked slot would disable
+                    # hedging for the rest of the client's life.
+                    with legs_lock:
+                        legs["outstanding"] -= 1
+                        legs["slot"] = False
+                    self._hedge_slots.release()
+                    note = "hedge_thread_unavailable"
+                else:
+                    hedged = True
             else:
                 note = "hedge_skipped_saturated"
             first = self._await_leg(inbox, started, budget)
