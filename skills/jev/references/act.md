@@ -118,12 +118,32 @@ and it lets the text-writing LLM start in parallel. Criteria are contrastive wit
     "instructions": {"question": "Does this screen offer at least one control whose effect cannot be undone from this same screen?", "focus": "Judge what the controls in `elements` and the dialog in `window_title` can do, not what `goal` asks for."},
     "criteria": {"true": "A listed control deletes data, discards unsaved work, sends a message, spends money, or changes a system in a way no listed control reverses.", "false": "Every listed control is reversible from this screen — navigation, editing, opening a dialog, or a Cancel that returns to the previous state."}},
 
-  // Speculative: one per element whose name matched the destructive list in §4. Usually 0-2 per screen, and free, because the call is already going.
+  // Speculative: one per candidate whose *role* can perform an irreversible act — button, menuitem, hyperlink, splitbutton — name matches first, capped at 12. See "Which elements get one" below.
   "destructive_e28": {"type": "noul",
     "instructions": {"question": "Would activating `elements.e28` remove, send or spend something that cannot be restored from this screen?", "focus": "Judge `elements.e28` alone. Every other element is irrelevant to this question."},
     "criteria": {"true": "Activating `elements.e28` deletes, discards, sends, spends or overwrites, and no listed control undoes it.", "false": "Activating `elements.e28` is reversible from this screen, or it only opens a further confirmation."}}
 }
 ```
+
+**Generating it.** Only `e11` is worked above; the other 59 options are generated
+from the snapshot. `jevskill.cu.decide.build_bundle(candidates, risky_ids=...)`
+**is** that template — one function, the same strings, and
+`tests/test_cu_decide.py` compares them against `bench/act_validate.py` so a
+reworded criterion fails a test instead of quietly invalidating §9.
+
+**Which elements get a `destructive_<id>`.** Name matches first, then every
+candidate whose *role* is a command control (`button`, `menuitem`, `hyperlink`,
+`splitbutton`), capped at 12 per bundle. Asking only about the names the list
+already matched — what this section said until 2026-09-20 — cannot catch what
+the list misses, which is the job §4 gives it: the question was never asked
+about an unmatched control, so "Wipe device" could never be flagged.
+Measured on a 60-candidate screen, vendor route, same session
+(`bench/cu_decide_results.json`, `python bench/cu_decide_live.py`): 12 questions
+and **9,658** input tokens for the name-only scope against 17 questions and
+**10,294** for command controls — **+6.6%**, or +$0.000027 per step. In that
+pair the wider bundle also answered `target` better (0.52 → 0.62, margin
+0.20 → 0.37); n = 1, one screen, one phrasing, so that is a thing to re-measure,
+not a claim.
 
 **Why this `op` set.** It is `jev-ultrafast`'s eight — `CLICK`, `TYPE_TEXT`,
 `SELECT`, `SCROLL_UP`, `SCROLL_DOWN`, `WAIT`, `DONE`, `BLOCKED`
@@ -159,15 +179,35 @@ consequences". The vendor's example sets a 0.6 floor, confirmation from 0.6 to
 0.85 on high-stakes actions, automatic execution above 0.85
 ([confidence-routing](https://docs.typesafe.ai/patterns/confidence-routing.md)).
 
-| Band | Reversible op (`click`, `scroll`, `key`, `wait`) | Irreversible op (destructive gate fired) |
+| Band | Reversible op (`click`, `type`, `select`, `scroll_up`, `scroll_down`, `key`, `wait`) | Irreversible op (destructive gate fired) |
 |---|---|---|
-| `< 0.6` on `op` **or** `target` | escalate — do not act | escalate |
-| `0.6 – 0.85` | act | ask the human |
-| `> 0.85` | act | act, and log it |
+| `< 0.6` on `op` **or** `target` | escalate — do not act | escalate — do not hand a human an answer the model has already called uncertain |
+| `0.6 – 0.85` | act; after a `type`, run §4's text check | **confirm with the human**, then act |
+| `> 0.85` | act | **confirm with the human**, then act, and log it |
+
+`type` and `select` are reversible and sit at the same floor as `click`: a field
+can be cleared and re-typed, a list selection re-made. `type` carries one extra
+obligation, the text check in §4, because the *text* is not the model's answer.
+
+**Confidence never decides whether the human is asked.** It decides whether the
+model's opinion is considered at all. An irreversible action gates on the
+deterministic name list every time, at 0.99 as at 0.61 — the per-element Noul
+returned 0.78 and 0.76 (§9) and 0.82 (a review run on a 20-element screen) for a
+button named literally "Delete all documents", so no band earns the right to
+skip it. Earlier versions of this table said "act, and log it" above 0.85 while
+§4 and §8 confirmed unconditionally; the code (`jevskill.cu.decide.validate`)
+follows this column.
 
 Take the **minimum** of the confidences you depend on, never their product: "confidence
 reports the least certain judgement in the call, rather than the product of all of them,
 since one wrong argument is enough to spoil the result" ([function_calling](https://docs.typesafe.ai/cookbooks/function_calling.md)).
+
+**A Noul has no confidence, and asking for one returns `None`.** Confidence is a
+property of a Choice's distribution; a Noul *is* its distribution. Read its
+certainty as `max(p, 1 − p)` and its margin as `|p − 0.5|`
+(`jevskill.cu.decide.noul_confidence` / `noul_margin`), and compare neither with
+a Choice's: the vendor's warning that `P(x) ≠ 1 − P(¬x)` applies to identities
+between separate questions as well.
 
 **`none` is load-bearing.** Without it an unfamiliar screen forces a wrong element
 and you cannot tell that it happened (`prompting.md` §5). Read it with `op`: `none`
@@ -219,8 +259,20 @@ control merely *exists* (0.93 in §9, where the only such controls were "Don't
 Save" and "Delete all documents"). The per-element `destructive_<id>` Noul is
 action-specific but no boundary either: 0.78 for a button literally named "Delete
 all documents", below the 0.85 bar. Confirm on the deterministic list; use the
-Nouls only to catch what it misses ("Empty Recycle Bin", "Wipe device"). The
-`guard` rule (`patterns.md` §7) holds: a tripwire, never an authorisation.
+Nouls only to catch what it misses ("Empty Recycle Bin", "Wipe device") — which
+is why §2 now asks them about every command control instead of about the names
+the list has already matched. The `guard` rule (`patterns.md` §7) holds: a
+tripwire, never an authorisation.
+
+**The list is English, so a localised application has no deterministic gate at
+all.** Measured on the real Polish Calculator snapshot
+(`bench/cu_decide_results.json`, `python bench/cu_decide_live.py`): not one of
+the 34 candidate names matched, while the per-element Nouls put "Wyczyść"
+(Clear) at 0.51, "Wyczyść całą pamięć" (Clear all memory) at 0.44 and "Wyczyść
+wpis" (Clear entry) at 0.42 — the right three controls, all far below 0.85. On
+such a screen the tripwire is the model's alone, which is exactly the
+arrangement this section says is not a boundary. Translate the list for the
+locale before running a loop there, or keep a human in the step.
 
 **Prefer the platform's patterns to synthetic input.** UIA `Invoke`, `SetValue`,
 `Toggle`, `ExpandCollapse` act on the control directly, work when the window is
@@ -242,8 +294,19 @@ stage 1   state = {goal, window_title, regions: {menu_bar: {controls: 9, sample:
           -> save_dialog 1.00, any_region_applies 0.96          [measured, §9]
 
 stage 2   state = the chosen region's elements, with role, name, value, enabled
-          {target: choice(that region's ids + none), fits_<id>: noul per top-3}
+          {target: choice(that region's ids + none), fits_<id>: noul per candidate, capped at 8}
 ```
+
+**Region ids are `r0..rN`, and both stages read them from one call.**
+`jevskill.cu.reduce.region_state(elements, cap)` returns
+`{"regions": {"r0": {"name", "role", "members", "count"}, ...}}`, ordered by
+each region's best-ranked member so the focused control's region and the active
+dialog's region are never the ones the cap drops. The ids are positional, like
+element ids: stage 1 chooses one, stage 2 looks its `members` up, and
+recomputing the regions in between renumbers them.
+`jevskill.cu.decide.decide_cascade` does both stages from a single
+`region_state` call for that reason. Stage 2's rejection point is the chosen
+target's own `fits_<id>` below **0.30** — the cookbook's number.
 
 This is the [skill_suggestion cookbook](https://docs.typesafe.ai/cookbooks/skill_suggestion.md)
 shape: one wide Choice over 182 skills with truncated descriptions plus three
@@ -287,58 +350,100 @@ None of these before the ≤ 60 reduction and the 0.60 floor: they buy tens of m
 
 ## 8. The loop
 
+Eighty lines, not the fifty it was: the shorter listing this section used to
+carry dropped `goal_reached`, `is_destructive`, the margin floor and the
+post-`type` text check, all of which §3 and §4 require. Those are the added
+lines, and `bench/cu_decide_live.py`'s sibling in the tests keeps the
+implementation of them honest. The listing below is executable — it was run
+against fakes on all three exits (`max_steps`, `done`, `refused`) before being
+published, which the previous one was not.
+
 ```python
-import hashlib, json
-from jevskill.client import JevClient          # hot=True (timeout 1.5 s, hedging) is planned, not shipped
+import time
+from jevskill.client import JevClient
+from jevskill.cu import candidates, tree_hash              # perception and reduction
+from jevskill.cu.act import DESTRUCTIVE_NAMES, Action, execute, is_destructive_name, settle
+from jevskill.cu.decide import (THRESHOLDS, build_bundle, build_state, from_decisions,
+                                text_sanity_question)
 
-DESTRUCTIVE = ("delete", "remove", "send", "pay", "buy", "format", "uninstall", "empty")
-ALLOWED = {"click": {"button", "link", "menuitem", "checkbox", "tab"},
-           "type": {"textbox", "combobox"}, "select": {"combobox", "list", "menu"}}
+ALLOWED = {"click": {"button", "hyperlink", "menuitem", "checkbox", "tab", "tabitem"},
+           "type": {"edit", "combobox", "document"}, "select": {"combobox", "list", "menu", "listitem"}}
 
-def tree_hash(els):                                     # CHECK 1: code owns change detection
-    shape = {k: (v["role"], v["name"], v.get("value"), v["enabled"]) for k, v in sorted(els.items())}
-    return hashlib.blake2b(json.dumps(shape, sort_keys=True).encode(), digest_size=8).hexdigest()
+def run(goal, ui, max_steps=25, budget_s=90.0):
+    jev = JevClient(hot=True)                              # 1.5 s read, no retries (hotloop.md)
+    jev.warm()                                             # HEAD /v1/models, ~90 ms, free
+    last = {"type": None, "target": None, "outcome": None}
+    pre_hash, pre_title, stalls, started = None, None, 0, time.perf_counter()
 
-def run(goal, ui, jev, max_steps=25):
-    last, seen = {"type": None, "target": None, "outcome": None}, None
     for _ in range(max_steps):
-        els = reduce_elements(ui.snapshot())            # visible & enabled & interactive, deduped, <= 60
+        if time.perf_counter() - started > budget_s:
+            return "budget"
+        snap = ui.snapshot()
+        els = candidates(snap.elements)                    # visible & enabled & interactive, deduped, <= 60
         h = tree_hash(els)
-        last["outcome"] = "unchanged" if h == seen else ("new_window" if ui.window_changed() else "changed")
-        if last["outcome"] == "unchanged" and seen is not None:
-            return "stalled"                            # no Jev question decides this
-        seen = h
-        state = {"goal": goal, "app": ui.app, "window_title": ui.title,
-                 "last_action": last, "elements": els}
-        risky = [i for i, e in els.items() if any(w in (e["name"] or "").lower() for w in DESTRUCTIVE)]
-        r = jev.decide(state, bundle(els, risky))       # ONE round trip, six-plus questions
+        if pre_hash is not None:                           # CHECK 1: code owns change detection
+            last["outcome"] = ("unchanged" if h == pre_hash
+                               else "new_window" if snap.window_title != pre_title else "changed")
+            if last["outcome"] == "unchanged":
+                stalls += 1
+                if stalls >= 2:
+                    return "blocked"                       # no Jev question decides this
+            else:
+                stalls = 0
+        risky = [e.id for e in els if is_destructive_name(e.name)]
+        state = build_state(goal, snap, last, elements=els)
+        r = from_decisions(jev.decide(state, build_bundle(els, risky_ids=risky)))
+        op, tgt = r.op, r.target                           # ONE round trip, 17 questions
 
-        op, tgt = r.choice("op"), r.choice("target")
-        if min(r.confidence("op"), r.confidence("target")) < 0.6:
-            return escalate(state, r)                   # vendor floor
-        if op == "done":
-            return "done" if ui.verify(goal) else escalate(state, r)     # code verifies, not the model
+        if r.confidence < THRESHOLDS["floor"]:             # min(target, op), the vendor floor
+            return escalate(state, r)
+        if tgt != "none" and r.margin < THRESHOLDS["margin"]:
+            return escalate(state, r)                      # two controls too close to separate
+        if op == "done":                                   # a proposal; code verifies
+            return "done" if ui.verify(goal) else escalate(state, r)
+        if r.goal_reached > THRESHOLDS["goal_reached_stop"] and ui.verify(goal):
+            return "done"                                  # §3, row 3: stop even without `done`
         if op == "blocked" or (tgt == "none" and op not in ("scroll_up", "scroll_down", "key", "wait")):
             return escalate(state, r)
 
-        el = ui.live(tgt) if tgt != "none" else None    # CHECK 2: the snapshot is stale by ~300 ms
+        el = snap.by_id(tgt) if tgt != "none" else None    # CHECK 2: the snapshot is stale by ~300 ms
         if tgt != "none" and (el is None or not el.enabled):
             last = {"type": op, "target": tgt, "outcome": "error"}
             continue
         if el is not None and op in ALLOWED and el.role not in ALLOWED[op]:
-            return escalate(state, r)                   # op is not legal for this role
-        risky_now = tgt in risky or (r.noul(f"destructive_{tgt}") or 0.0) > 0.85
-        if el is not None and risky_now and not confirm(f"{op} {el.name!r}?"):
-            return "refused"                            # CHECK 3: name list first, model second
+            return escalate(state, r)                      # op is not legal for this role
 
-        text = write_text(goal, state) if op == "type" and r.noul("needs_text") > 0.6 else None
-        ui.perform(op, el, text)                        # UIA pattern where there is one, else SendInput
-        ui.settle(cap_ms=200 if el is not None and el.role == "combobox" else 50)
-        last = {"type": op, "target": tgt, "outcome": None}
-    return "budget"
+        text = None
+        if op == "type":
+            if r.needs_text < THRESHOLDS["needs_text"]:
+                return escalate(state, r)                  # op and needs_text contradict each other
+            text = write_text(goal, el)                    # a small LLM, in parallel; never Jev
+        if el is not None and (tgt in risky or r.destructive_for(tgt) >= THRESHOLDS["destructive_noul"]):
+            # CHECK 3: name list first, model second, human always — whatever the confidence was.
+            # r.is_destructive is the screen-level second opinion; log it, never gate on it.
+            if not confirm(f"{op} {el.name!r}? (screen risk {r.is_destructive:.2f})"):
+                return "refused"
+
+        pre_hash, pre_title = h, snap.window_title
+        result = execute(Action(op=op, target=None if tgt == "none" else tgt, text=text), snap)
+        if not result.ok:
+            last = {"type": op, "target": tgt, "outcome": "error"}
+            continue
+        # settle must hash what `h` hashed — the reduced candidates, not the whole tree.
+        after, changed, _ = settle(ui.snapshot, h, key=lambda s: tree_hash(candidates(s.elements)),
+                                   timeout_ms=200 if el is not None and el.role == "combobox" else 50)
+        if op == "type":                                   # §4's text sanity check, on the new value
+            ok = jev.decide(build_state(goal, after, last, elements=candidates(after.elements)),
+                            text_sanity_question(tgt)).noul("text_ok")
+            if ok is not None and ok < THRESHOLDS["text_sanity"]:
+                execute(Action(op="type", target=tgt, text=""), after)   # clear and retry
+        last = {"type": op, "target": tgt, "outcome": "changed" if changed else "unchanged"}
+    return "max_steps"
 ```
 
-`bundle` is §2; `reduce_elements`, `escalate`, `confirm`, `write_text` and the `ui` adapter are yours. Everything the model contributes is that one `jev.decide` line.
+`escalate`, `confirm`, `write_text` and the `ui` adapter are yours; everything
+else is `jevskill.cu` (§10). Everything the model contributes is that one
+`jev.decide` line — and the second one, only after a `type`.
 
 ---
 
@@ -378,6 +483,33 @@ for the same elements with one-line criteria in `bench/cu_bench.py`: +75%, or
 +$0.00010 per step. HTTP 496 / 284 / 278 ms (n = 1 each; quote the research bench's
 p50 over K = 10 for latency, not these). Reproduce with the bundle above plus
 `make_tree(30)`, provider `typesafe`, after `python -m jevskill doctor --json`.
+
+---
+
+## 10. Implementation map
+
+Every section above is code in `jevskill/cu/`, and the tests named here fail
+when the two drift apart.
+
+| § | Module | What it holds |
+|---|---|---|
+| §1 state | `observe.py`, `types.py` | `snapshot()`, `to_state()` — keys `e0..eN`, coarse grid cells, handles kept out of the state |
+| §1 reduce | `reduce.py` | `candidates()` (≤ 60), `regions()`, `region_state()` |
+| §2 bundle | `decide.py` | `OPS`, `build_bundle()`, `build_state()`, `destructive_ids()` — the wording `bench/act_validate.py` validated live |
+| §3 reading | `decide.py` | `Decision`, `noul_confidence()`, `noul_margin()`, `goal_verdict()` |
+| §3/§4 checks | `decide.py` | `validate()` → `Verdict`; `THRESHOLDS` is the table in §3 |
+| §4 gate | `act.py` | `DESTRUCTIVE_NAMES`, `is_destructive_name()`, `risky_ids()` |
+| §4 execution | `act.py` | `execute()`, `UiaBackend` (Invoke/SetValue/Toggle/SelectionItem/Scroll, `SendInput` fallback) |
+| §4 settle | `act.py` | `settle()` — polls `tree_hash`; the code-side `stuck` detector |
+| §5 cascade | `decide.py` | `decide_cascade()`, `build_region_bundle()`, `fits_question()` |
+| §6 macros | `macros.py` | `MacroCache` — keyed on the reduced tree, invalidated by `unchanged` |
+| §7/§8 loop | `loop.py` | `run()`, the budgets, the escalation counter; `contract.py` holds `StepRecord` / `RunResult` / `RunOptions` |
+| §9 numbers | `bench/act_validate.py`, `bench/cu_decide_live.py` | regenerate `act_validate_out.json` and `cu_decide_results.json` |
+
+Tests: `tests/test_cu_decide.py`, `test_cu_act.py`, `test_cu_loop.py`,
+`test_cu_macros.py` — offline, fixture-driven, under two seconds. The live UIA
+execution path inside `UiaBackend` is the one thing none of them cover, and its
+docstring says so.
 
 ---
 
