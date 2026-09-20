@@ -385,12 +385,14 @@ class TestRegions:
 
 class TestCost:
     def test_five_hundred_nodes_reduce_fast(self):
-        """Target is <= 2 ms; the assertion is loose on purpose.
+        """Target is <= 2 ms at 500 nodes; the assertion is loose on purpose.
 
         CI runners are shared and a strict bound here would fail for reasons
-        that have nothing to do with this code. The real number is measured by
-        ``bench/cu_observe_bench.py`` (``reduce_ms_median``: 0.046-0.095 ms on
-        the two real windows) — this test guards the order of magnitude.
+        that have nothing to do with this code. The real numbers live in
+        ``bench/cu_observe_results.json`` (``reduce_ms_median``, republished by
+        ``--from-fixtures``) rather than being quoted here, because a duration
+        measured on one machine is the one kind of figure this file cannot keep
+        honest — this test guards the order of magnitude and nothing more.
         """
         elements = load("synthetic_500").elements
         candidates(elements)  # warm any import-time cost

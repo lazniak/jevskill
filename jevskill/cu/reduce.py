@@ -4,17 +4,17 @@ This is the cheap half of a computer-use step and it must stay cheap: the step
 budget is ~350-500 ms and ~300 ms of it is the network. Everything here is pure
 Python over dataclasses — no COM, no I/O, no globals — so it is unit-testable
 offline and measurable. ``bench/cu_observe_bench.py --from-fixtures`` writes the
-numbers to ``bench/cu_observe_results.json``: ``candidates()`` costs 0.043 ms on
-the 34-node Notepad fixture, 0.640 ms at 500 nodes and 2.842 ms at 2,000. The
-"<= 2 ms" the first draft of this docstring claimed holds to ~1,500 nodes and
-not beyond, so the honest statement is: the filter is cheap enough to ignore
-below 500 nodes, and above that the *cap* — not the filter — is what keeps a
-step inside its budget.
+numbers to ``bench/cu_observe_results.json``: ``candidates()`` costs 0.047 ms on
+the 34-node Notepad fixture, 0.095 on Calculator, 0.708 ms at 500 nodes and
+3.041 ms at 2,000. The "<= 2 ms on a 500-node tree" the first draft of this
+docstring claimed is true at 500 and false by 2,000, so the honest statement is:
+the filter is cheap enough to ignore below 500 nodes, and above that the *cap* —
+not the filter — is what keeps a step inside its budget.
 
 Why reduce at all, rather than send the tree:
 
 * A 2,000-node WinUI tree is ~80k tokens of mostly layout panes (measured on
-  ``synthetic_2000``: 79,672 tokens whole, 2,482 reduced). Reduce for **latency
+  ``synthetic_2000``: 79,672 tokens whole, 2,488 reduced). Reduce for **latency
   and tokens**, not for accuracy: ``bench/cu_bench.py`` measured ``target`` at
   0.97-0.99 with 241 options, so the model does not fall over at 60 — but
   latency climbs +125 ms (vendor) / +205 ms (OpenRouter) by 240 elements, and
@@ -250,7 +250,7 @@ def candidates(elements: Sequence[Any], cap: int = 60) -> List[UIElement]:
     """The whole reduction, in the order the docstring above justifies.
 
     ``cap`` defaults to 60 for **latency and tokens**, not accuracy: a 60-element
-    state is 2,482 tokens on the 2,000-node fixture (budget 3,500), and latency
+    state is 2,488 tokens on the 2,000-node fixture (budget 3,500), and latency
     climbs +125 to +205 ms between 30 and 240 elements. Accuracy is not the
     binding constraint — ``target`` held at 0.97-0.99 with 241 options. Above
     the cap use :func:`region_state` and decide in two steps, because two cheap

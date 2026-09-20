@@ -5,59 +5,67 @@ Pro 26100, Python 3.13.2, 3 warm runs per app, numbers in
 ``bench/cu_observe_results.json``; the machine was running other work, so read
 the spread, not the third digit):
 
-=================================  ==================  ====================
+=================================  ==================  =====================
 walk                               Notepad (34 nodes)  Calculator (53 nodes)
-=================================  ==================  ====================
-``uiautomation`` 2.0.29            188-197 ms          144-161 ms
-``pywinauto`` 0.6.9 (uia backend)  138-223 ms          101-123 ms
-``comtypes`` + one CacheRequest    73-104 ms           42-52 ms
-=================================  ==================  ====================
+=================================  ==================  =====================
+``uiautomation`` 2.0.29            187.9-196.6 ms      144.0-160.6 ms
+``pywinauto`` 0.6.9 (uia backend)  137.6-223.3 ms      100.6-123.0 ms
+``comtypes`` + one CacheRequest    72.6-104.2 ms       42.4-51.6 ms
+=================================  ==================  =====================
+
+Every figure here is one decimal from ``cu_observe_results.json``, never a
+rounded one: the repo's rule is that a number is never rounded *up*, and
+"188 ms" for a measured 187.9 breaks it in the flattering direction.
 
 ``uiautomation`` and ``pywinauto`` read every property live, so a node costs one
-cross-process call *per property*. Caching Name/ControlType/BoundingRectangle/
-IsEnabled/HasKeyboardFocus/IsOffscreen/AutomationId/ClassName/pattern
-availability in a single ``CacheRequest`` turns 16 round trips per node into one
-for the whole window; the Python side then reads them in-process at ~0.014 ms
-each. The two libraries also return a different tree — they walk the raw view
-and keep offscreen and zero-sized nodes — which is why their node counts are
-higher for the same window.
+cross-process call *per property*. This module caches 20 properties in a single
+``CacheRequest`` — Name, ControlType, BoundingRectangle, IsEnabled,
+HasKeyboardFocus, IsOffscreen, AutomationId, ClassName, ProcessId, Value,
+IsDialog, SelectionItem.IsSelected, Toggle.ToggleState and seven pattern
+availability flags — turning 20 round trips per node into one for the whole
+window, after which the Python side reads them in-process. The two libraries
+also return a different tree — they walk the raw view and keep offscreen and
+zero-sized nodes — which is why their node counts are higher for the same
+window.
 
 Four things the measurement changed about the plan. Figures without a table
 above come from the selection probes (not from the committed results file), and
 are marked as such because they are not reproducible from a clean profile:
 
 1. **The 10-60 ms state budget holds only for small windows.** Cost tracks the
-   provider's node count, not the client: Calculator (53 nodes) 42-52 ms, an
-   empty Notepad (34) 73-104 ms, the foreground window in the same run (506
-   nodes) 340 ms. *Selection probe:* a Notepad that had restored 18 tabs — 213
+   provider's node count, not the client: Calculator (53 nodes) 42.4-51.6 ms, an
+   empty Notepad (34) 72.6-104.2 ms, the foreground window in the same run (506
+   nodes) 339.8 ms. *Selection probe:* a Notepad that had restored 18 tabs — 213
    control-view nodes, 183 of them under one
    ``Microsoft.UI.Content.DesktopChildSiteBridge`` XAML island that cost 337 ms
    by itself — took 368-410 ms. Budget roughly a millisecond per node, and do
    not assume a window is empty.
 2. **No client-side trick moves it.** *Selection probe, on that 213-node
    Notepad:* ``AutomationElementMode_None`` (no live handles), a 6-property
-   cache instead of 16, ``ContentView`` or ``RawView`` instead of
+   cache instead of the full one, ``ContentView`` or ``RawView`` instead of
    ``ControlView``, and MTA instead of STA were all within noise of each other
    (360-470 ms), and ``FindAllBuildCache`` was 3x worse (2.1-2.7 s). The cost
-   is the provider's.
+   is the provider's. (MTA being free is why :func:`_co_initialize` picks it.)
 3. **One round trip beats sixty-four.** A lazy per-container descent ties the
    single ``TreeScope_Subtree`` call on an idle machine (*selection probe*:
    368-392 vs 375-410 ms) and loses on a working one (committed run, Calculator:
-   70-73 ms lazy vs 46-54 subtree; Notepad, 34 nodes and 11 containers, is a tie
-   at 91-103 vs 83-108), because each round trip pays the contention again.
-   ``strategy="subtree"`` is the default for that reason; ``"lazy"`` stays
-   available for a window too large to fetch at once, and is the only one that
-   can stop mid-walk.
-
-A fourth number worth keeping: the same run's foreground window reduced to 60
-candidates and **3,093 tokens** — under the 3,500 budget, but only because
-``to_state`` drops ``"enabled": true`` and ``"focused": false``. A real screen
-is not the synthetic one (the synthetic 500-node tree reduces to 2,479).
+   69.6-73.1 ms lazy vs 46.3-53.6 subtree; Notepad, 34 nodes and 11 containers,
+   is a tie at 91.4-102.5 vs 83.4-107.6), because each round trip pays the
+   contention again. ``strategy="subtree"`` is the default for that reason;
+   ``"lazy"`` stays available for a window too large to fetch at once, and is
+   the only one that can stop mid-walk.
 4. **Packaged apps suspend.** Notepad and Calculator are both packaged, so
    Process Lifetime Management suspends them seconds after they lose the
    foreground and every UIA call then fails with
    ``EVENT_E_ALL_SUBSCRIBERS_FAILED``. Snapshot a packaged app immediately
-   after launching it, or keep it in front.
+   after launching it, or keep it in front — and expect :func:`snapshot` to
+   raise ``OSError`` carrying that HRESULT when it happens anyway.
+
+A fifth number worth keeping: the same run's foreground window reduced to 60
+candidates and **3,093 tokens** — under the 3,500 budget, but only because
+``to_state`` drops ``"enabled": true`` and ``"focused": false``. A real screen
+is not the synthetic one (the synthetic 500-node tree reduces to 2,497 tokens,
+the 2,000-node one to 2,488; ``bench/cu_observe_bench.py --from-fixtures``).
 """
 
 from __future__ import annotations
@@ -326,7 +334,11 @@ def _read(el: Any, uia: _Uia, element_id: str, depth: int,
     """Cached properties -> :class:`UIElement`, or ``None`` when not worth it.
 
     Every read here is in-process against the cache filled by the last
-    ``BuildUpdatedCache``; a live read would cost ~5 ms instead of ~0.014 ms.
+    ``BuildUpdatedCache``. The equivalent live read is a cross-process call per
+    property — the whole reason the comparison table at the top of this module
+    shows ``uiautomation`` and ``pywinauto`` costing 2-4x as much for the same
+    two windows. (An earlier draft quoted per-property microseconds here; no
+    artifact in this repo produces them, so they are gone rather than guessed.)
     """
     try:
         rect = el.CachedBoundingRectangle

@@ -134,9 +134,11 @@ class UIElement:
 
         Absent means default, which :meth:`from_dict` restores. Most nodes in a
         real window have no automation id, no class name, no value and no
-        duplicates, and writing those out quadrupled the committed fixtures
-        (the 2,000-node tree: 776 KB with every key, 220 KB without) while
-        burying the fields that differ.
+        duplicates, and writing those out doubles the committed fixtures while
+        burying the fields that differ. Measured by
+        ``bench/cu_observe_bench.py --from-fixtures`` on the 2,000-node tree,
+        compact JSON: **547 KB** with every key, **262 KB** without
+        (``element_bytes_all_keys`` / ``element_bytes_to_dict``).
         """
         d: Dict[str, Any] = {"id": self.id, "role": self.role,
                              "bbox": list(self.bbox)}

@@ -120,9 +120,10 @@ def tree_hash(elements: Sequence[Any], *,
     it for an app whose status line ticks; do not use it while waiting for a
     status line to say something.
 
-    Cost, measured by ``bench/cu_observe_bench.py --from-fixtures``: 0.085 ms on
-    the 34-node Notepad fixture, 1.127 ms at 500 nodes, 4.638 ms at 2,000. The
-    "< 1 ms" this used to be described with holds to roughly 500 nodes.
+    Cost, measured by ``bench/cu_observe_bench.py --from-fixtures``: 0.107 ms on
+    the 34-node Notepad fixture, 1.448 ms at 500 nodes, 6.004 ms at 2,000. The
+    "< 1 ms" this used to be described with holds to roughly 350 nodes and not
+    to a 2,000-node WinUI tree.
     """
     digest = hashlib.blake2b(digest_size=16)
     digest.update(_ROW.join(
@@ -188,8 +189,14 @@ def diff(prev: Sequence[Any], cur: Sequence[Any], *,
     class_name)``, which on a virtualised list is all of them. Measured on
     identical controls, before: 12.8 ms at 500, 45.9 at 1,000, 176 at 2,000,
     747 at 4,000 — quadratic, inside a loop whose whole step budget is ~400 ms.
-    After: 1.98, 3.91, 8.26, 16.7 — linear, and 4,000 identical controls now
-    cost less than 500 used to.
+    After: 1.926 / 3.862 / 8.387 / 16.348, linear, so 4,000 identical controls
+    now cost less than 500 used to. The "after" row is republished on every
+    ``bench/cu_observe_bench.py --from-fixtures``
+    (``diff_identical_controls_ms``); the "before" row is what the old code
+    did and is reproducible only by reverting it.
+
+    On a real tree, where identity buckets are small, cost is the node count:
+    0.138 ms on the 34-node Notepad fixture, 2.045 at 500, 9.134 at 2,000.
     """
     prev_els, cur_els = as_elements(prev), as_elements(cur)
     watched = [f for f in ignore if f in HASHED_FIELDS]

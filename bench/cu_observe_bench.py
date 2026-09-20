@@ -285,7 +285,7 @@ def load_fixture(name):
     return json.loads((FIXTURES / ("%s.json" % name)).read_text(encoding="utf-8"))
 
 
-def _best_ms(call, runs=7):
+def _best_ms(call, runs=15):
     """Fastest of ``runs``, after one warm-up.
 
     The minimum, not the median: this machine runs other work, and for a pure
@@ -507,8 +507,10 @@ def save_synthetic():
             "state": to_state(snap, elements=candidates(elements, cap=60)),
         }
         path = FIXTURES / ("synthetic_%d.json" % size)
-        # Compact: the 2,000-node tree is 776 KB pretty-printed and 260 KB like
-        # this, and nobody reads a generated tree by eye — they regenerate it.
+        # Compact: the 2,000-node payload is 446 KB pretty-printed and 265 KB
+        # like this (``payload_bytes_pretty`` / ``payload_bytes_compact`` in
+        # cu_observe_results.json), and nobody reads a generated tree by eye —
+        # they regenerate it.
         write_json(path, json.dumps(payload, sort_keys=True,
                                     separators=(",", ":")))
         written.append(path)
@@ -539,6 +541,33 @@ def foreground_row(cap=60):
             "tokens_reduced_state": state_tokens(
                 to_state(snap, elements=shortlist)),
             "note": "content deliberately not recorded"}
+
+
+#: Bucket sizes for :func:`identical_control_diff`. 4,000 is ``max_nodes``:
+#: the worst case a snapshot can hand ``diff``.
+_IDENTICAL_SIZES = (500, 1000, 2000, 4000)
+
+
+def identical_control_diff():
+    """``diff`` against one identity bucket holding every control.
+
+    A virtualised list of one repeated row puts every element in a single
+    bucket, which is the case that used to go quadratic. Published here so the
+    claim "linear" in ``jevskill/cu/hashing.py`` is a row in a file rather than
+    an adjective.
+    """
+    from jevskill.cu.types import UIElement
+
+    out = {}
+    for size in _IDENTICAL_SIZES:
+        def twins():
+            return [UIElement(id="e%d" % index, role="button", name="Tab",
+                              bbox=(0, 0, 40, 30), patterns=("invoke",))
+                    for index in range(size)]
+
+        before, after = twins(), twins()
+        out[str(size)] = round(_best_ms(lambda: diff(before, after), 5), 3)
+    return out
 
 
 def rewrite_fixture_state(name):
@@ -588,6 +617,7 @@ def from_fixtures(write=True):
     results["derived_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
     results["live_rows"] = LIVE_ROW_NOTE
     results["fixtures"] = {name: derive(name) for name in ALL_FIXTURES}
+    results["diff_identical_controls_ms"] = identical_control_diff()
     for app, fixture_name in FIXTURE_OF.items():
         row = results["apps"].get(app)
         if not row or "error" in row:
