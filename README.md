@@ -694,7 +694,7 @@ and what Jev is asked — is [`act.md`](skills/jev/references/act.md).
 ```
 skills/jev/            the Agent Skill — works with NOTHING installed
   SKILL.md             what your harness loads
-  references/          api · patterns · prompting · benchmarks · commands · measure · hotloop · act
+  references/          api · patterns · prompting · benchmarks · commands · measure · hotloop · act · speculate
   scripts/
     jev_query.py       stdlib-only caller: decisions + reversible REDUCE
     jev_recovery.py    read back everything REDUCE rejected
@@ -708,13 +708,14 @@ jevskill/              the Python package — the measurement half
   stats.py             the effectiveness ledger
   cli.py               doctor · plan · patterns · ask · batch · outcome · stats · advice
   jevtask.py           batching: N items, one question set, measured saving
-  cu/                  computer use: observe (Windows UIA, `[cu]` extra) · reduce · hashing · decide · act · loop · macros · contract
+  cu/                  computer use: observe (Windows UIA, `[cu]` extra) · reduce · hashing · decide · act · loop · macros · contract · speculate · consistency · beam
 bench/
   run.py               E1–E7 microbenchmarks (latency, fan-out, REDUCE, guards)
   ab.py                the A/B evaluation vs the model doing it alone
   cu_bench.py          per-step decision bench: providers, N=12…240, warm-up, hedging → cu_results.json
   act_validate.py      the three live calls behind references/act.md §9
   cu_decide_live.py    the decide bundle on the real fixtures → cu_decide_results.json
+  cu_phase5_live.py    speculation / consistency / beam measured → cu_phase5_results.json
   cu_observe_bench.py  UIA walk: comtypes CacheRequest vs uiautomation vs pywinauto → cu_observe_results.json
   cu_tasks.json        10 Windows computer-use tasks with oracles (+ cu_tasks.md)
   cu_run.py            the task harness: --dry-run (default, synthetic) · --live; cu_report.py renders it
@@ -775,6 +776,7 @@ complete, and there are now two benchmark suites. What is **not** proven:
 | [`skills/jev/references/measure.md`](skills/jev/references/measure.md) | the ledger, `stats`, `advice`, stage timings — is the skill paying for itself? |
 | [`skills/jev/references/hotloop.md`](skills/jev/references/hotloop.md) | `JevClient(hot=True)`, warm-up and hedging **measured** (hedging lost), latency vs state size on both providers |
 | [`skills/jev/references/act.md`](skills/jev/references/act.md) | the `act` pattern: Jev as the per-step decision core of a GUI loop, validated live |
+| [`skills/jev/references/speculate.md`](skills/jev/references/speculate.md) | speculation, self-consistency, beam over the cascade — measured, all three off |
 | [`bench/cu_tasks.md`](bench/cu_tasks.md) | the 10-task Windows computer-use benchmark: method, oracles, threats to validity |
 | [`docs/research-2026-09-20-jev-cu.md`](docs/research-2026-09-20-jev-cu.md) | research + critique of this skill against the vendor's docs; competitor table |
 | [`docs/plan-2026-09-20.md`](docs/plan-2026-09-20.md) | the phased plan behind 0.12.0 (`TASKS.md` tracks it) |

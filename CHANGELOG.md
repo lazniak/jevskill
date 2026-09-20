@@ -229,6 +229,34 @@ teardown confined to `%TEMP%\jevcu`; success is graded by the oracle alone, neve
 by the agent's own `done`/`goal_reached`. Method, metrics and threats to validity
 in `bench/cu_tasks.md`.
 
+### Added — Phase 5, measured and switched off (`references/speculate.md`)
+
+Three ideas from the research were built, measured on the committed fixtures
+(`bench/cu_phase5_live.py` → `bench/cu_phase5_results.json`, one 123-call run,
+$0.0227) and shipped **off by default**, each for a number:
+
+- **Speculative plan** (`speculate.py`, `loop.run(speculation=…)`): predict the
+  next step during settle. 1 of 8 predictions saved a call; tokens +47.9 %; and the
+  median prediction took 292 ms against a 50 ms settle cap, so 0 of 8 fitted the
+  idle it was meant to hide in. Three of eight answered `new_element` — correctly:
+  on a GUI the next control usually does not exist yet.
+- **Self-consistency for irreversible actions** (`consistency.py`,
+  `loop.run(consistency=…)`): the destructive question three ways in one call. The
+  agreement rule fired on 0 of 28 command controls, including the one truly
+  irreversible one (0.82 / 0.77); the negation broke `P(x) = 1 − P(¬x)` on 24 of 28
+  (mean gap 0.504) — the vendor's documented invariant failure reproduced live;
+  two direct phrasings correlated at r = 0.90, so a second phrasing adds no
+  information. Costs 24–48 % of a step's bundle. The single noul already in the
+  step bundle separates the true positive at a floor of 0.80.
+- **Beam K=2 over the cascade** (`beam.py`, `decide_cascade(beam_k=…)`): 0 of 12
+  opportunities changed the chosen target (six cases × two margins); +15.1 %
+  tokens as two calls, +7.3 % fused. When branching, one fused call beats two
+  (22 984 vs 28 556 tokens, 706 vs 1 000 ms).
+
+The one actionable outcome is not a new call: the 0.85 floor on the per-element
+destructive noul looks about 0.05 too high, and settling that needs more labelled
+destructive controls than two fixtures hold.
+
 ### Fixed — what the review of the perception package found (before release)
 
 - **The dialog prior never fired.** `interactive()` dropped the `dialog` node
