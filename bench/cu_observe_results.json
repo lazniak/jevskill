@@ -1,0 +1,138 @@
+{
+ "measured_at": "2026-09-20T21:41:56",
+ "python": "3.13.2",
+ "runs": 3,
+ "cap": 60,
+ "apps": {
+  "notepad": {
+   "library": "comtypes+CacheRequest",
+   "strategy": "subtree",
+   "strategies": {
+    "subtree": {
+     "ms": [
+      83.4,
+      107.6,
+      101.3
+     ],
+     "median_ms": 101.3,
+     "nodes": 34,
+     "truncated": false
+    },
+    "lazy": {
+     "ms": [
+      102.5,
+      91.4,
+      98.0
+     ],
+     "median_ms": 98.0,
+     "nodes": 34,
+     "truncated": false
+    }
+   },
+   "budget_ms": 2000.0,
+   "over_default_budget": false,
+   "snapshot_ms": [
+    77.1,
+    72.6,
+    104.2
+   ],
+   "snapshot_ms_median": 77.1,
+   "nodes": 34,
+   "truncated": false,
+   "reduce_ms_median": 0.047,
+   "candidates": 16,
+   "tokens_full_state": 1412,
+   "tokens_reduced_state": 734,
+   "tree_hash": "9f679d53df00ab39d372c7e36b585eff",
+   "compare": {
+    "uiautomation": {
+     "ms": [
+      187.9,
+      193.4,
+      196.6
+     ],
+     "nodes": 68
+    },
+    "pywinauto": {
+     "ms": [
+      199.6,
+      223.3,
+      137.6
+     ],
+     "nodes": 45
+    }
+   },
+   "attempt": 1,
+   "fixture": "tests/fixtures/cu/notepad.json"
+  },
+  "calculator": {
+   "library": "comtypes+CacheRequest",
+   "strategy": "subtree",
+   "strategies": {
+    "subtree": {
+     "ms": [
+      48.9,
+      53.6,
+      46.3
+     ],
+     "median_ms": 48.9,
+     "nodes": 53,
+     "truncated": false
+    },
+    "lazy": {
+     "ms": [
+      71.5,
+      69.6,
+      73.1
+     ],
+     "median_ms": 71.5,
+     "nodes": 53,
+     "truncated": false
+    }
+   },
+   "budget_ms": 2000.0,
+   "over_default_budget": false,
+   "snapshot_ms": [
+    51.6,
+    44.3,
+    42.4
+   ],
+   "snapshot_ms_median": 44.3,
+   "nodes": 53,
+   "truncated": false,
+   "reduce_ms_median": 0.088,
+   "candidates": 36,
+   "tokens_full_state": 2265,
+   "tokens_reduced_state": 1535,
+   "tree_hash": "18b9155de9732dc08d4f9a2d447a6eaf",
+   "compare": {
+    "uiautomation": {
+     "ms": [
+      144.0,
+      144.6,
+      160.6
+     ],
+     "nodes": 90
+    },
+    "pywinauto": {
+     "ms": [
+      123.0,
+      100.6,
+      110.6
+     ],
+     "nodes": 56
+    }
+   },
+   "attempt": 1,
+   "fixture": "tests/fixtures/cu/calculator.json"
+  }
+ },
+ "foreground": {
+  "snapshot_ms": 339.8,
+  "nodes": 506,
+  "candidates": 60,
+  "truncated": false,
+  "tokens_reduced_state": 3093,
+  "note": "content deliberately not recorded"
+ }
+}
