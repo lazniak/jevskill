@@ -599,7 +599,9 @@ FITS_QUESTION_CAP = 8
 def decide_cascade(client: Any, goal: str, elements: Sequence[Any],
                    last_action: Any = None, *, cap: int = 60,
                    risky_ids: Sequence[str] = (), snapshot: Any = None,
-                   cache: Any = None) -> Decision:
+                   cache: Any = None, beam_k: int = 1,
+                   beam_margin: Optional[float] = None,
+                   beam_mode: str = "calls") -> Decision:
     """Two calls, ~600 ms, for a screen that stayed above the cap after reduction.
 
     Stage 1 chooses a region from :func:`jevskill.cu.reduce.region_state`; stage
@@ -608,7 +610,21 @@ def decide_cascade(client: Any, goal: str, elements: Sequence[Any],
     are kept: ``any_region_applies`` below the floor stops before stage 2 is
     paid for, and ``fits_<target>`` below :data:`THRESHOLDS`\\ ``["fits_gate"]``
     rejects the shortlist wholesale.
+
+    **Phase 5 hook.** ``beam_k > 1`` hands the whole cascade to
+    :func:`jevskill.cu.beam.decide_beam`, which keeps the runner-up region when
+    stage 1 was close and scores by ``P(region) x P(element)``. The default is
+    ``1`` and the branch below it is untouched, so a caller that does not pass
+    ``beam_k`` gets exactly the code path this function always had.
     """
+    if int(beam_k) > 1:
+        from .beam import BEAM_MARGIN, decide_beam
+
+        return decide_beam(
+            client, goal, elements, last_action, cap=cap, k=int(beam_k),
+            margin=BEAM_MARGIN if beam_margin is None else float(beam_margin),
+            mode=beam_mode, risky_ids=risky_ids, snapshot=snapshot, cache=cache)
+
     from .reduce import candidates as reduce_candidates, region_state
 
     els = as_elements(elements)
