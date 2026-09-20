@@ -11,7 +11,20 @@ description: >-
   Triggers: "classify", "categorize", "which of these", "route", "triage",
   "gate", "should we", "rank", "prioritize", "grade", "too many logs",
   "reduce the data", "save tokens", "batch decisions", "is it safe to".
+  Advisory, never an authorization boundary: Jev can be wrong, manipulated or
+  overconfident, so do not map a returned label straight to an irreversible or
+  destructive action without your own deterministic check.
 license: MIT
+allowed-tools: Bash(python:*)
+metadata:
+  version: "0.7.0"
+  requirements: >-
+    Python 3.9+ (standard library only — no install, no dependencies) and network
+    access to OpenRouter or api.typesafe.ai. Needs OPENROUTER_API_KEY or
+    TYPESAFE_API_KEY; calls are billed (about $0.000013 per decision, output
+    free). Secret-shaped strings in the state are redacted before sending by
+    default. Without a key, ask the user before judging in Jev's place — never
+    simulate silently.
 ---
 
 # Jev: decisions, not text
@@ -26,17 +39,15 @@ and **"how much, on this scale?"** — with a calibrated confidence you can bran
 on, and with a **full probability distribution** no chat model hands you.
 
 It is cheap because output is free and questions to one state run in parallel —
-one call with eight questions cost $0.0000279, while the same eight questions
-asked separately cost 4× that. It is **not** universally cheaper than a small chat
-model on a single trivial question; it wins on *structure*, on *fan-out*, and on
-decisions where the alternative is pasting a large corpus into a chat context.
+eight questions in one call cost $0.0000279, where asking them separately cost 4×
+that. It is **not** universally cheaper than a small chat model on a single trivial
+question; it wins on *structure*, on *fan-out*, and where the alternative is
+pasting a large corpus into a chat context. That is the whole trade: use it where
+the answer is a decision, the LLM where the answer is text.
 
-That is the whole trade. Use it where the answer is a decision. Use the LLM where
-the answer is text.
-
-> Measured, not estimated. Every number in this skill comes from
-> `bench/run.py` against the live API and is recorded in the effectiveness
-> ledger. Run `jevskill stats` to see this machine's own record.
+> Measured, not estimated. Every number here comes from `bench/run.py` against the
+> live API and is recorded in the ledger. Run `jevskill stats` for this machine's
+> own record.
 
 ---
 
@@ -52,8 +63,8 @@ python scripts/jev_query.py --state-file diff.txt --question-type noul --name br
   --false-text "Only internals, comments or formatting change."
 ```
 
-That is the whole dependency: Python 3.9+, a key, and network access. For the
-recovery of reduced data use `scripts/jev_recovery.py` (see §3).
+That is the whole dependency: Python 3.9+, a key, network access. For reduced data
+use `scripts/jev_recovery.py` (see §3).
 
 **Install the package for the measurement half** — the ledger, stage timings,
 `plan`, `patterns`, `stats` and `outcome`:
@@ -85,22 +96,56 @@ jevskill doctor --provider openrouter  # the aggregator
 | Price | $0.042/Mtok | **identical** |
 | Response `cost` | ✅ reported | ❌ absent — computed from the rate |
 
-Prefer **OpenRouter** if you already have a key; it also reports the billed cost,
-so the ledger needs no arithmetic. Prefer **TypeSafe** for double the context — it
-is the same price, so going direct is a dependency question, not a cost one.
-
-Model names are translated automatically: `typesafe/jev-1.13` ↔ `jev-latest`.
-Passing the wrong one to the wrong endpoint is a 404 or a 422.
+Prefer **OpenRouter** if you already have a key — it also reports the billed cost,
+so the ledger needs no arithmetic. Prefer **TypeSafe** for double the context: the
+price is identical, so going direct is a dependency question, not a cost one.
+Model names are translated automatically; the wrong one is a 404 or a 422.
 
 `setx` does not affect shells that are already open. On Windows the client also
 reads the user registry, so a key set yesterday works in a terminal opened before
-it.
+it. Without the install, `scripts/jev.py` delegates to the package if it can find
+it, so either path works.
 
-Without the install, `scripts/jev.py` delegates to the package if it can find it,
-so either path works.
+Do **not** reach for Jev before reading §2: the most common waste is using it on a
+task whose answer is text.
 
-Do **not** reach for Jev before reading §2. The most common way to waste a round
-trip is using it on a task whose answer is text.
+### No key? Ask — never simulate silently
+
+Check only the **presence** of a key (`jevskill doctor` reports `key_found`); never
+print a key's value. If there is none, warn the user and ask in their language:
+
+> No Jev key was found, so I cannot call the model. Which do you prefer?
+> **A — get a key:** create one at <https://openrouter.ai/settings/keys> (or
+> <https://console.typesafe.ai/keys>) and configure it locally; I will use real Jev.
+> **B — I judge it myself:** I classify using the same state, options and criteria,
+> without calling Jev.
+
+**Wait for an explicit A or B.** The rules that keep this honest:
+
+- Consent covers **the current task**, not a permanent default. Do not re-ask for
+  every record in that task; do not silently carry it to the next one.
+- A key appearing **later** does not authorize switching an approved B task to A.
+- **API errors are not consent to simulate** — report them instead.
+- In B, label every result `mode: agent_simulation`, `jev_called: false`, set
+  `probability`/`confidence` to `null`, and use `needs_review: true` rather than
+  inventing values or distributions. Never apply confidence thresholds to
+  simulated judgements, or mix them into Jev's measured numbers.
+- B promises nothing about cost, locality or speed: your own model's terms apply.
+  Help with key setup without ever collecting the secret in chat.
+
+### Exit codes are a contract
+
+| Code | Meaning | What to do |
+|---|---|---|
+| `0` | Decided / scored | act on it |
+| `2` | **At least one answer needs review** | treat as "not confident enough to automate": escalate, widen the state, or re-ask |
+| `3` | State over the token budget | nothing was sent — cut the data first (§4 Rule 3) |
+| `1` | Input, key, API or protocol error | fix the call |
+
+`2` is deliberately not an error: a harness must tell *"the model hesitated"* apart
+from *"the call failed"* without parsing output. The thresholds behind it
+(`--review-below 0.75`, `--review-margin 0.10`) are **illustrative heuristics, not
+calibrated guarantees** — tune them on held-out data via `jevskill outcome`.
 
 ---
 
@@ -311,7 +356,6 @@ jevskill batch build.log --text-key line \
 # Jev batch [windowed] — 60 items in 8 call(s)
 #   reading  10,674 tokens batched vs 23,288 one-per-call  (54% fewer)
 #   cost     $0.00044831 batched vs $0.00097810 one-per-call   (8 call(s) vs 60)
-#   wall     667 ms
 ```
 
 Measured on 60 log lines, half of them genuinely salient: **2.18× fewer input
@@ -325,18 +369,15 @@ name its value" failure *more* likely, and that failure is silent. The rewrite i
 mechanical so it cannot be forgotten.
 
 **`--strategy per-item`** trades cost for isolation — one item per call, so a long
-or ambiguous item cannot influence a neighbour. Use it when that matters more than
-tokens.
-
-Budget the calls before starting: `jevskill plan "<problem>"` returns the pattern,
-the layer strategy and the expected call count for free.
+or ambiguous item cannot influence a neighbour. Budget the calls before starting:
+`jevskill plan "<problem>"` returns the pattern, layer strategy and expected call
+count for free.
 
 ## 6. Measure it — the skill's own statistics
 
-Every `ask` writes a row to the effectiveness ledger with the pattern used, the
-stages, the tokens, the cost, the confidence, and how much context was kept out
-of the LLM. Pair a decision with reality and the accuracy becomes real rather
-than asserted.
+Every `ask` writes a ledger row: pattern, stages, tokens, cost, confidence, and
+context kept out of the LLM. Pair a decision with reality and accuracy becomes
+real, not asserted.
 
 ```bash
 jevskill ask --state-file diff.txt --questions @"q.json" --intent "pre-commit API gate"
@@ -345,15 +386,13 @@ jevskill outcome d_1a2b3c4d5e6f correct --detail "reviewer agreed, API break con
 
 jevskill stats
 #   JEV effectiveness ledger — 128 decisions
-#     latency  : p50 311 ms   p95 402 ms
-#     jev cost : $0.004210
+#     latency  : p50 311 ms   p95 402 ms   jev cost : $0.004210
 #     vs LLM   : saved 94.3%, 412k tokens kept out of LLM context
 #     accuracy : 94.1% over 118 judged decisions
 ```
 
-Pair outcomes whenever the consequence is observable. An unpaired ledger can
-tell you Jev was fast; only a paired one can tell you it was **right**, and
-therefore whether the threshold you chose is the correct one.
+An unpaired ledger can tell you Jev was fast; only a paired one tells you it was
+**right**, and therefore whether your threshold is the right one.
 
 ### Ask the ledger what to do next
 
@@ -363,18 +402,10 @@ command to run before deciding whether to keep using Jev for something:
 ```bash
 jevskill advice
 # JEV advice — 1311 decisions, 49 judged
-#   saved $5.3239 (95.3%), accuracy 100%
-#
 #   [KEEP       ] pattern:gate  (n=73, saved 99%  acc 100%/49)
-#                 Saves 98.8% at 100% accuracy over 49 judged decisions.
 #   [STOP       ] intent:tiny-diff  (n=40, saved 3%)
-#                 Saves 3.0%. The state is too small for reduction to pay: JEV
-#                 costs a round trip to save almost nothing. Answer this directly.
 #   [ESCALATE   ] intent:log-triage  (n=200, saved 95%  acc 71%/60)
-#                 Accuracy 71% over 60 judged. It saves tokens but is wrong too
-#                 often to act on unattended — gate on confidence and escalate.
 #   [UNPROVEN   ] pattern:reduce  (n=1234, saved 95%)
-#                 Saves 95.1% but 0 decisions paired with an outcome.
 ```
 
 Six verdicts, each with the numbers that produced it:
@@ -391,102 +422,78 @@ Six verdicts, each with the numbers that produced it:
 **The `STOP` verdict is the one to look for first.** A reduction that saves 95% of
 a state that only cost $0.00006 has saved nothing and added a network round trip.
 The percentages look impressive and the absolute numbers do not — which is exactly
-the trap this command exists to catch.
-
-Thresholds live in `stats.ADVICE` and are printed with every report, because they
-are **policy, not fact**: 85% accuracy, 20% minimum saving, 5 judged decisions
-before accuracy counts. Change them to match what a wrong answer costs you.
+the trap this command exists to catch. Thresholds live in `stats.ADVICE` and are
+printed with every report, because they are **policy, not fact**.
 
 Reports carry a full per-stage breakdown so the timing claim is auditable:
 
 ```
-  t_decision      0.0 ms    0.0%
   profile         6.7 ms    0.5%         <- inspecting the data
-  plan            0.0 ms    0.0%         <- choosing the pattern
   build           0.3 ms    0.0%         <- building state and questions
-  warm           74.0 ms    5.4%         <- connection handshake (first call only)
-  http          386.5 ms   93.6%  #######################  <- network + inference
-  act             0.2 ms    0.0%         <- applying thresholds, writing the ledger
+  warm           74.0 ms    5.4%         <- handshake (first call only)
+  http          386.5 ms   93.6%         <- network + inference
+  act             0.2 ms    0.0%         <- thresholds, ledger write
   report          1.6 ms    0.1%
   TOTAL         469.3 ms  100.0%
-  (serialize)     0.0 ms  (inside a stage above)
   (client_total) 386.5 ms  (inside a stage above)
 ```
 
-`http` is normally 92–96% of the wall clock — the client's own measured
-`http_ms` matches the `http` stage, which is how you can tell the breakdown is
-not inflated. The skill's own overhead is ~4%, so there is no client-side
-optimisation left worth chasing: effort belongs in *choosing good questions* and
-*reducing the state*.
-
-`warm` appears only on the first call of a process (and is ~0 when the connection
-is already open). It is kept on by default because it is a net win: on the
-measurement machine the handshake costs 74–100 ms and saves ~100 ms on the first
-real call (437 ms cold vs 340 ms warm).
+`http` is normally 92–96% of the wall clock, and it matches the client's own
+measured `http_ms` — that agreement is how you know the breakdown is not inflated.
+The skill's own overhead is ~4%, so effort belongs in *choosing good questions*,
+not in the client. `warm` appears only on the first call of a process. Full
+breakdowns, including the cold-versus-warm measurement: `references/benchmarks.md`.
 
 ## 7. Choosing a confidence threshold
 
 There is no universal number, and copying one from a blog post is the most common
-way to ship a bad gate. **Measure it.** Use your ledger:
+way to ship a bad gate. **Measure it** against your own labelled cases:
 
 ```bash
-jevskill stats --json | jq '.by_intent'
+jevskill stats --json          # confidence and accuracy per pattern and intent
+jevskill advice                # which patterns are KEEP / STOP / ESCALATE
 ```
 
-Then plot confidence against accuracy for your own labelled cases and pick the
-threshold where the accuracy is good enough for what a wrong answer costs you. A
-guard in front of `rm -rf` deserves a different threshold than a routing hint.
-
-Escalate — to the LLM or to a human — when confidence is low, rather than
-accepting an answer the model already told you it was unsure about.
+A guard in front of `rm -rf` deserves a different threshold than a routing hint.
+Full method, including reading a distribution instead of a bare confidence:
+`references/prompting.md`.
 
 ## 8. Hard constraints (do not fight these)
 
 - **No text output.** No prose, code, summaries, explanations. Ever.
-- **Options are fixed per request.** Jev picks from the set you send; it cannot
+- **Options are fixed per request.** It picks from the set you send; it cannot
   propose an option you did not think of.
 - **Text input only.** No images or audio.
-- **32K context** on OpenRouter, and accuracy degrades before the limit.
-- **Not OpenAI-compatible.** It uses `/api/alpha/decisions`, never
-  `/api/v1/chat/completions`. Chat SDKs will not work.
-- **Hosted only.** No self-hosting, no VPC, no air-gap.
+- **Context is 32K** on OpenRouter, 64K on the vendor endpoint — and accuracy
+  degrades before the limit.
+- **Not OpenAI-compatible**, and hosted only: no self-hosting, no VPC, no air-gap.
+  Full list: `references/api.md`.
 
 ## 9. Failure modes to avoid
 
-| Anti-pattern | Why it hurts | Do instead |
-|---|---|---|
-| Looping one question per call | 9.4× slower, ~2× tokens | one call, many questions |
-| One giant "analyse everything" question | Broad questions underperform | atomic gates, combine in code |
-| Accepting a 0.51 winner | It is a coin flip | narrow and re-ask |
-| Dumping raw data "just in case" | Distracts and bills | 8k budget; REDUCE |
-| Asking Jev to write a summary | It returns no text | use the LLM |
-| Choosing options on the fly per call | Unstable, uncacheable | fixed question bundles |
-| No `unclear` / `none` option | Forces a wrong answer | always include an escape hatch |
-| Assuming Jev is more accurate than an LLM | It is not, on published evidence | use it for speed/cost, combine signals |
-| Threshold copied from a doc | Your risks are not theirs | measure against your ledger |
+The four that cost the most, in this codebase's own history:
 
-## 10. Command reference
+| Anti-pattern | Do instead |
+|---|---|
+| Looping one question per call | one call, many questions |
+| Not naming the target value in the question (`` `L7` ``, `` `state.diff` ``) | name it — the silent failure that returns a flat 0.74 for everything |
+| Accepting a 0.51 winner | narrow and re-ask |
+| No `unclear` / `none` option | always include an escape hatch |
 
-```
-jevskill doctor                # key, connectivity, warm latency, live cost
-jevskill patterns              # the palette, with shapes and examples
-jevskill plan "<problem>"      # FREE: should Jev be used? which pattern? how many calls?
-jevskill batch items.jsonl --text-key line --question-type choice --name owner --options a b unclear
-jevskill ask --state ... --questions '<json>'
-jevskill ask --state-file diff.txt --question-type choice --name owner --options a b c unclear
-jevskill outcome <decision_id> correct|incorrect|escalated|overridden|no_action
-jevskill stats                 # measured latency, cost, savings, accuracy per pattern
-jevskill advice                # what to do about it: KEEP / STOP / ESCALATE / UNPROVEN
-```
+The other six, with the measurement behind each: `references/patterns.md`.
 
-Add `--json` to any command for machine-readable output. State comes from
-`--state`, `--state-file`, or stdin. Every command reports its own stage timings.
+## 10. Read only the slice you need
 
-## 11. Further reading
+| Need | Read |
+|---|---|
+| Exact request/response shapes, fields, error codes | `references/api.md` |
+| Every command, flag and script invocation | `references/commands.md` |
+| The nine patterns with full worked questions | `references/patterns.md` |
+| How to write instructions and criteria that discriminate | `references/prompting.md` |
+| Every measurement, with method and honesty notes | `references/benchmarks.md` |
 
-- `references/api.md` — exact request/response shapes, all fields, error codes
-- `references/patterns.md` — the nine patterns with full worked questions
-- `references/prompting.md` — how to write instructions and criteria that work
-- `references/benchmarks.md` — every measurement, with method and honesty notes
-- Official docs: <https://docs.typesafe.ai> · Model:
-  <https://openrouter.ai/typesafe/jev-1.13>
+Do not load all five. Pick the one the task needs; the pattern work above already
+shows the common shapes inline.
+
+Official documentation: <https://docs.typesafe.ai> ·
+Model card: <https://openrouter.ai/typesafe/jev-1.13>

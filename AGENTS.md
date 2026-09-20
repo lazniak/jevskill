@@ -41,7 +41,7 @@ because passing the wrong one is a 404 or a 422.
 ## Running things
 
 ```bash
-python -m pytest -q                       # 344 tests, offline, must stay green
+python -m pytest -q                       # 424 tests, offline, must stay green
 python bench/run.py --legacy-reduce       # live API: E1-E7, writes bench/results.json
 python bench/ab.py --runs 3               # live API: the A/B evaluation, writes bench/ab_results.json
 
@@ -96,7 +96,8 @@ the global ledger; that silently contaminated a per-project report once.
 - Tests derive from constants rather than hard-coding them, so re-tuning a
   constant does not require editing assertions.
 - `SKILL.md` is a decision guide for an agent, not documentation for a human. Keep
-  it imperative and under 500 lines (it is ~300).
+  it imperative and under 500 lines (it is at the ceiling: move detail into
+  `references/` instead of adding to it, and update the §10 router when you do).
 - Commit messages: conventional commits, and explain the reasoning and the
   measurement, not just the change.
 

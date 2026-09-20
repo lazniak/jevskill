@@ -8,6 +8,92 @@ Because this project's value is its *measurements*, entries that change publishe
 numbers say so explicitly, and superseded figures are named rather than quietly
 replaced.
 
+## [0.7.0] — 2026-09-21
+
+Safety and contract work, prompted by reading three competing Jev skills
+(`oomol-lab/skills`, `wuyoscar/jev-skill`, `reachjalil/jevlogs`). Two of them were
+doing something this skill was not, and both were right.
+
+### Changed — **breaking-ish: redaction is now on by default**
+
+`ask`, `batch` and the bundled `jev_query.py` now scrub credential-shaped strings
+from the state before it is sent, and report what they scrubbed:
+
+```
+$ jevskill ask --state "ERROR auth failed; key sk-or-v1-0123…; password=hunter2"
+  redacted: openrouter_key, password_param
+```
+
+This is a **behaviour change**: the state that leaves the machine is no longer
+byte-identical to the state you passed. It is also the right default — this skill
+sends your logs, diffs and tickets to a third party by design, and a decision
+rarely needs live credentials. `--no-redact` restores the old behaviour, and is
+tested.
+
+Patterns cover private keys, OpenRouter/`sk-`/AWS/GitHub/Slack tokens, JWTs,
+`Bearer` headers and `password=`/`token=`-style parameters. Email addresses are
+**not** redacted by default (`--redact-emails` opts in) because for triage the
+address is often the signal. What fired is recorded under `"redactions"` in the
+output and in the ledger row, so a redacted run stays interpretable.
+
+This is not a general PII policy, and the docs say so.
+
+### Added — exit code 2 means "the model hesitated"
+
+`ask` and `batch` now return the review contract: `0` decided, `2` at least one
+answer needs review, `3` over budget, `1` error. `2` is deliberately distinct from
+`1` so a harness can tell *"not confident enough to automate"* from *"the call
+failed"* without parsing output. `--needs-review` (per answer) is reported in JSON
+and in the ledger.
+
+The rules: a `noul` inside `(1-below, below)`, a `choice` whose top probability is
+below the floor **or** whose top-two margin is under `--review-margin`, a `score`
+whose reported confidence is below the floor. Defaults `0.75` / `0.10` are
+documented as **illustrative heuristics, not calibrated guarantees** — tune them
+on held-out data, which is what `outcome` and `stats` exist for.
+
+### Added — keyless choreography in `SKILL.md`
+
+Lifted from `wuyoscar/jev-skill`, which handles the no-key case better than we did:
+the skill now tells the agent to check only the *presence* of a key, ask the user
+A (get a key) or B (judge it yourself) in their language, and wait. Consent is
+per-task, a key appearing later does **not** authorise switching an approved B task
+to A, API errors are not consent to simulate, and simulation must be labelled
+`mode: agent_simulation` / `jev_called: false` with `probability` and `confidence`
+set to `null` rather than invented.
+
+### Added — frontmatter metadata
+
+`allowed-tools: Bash(python:*)`, `metadata.version`, and `metadata.requirements`
+(Python 3.9+ and stdlib only, which endpoints, which key variables, that calls are
+billed, that redaction is on, and the keyless rule). The description now also says
+Jev is **advisory, never an authorization boundary**.
+
+### Changed — `SKILL.md` restructured to stay under 500 lines
+
+It had reached 492 lines with the additions, against a hard 500-line ceiling. The
+command reference moved to the new `references/commands.md`; the confidence-threshold
+method moved to `references/prompting.md`; the failure-mode table was merged into
+the one already in `references/patterns.md`; and §10 is now a "read only the slice
+you need" router. Nothing was dropped — the detail moved, and every pointer is
+checked to resolve. `AGENTS.md`'s claim that the file was "~300" lines was stale and
+is corrected.
+
+### Fixed — stale documentation
+
+`AGENTS.md` said 344 tests (424 now) and "~300 lines" (499 now).
+
+### Verified
+
+- 424 tests green, from 361. New: `test_redact.py`, `test_review.py`, plus CLI
+  contract tests, plus drift guards asserting the bundled zero-install script's
+  *copies* of the redaction and review rules still match the package.
+- Live: state containing a real-shaped key and `password=hunter2` went out with both
+  scrubbed and the model still answered (p=0.87); a genuinely borderline item
+  (p=0.36) exited `2` while p=0.10 and p=0.77 exited `0`; tightening the floor
+  flagged an otherwise-confident answer, proving the band is live and not inert.
+- No published number changes.
+
 ## [Unreleased]
 
 ### Planned

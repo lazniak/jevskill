@@ -269,3 +269,34 @@ what the 95.1% result did.
 - [ ] Is the state under budget, and free of irrelevant context?
 - [ ] Is the confidence threshold measured on your own labelled data?
 - [ ] Are you iterating on the distribution instead of re-rolling?
+
+---
+
+## Choosing a confidence threshold
+
+There is no universal number, and copying one from a blog post is the most common
+way to ship a bad gate. The defaults in this skill (`--review-below 0.75`,
+`--review-margin 0.10`) are **illustrative heuristics, not calibrated guarantees**.
+
+Measure yours against your own labelled cases:
+
+```bash
+jevskill stats --json    # confidence and accuracy per pattern and intent
+jevskill advice          # KEEP / STOP / ESCALATE / UNPROVEN
+```
+
+Then pick the threshold where accuracy is good enough for what a wrong answer
+costs you. A guard in front of `rm -rf` deserves a different threshold than a
+routing hint.
+
+Three things worth knowing before you tune anything:
+
+- **`confidence` is concentration, not correctness.** A `choice` can report a high
+  confidence while the top two options are separated by noise, which is why the
+  review rule also requires a margin between them. Read the `probabilities` when
+  the decision matters.
+- **Escalate rather than accept.** When confidence is low, hand the case to the LLM
+  or to a human — do not act on an answer the model already told you it was unsure
+  about. That is what exit code `2` is for.
+- **Pair outcomes or you cannot tune.** `jevskill outcome <decision_id> …` is what
+  turns the ledger into accuracy; without it `advice` can only report UNPROVEN.

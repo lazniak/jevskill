@@ -472,3 +472,7 @@ jevskill plan "keep the 8 lines that matter from this log" --state-file build.lo
 | Guard used as authorisation | guard + human confirmation |
 | Threshold copied from a doc | measure on your own labelled cases |
 | Sending the whole corpus | reduce first; 8K budget |
+| Looping one question per call | one call, many questions (9.4× slower, ~2× tokens) |
+| One giant "analyse everything" question | atomic gates, combine the answers in code |
+| Choosing options on the fly per call | fixed bundles: unstable and uncacheable otherwise |
+| Assuming Jev is more accurate than an LLM | it is not, on published evidence — use it for speed and cost, or to combine signals |

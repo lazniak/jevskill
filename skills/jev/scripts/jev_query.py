@@ -27,7 +27,8 @@ For the ledger, per-stage statistics and `stats`/`outcome`, install the package
 (``pip install -e .``) and use the full CLI. This script exists so the skill is
 useful without that install.
 
-Exit codes: 0 success, 1 error, 3 refused (state over budget).
+Exit codes: 0 decided, 2 at least one answer needs review, 3 refused (state over
+budget), 1 error.
 """
 
 from __future__ import annotations
@@ -82,6 +83,95 @@ OPENROUTER_KEY_PREFIX = "sk-or-"
 # Calibrated against the live API: a prose rule of thumb (3.6 chars/token)
 # under-counted log lines and code by 2.15x. See jevskill/config.py.
 CHARS_PER_TOKEN = 1.68
+
+#: Credential-shaped strings to scrub before state leaves the machine. A compiled
+#: copy of jevskill/redact.py — same rule as PROVIDERS: this script must run with
+#: nothing installed, so it cannot import the package. Ordered most-specific
+#: first, so ``sk-or-v1-…`` is labelled as an OpenRouter key, not a generic one.
+REDACT_PATTERNS = (
+    ("private_key", r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----"),
+    ("openrouter_key", r"\bsk-or-v1-[0-9a-f]{16,}\b"),
+    ("api_key", r"\bsk-[A-Za-z0-9_-]{16,}\b"),
+    ("aws_key", r"\bAKIA[0-9A-Z]{16}\b"),
+    ("github_token", r"\bgh[pousr]_[A-Za-z0-9]{30,}\b"),
+    ("slack_token", r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b"),
+    ("jwt", r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b"),
+    ("bearer", r"\bBearer\s+[A-Za-z0-9._~+/-]{8,}={0,2}"),
+    ("password_param",
+     r"\b(password|passwd|api[_-]?key|secret|auth[_-]?token|access[_-]?token|token)"
+     r"\s*[=:]\s*[\"']?[A-Za-z0-9._~+/-]{6,}"),
+)
+EMAIL_PATTERN = ("email", r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+\.[A-Za-z0-9.-]{2,}\b")
+
+#: Review thresholds. Compiled copy of jevskill/review.py — see REDACT_PATTERNS
+#: for why this script carries its own copy. Both are *illustrative heuristics,
+#: not calibrated guarantees*: tune them on held-out data for your workload.
+DEFAULT_REVIEW_BELOW = 0.75
+DEFAULT_REVIEW_MARGIN = 0.10
+
+
+def needs_review(answer: dict, below: float = DEFAULT_REVIEW_BELOW,
+                 margin: float = DEFAULT_REVIEW_MARGIN) -> bool:
+    """True when one raw answer is too close to call for unattended use."""
+    kind = answer.get("type")
+    if kind == "noul":
+        value = answer.get("noul")
+        if value is None:
+            return True
+        return (1.0 - below) < float(value) < below
+    probabilities = sorted(
+        (float(v) for v in (answer.get("probabilities") or {}).values()), reverse=True)
+    if kind == "choice":
+        if not probabilities:
+            return True
+        second = probabilities[1] if len(probabilities) > 1 else 0.0
+        return probabilities[0] < below or (probabilities[0] - second) < margin
+    if kind == "score":
+        confidence = answer.get("confidence")
+        if confidence is not None:
+            return float(confidence) < below
+        return not probabilities or probabilities[0] < below
+    return True  # an unknown kind is reported, not trusted
+
+
+def review_flags(answers: dict, below: float, margin: float) -> list:
+    """Names of the answers that need a second look, in question order."""
+    return [name for name, answer in (answers or {}).items()
+            if needs_review(answer, below, margin)]
+
+
+def redact_value(data, emails: bool = False, extra=None):
+    """Scrub every string in ``data``. Returns ``(data, labels)``.
+
+    Keys are structure the question may point at, so only values are scrubbed.
+    """
+    import re as _re
+
+    patterns = [(label, _re.compile(raw, _re.IGNORECASE)) for label, raw in REDACT_PATTERNS]
+    if emails:
+        patterns.append((EMAIL_PATTERN[0], _re.compile(EMAIL_PATTERN[1], _re.IGNORECASE)))
+    for i, raw in enumerate(extra or []):
+        try:
+            patterns.append((f"extra_{i}", _re.compile(raw)))
+        except _re.error as exc:
+            raise SystemExit(f"error: bad --redact-extra regex #{i} ({raw!r}): {exc}")
+
+    labels: list = []
+
+    def walk(value):
+        if isinstance(value, str):
+            for label, pattern in patterns:
+                value, hits = pattern.subn(f"[REDACTED:{label}]", value)
+                if hits and label not in labels:
+                    labels.append(label)
+            return value
+        if isinstance(value, dict):
+            return {k: walk(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [walk(v) for v in value]
+        return value
+
+    return walk(data), labels
 
 
 def _registry_env(name: str) -> str:
@@ -412,6 +502,19 @@ def main(argv=None) -> int:
     parser.add_argument("--retries", type=int, default=2)
     parser.add_argument("--timeout", type=float, default=60.0)
     parser.add_argument("--max-state-tokens", type=int, default=8000)
+    parser.add_argument("--no-redact", action="store_true",
+                        help="send state exactly as given (default: credential-shaped "
+                             "strings are scrubbed and reported)")
+    parser.add_argument("--redact-emails", action="store_true",
+                        help="also scrub email addresses (default off)")
+    parser.add_argument("--redact-extra", nargs="+", default=None, metavar="REGEX",
+                        help="additional regexes to scrub, labelled extra_0, extra_1, ...")
+    parser.add_argument("--review-below", type=float, default=DEFAULT_REVIEW_BELOW,
+                        help=f"confidence floor; below it an answer needs review "
+                             f"(default {DEFAULT_REVIEW_BELOW}, an illustrative heuristic)")
+    parser.add_argument("--review-margin", type=float, default=DEFAULT_REVIEW_MARGIN,
+                        help=f"minimum gap between the top two options for a choice "
+                             f"(default {DEFAULT_REVIEW_MARGIN})")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
 
@@ -437,8 +540,16 @@ def main(argv=None) -> int:
     else:
         data = sys.stdin.read()
 
+    redactions: list = []
+    if not args.no_redact:
+        # Default-on: state goes to a third party, and a decision rarely needs
+        # live credentials. What was scrubbed is always reported, never silent.
+        data, redactions = redact_value(
+            data, emails=args.redact_emails, extra=args.redact_extra)
+
     if args.reduce:
         out = reduce_state(data, args, key, provider, model)
+        out["redactions"] = redactions
         if args.json:
             print(json.dumps(out, ensure_ascii=False, indent=2))
         else:
@@ -473,14 +584,25 @@ def main(argv=None) -> int:
     result["_ms"] = (time.perf_counter() - started) * 1000
     result["_provider"] = provider
     result["_cost_usd"] = cost_of(provider, result.get("usage") or {})
+    hesitant = review_flags(result.get("answers") or {}, args.review_below, args.review_margin)
 
     if args.json:
-        print(json.dumps({k: v for k, v in result.items()
-                          if k not in ("_ms", "_provider", "_cost_usd")},
-                         ensure_ascii=False, indent=2))
+        payload = {k: v for k, v in result.items()
+                   if k not in ("_ms", "_provider", "_cost_usd")}
+        payload["redactions"] = redactions
+        payload["needs_review"] = {name: name in hesitant
+                                   for name in (result.get("answers") or {})}
+        payload["review"] = hesitant
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
     else:
-        print("\n".join(render(result)))
-    return 0
+        lines = render(result)
+        if redactions:
+            lines.append(f"  redacted: {', '.join(redactions)}")
+        if hesitant:
+            lines.append(f"  needs review: {', '.join(hesitant)}")
+        print("\n".join(lines))
+    # 0 = decided, 2 = at least one answer needs review, distinct from 1 = error.
+    return 2 if hesitant else 0
 
 
 if __name__ == "__main__":

@@ -48,6 +48,13 @@ from .orchestrate import (
     should_use_jev,
 )
 from .primitives import choice, noul, score, validate_questions
+from .redact import redact_state
+from .review import (
+    DEFAULT_REVIEW_BELOW,
+    DEFAULT_REVIEW_MARGIN,
+    flagged,
+    review_report,
+)
 from .stages import Stages, format_stages
 from .stats import (
     advise,
@@ -93,6 +100,43 @@ def _load_state(args: argparse.Namespace) -> object:
         if text.strip():
             return text
     raise JevError("no state supplied — pass --state, --state-file, or pipe it on stdin")
+
+
+def add_redact_flags(p: argparse.ArgumentParser) -> None:
+    """Redaction is default-on: these commands ship the caller's data to a third
+    party by design, and a decision rarely needs live credentials. The escape
+    hatches are explicit flags, not silence."""
+    p.add_argument("--no-redact", action="store_true",
+                   help="send the state exactly as given (default: credential-shaped "
+                        "strings are scrubbed and reported)")
+    p.add_argument("--redact-emails", action="store_true",
+                   help="also scrub email addresses (default off: the address is "
+                        "often the signal being classified)")
+    p.add_argument("--redact-extra", nargs="+", default=None, metavar="REGEX",
+                   help="additional regexes to scrub, labelled extra_0, extra_1, ...")
+
+
+def _ledger_extra(redactions: list[str], hesitant: list[str]) -> dict | None:
+    """The optional ledger payload for one decision, or None when there is
+    nothing worth recording. Kept in one place so `ask` and `batch` agree."""
+    extra: dict = {}
+    if redactions:
+        extra["redactions"] = redactions
+    if hesitant:
+        extra["review"] = hesitant
+    return extra or None
+
+
+def add_review_flags(p: argparse.ArgumentParser) -> None:
+    """The review contract: exit 2 means "the model hesitated", which a harness
+    must be able to tell apart from exit 1 ("the call failed"). Thresholds are
+    illustrative heuristics — tune them on held-out data."""
+    p.add_argument("--review-below", type=float, default=DEFAULT_REVIEW_BELOW,
+                   help=f"confidence floor; below it an answer needs review "
+                        f"(default {DEFAULT_REVIEW_BELOW}, an illustrative heuristic)")
+    p.add_argument("--review-margin", type=float, default=DEFAULT_REVIEW_MARGIN,
+                   help=f"minimum gap between the top two options for a choice "
+                        f"(default {DEFAULT_REVIEW_MARGIN})")
 
 
 def _build_questions(args: argparse.Namespace) -> dict[str, dict]:
@@ -265,6 +309,11 @@ def cmd_ask(args: argparse.Namespace) -> int:
     stages.mark("t_decision")
 
     state = _load_state(args)
+    redactions: list[str] = []
+    if not args.no_redact:
+        state, hit = redact_state(
+            state, redact_emails=args.redact_emails, extra_patterns=args.redact_extra)
+        redactions = sorted(set(hit))
     questions = _build_questions(args)
     stages.mark("profile")
     stages.mark("plan")
@@ -307,6 +356,12 @@ def cmd_ask(args: argparse.Namespace) -> int:
         for name, answer in result.answers.items()
         if answer.confidence is not None
     }
+    review = review_report(
+        result.answers,
+        below=args.review_below,
+        margin=args.review_margin,
+    )
+    hesitant = flagged(review)
 
     payload = {
         "ok": True,
@@ -319,6 +374,9 @@ def cmd_ask(args: argparse.Namespace) -> int:
         "wall_ms": round(wall_ms, 1),
         "shape": shape.to_dict(),
         "baseline_tokens": baseline_tokens,
+        "redactions": redactions,
+        "needs_review": review,
+        "review": hesitant,
     }
 
     # The ledger should capture the stage breakdown *including* the work of
@@ -342,6 +400,7 @@ def cmd_ask(args: argparse.Namespace) -> int:
             baseline_tokens=baseline_tokens,
             session_id=args.session_id or "",
             version=__version__,
+            extra=_ledger_extra(redactions, hesitant),
             root=args.ledger_root,
         )
         payload["decision_id"] = decision_id
@@ -356,7 +415,12 @@ def cmd_ask(args: argparse.Namespace) -> int:
     else:
         lines = [f"JEV decided ({result.model}) in {result.timing_ms.get('total_ms', wall_ms):.0f} ms"]
         for name, answer in result.answers.items():
-            lines.append(f"  {name}: {_render_answer(answer)}")
+            mark = "  (needs review)" if review.get(name) else ""
+            lines.append(f"  {name}: {_render_answer(answer)}{mark}")
+        if redactions:
+            # Say it in the human path too: data left the machine different from
+            # how it arrived, and the caller must be able to notice that.
+            lines.append(f"  redacted: {', '.join(redactions)}")
         lines.append("")
         lines.append(
             f"  tokens {result.input_tokens}  cost ${result.cost_usd:.8f}"
@@ -367,7 +431,10 @@ def cmd_ask(args: argparse.Namespace) -> int:
         lines.append("  stages:")
         lines.append(format_stages(stages_dict))
         print("\n".join(lines))
-    return 0
+    # The review contract: 0 = decided, 2 = at least one answer needs review.
+    # Distinct from 1 (error) so a harness can tell "the model hesitated" from
+    # "the call failed" without parsing output.
+    return 2 if hesitant else 0
 
 
 def _render_answer(answer) -> str:
@@ -517,6 +584,18 @@ def cmd_batch(args: argparse.Namespace) -> int:
         raise JevError(f"could not read items: {exc}") from exc
     if args.limit:
         items = items[:args.limit]
+    redactions: list[str] = []
+    if not args.no_redact:
+        # Redact before anything measures the items, so the token baseline, the
+        # bundle and the ledger all describe the state that actually shipped.
+        for item in items:
+            scrubbed, hit = redact_state(
+                item.data,
+                redact_emails=args.redact_emails,
+                extra_patterns=args.redact_extra)
+            item.data = scrubbed
+            redactions.extend(hit)
+        redactions = sorted(set(redactions))
     stages.mark("profile")
 
     config = Config.from_env(provider=getattr(args, "provider", None),
@@ -524,12 +603,19 @@ def cmd_batch(args: argparse.Namespace) -> int:
     stages.mark("build")
 
     ledger_rows: list[tuple] = []
+    hesitant_items: list[int] = []
 
     def on_call(result, mapping):
         # One ledger row per call, labelled with the batch intent so `stats` and
         # `advice` can judge the batch path on its own terms.
         covered = sorted({index for index, _ in mapping.values()})
         baseline = sum(count_tokens(items[i].as_state()) for i in covered)
+        call_review = flagged(review_report(
+            result.answers, below=args.review_below, margin=args.review_margin))
+        # Map question names back to item indices: "which items need a look" is
+        # the useful answer for a batch, not "which question names did".
+        hesitant_items.extend(
+            mapping[name][0] for name in call_review if name in mapping)
         record_decision(
             which=args.pattern or "triage",
             intent=args.intent or "batch",
@@ -544,6 +630,7 @@ def cmd_batch(args: argparse.Namespace) -> int:
             baseline_tokens=baseline,
             session_id=args.session_id or "",
             version=__version__,
+            extra=_ledger_extra(redactions, call_review),
             root=args.ledger_root,
         )
         ledger_rows.append((result, len(covered)))
@@ -593,6 +680,8 @@ def cmd_batch(args: argparse.Namespace) -> int:
         "tally": summarize_outcomes(result),
         "ledger": str(ledger_path(args.ledger_root)),
         "stages_ms": stages.ordered(),
+        "redactions": redactions,
+        "review": sorted(set(hesitant_items)),
     })
 
     if args.out:
@@ -603,7 +692,8 @@ def cmd_batch(args: argparse.Namespace) -> int:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
     else:
         print(_render_batch(result, payload["tally"], args.quiet))
-    return 0
+    # Same review contract as `ask`: 2 = items need a look, not an error.
+    return 2 if hesitant_items else 0
 
 
 def _confidences(result) -> dict:
@@ -751,6 +841,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--force", action="store_true", help="send even if over the state budget")
     p.add_argument("--no-ledger", action="store_true", help="do not write a ledger row")
     p.add_argument("--ledger-root", help="directory holding .jevskill/ledger.jsonl")
+    add_redact_flags(p)
+    add_review_flags(p)
     p.set_defaults(func=cmd_ask)
 
     # batch
@@ -806,6 +898,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-ledger", action="store_true")
     p.add_argument("--ledger-root")
     add_provider_flag(p)
+    add_redact_flags(p)
+    add_review_flags(p)
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_batch)
 

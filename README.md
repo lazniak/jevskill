@@ -295,6 +295,47 @@ machine.
 
 ---
 
+## 🔒 What leaves your machine — and what doesn't
+
+This skill sends your logs, diffs and tickets to a third party. That is the deal,
+so the default is to scrub what a decision never needs:
+
+```bash
+$ jevskill ask --state "ERROR auth failed; key sk-or-v1-0123…; password=hunter2"
+  redacted: openrouter_key, password_param
+```
+
+**Redaction is on by default** (v0.7.0). It removes private keys, OpenRouter /
+`sk-` / AWS / GitHub / Slack tokens, JWTs, `Bearer` headers and
+`password=`/`token=`-style parameters, and reports which rules fired — in the
+output and in the ledger row, so a redacted run stays interpretable rather than
+silently different. `--no-redact` sends the state exactly as given.
+
+Email addresses are **not** redacted by default: for triage the address is often
+the signal. `--redact-emails` opts in.
+
+**This is not a general PII policy.** It catches credential-shaped strings, not
+personal or business data. Read what you send.
+
+### Exit code `2` means "the model hesitated"
+
+| Code | Meaning |
+|---|---|
+| `0` | decided / scored |
+| `2` | **at least one answer needs review** — not confident enough to automate |
+| `3` | state over the token budget (nothing was sent) |
+| `1` | input, key, API or protocol error |
+
+`2` is deliberately distinct from `1`, so a harness can tell *"not confident
+enough"* from *"the call failed"* without parsing output. The rules: a `noul`
+inside the middle band, a `choice` whose top probability is low **or** whose
+top-two margin is thin, a `score` below the confidence floor. The defaults
+(`--review-below 0.75`, `--review-margin 0.10`) are **illustrative heuristics, not
+calibrated guarantees** — tune them on your own labelled data
+(`skills/jev/references/prompting.md`).
+
+---
+
 ## 🎯 The 9 patterns (your new reflexes)
 
 | Pattern | Say it when… | Coding example |
@@ -521,7 +562,7 @@ leverage is better questions and less state. So the Skill teaches both.
 ```
 skills/jev/            the Agent Skill — works with NOTHING installed
   SKILL.md             what your harness loads
-  references/          api · patterns · prompting · benchmarks
+  references/          api · patterns · prompting · benchmarks · commands
   scripts/
     jev_query.py       stdlib-only caller: decisions + reversible REDUCE
     jev_recovery.py    read back everything REDUCE rejected
@@ -530,21 +571,33 @@ jevskill/              the Python package — the measurement half
   client.py            Decisions API — warm HTTP/2, retries, per-stage timings
   primitives.py        noul / choice / score, with validation that prevents 400s
   orchestrate.py       pattern selection, profiling, chunking, iteration rules
+  redact.py            scrub credential-shaped strings before state is sent
+  review.py            which answers are too close to call (exit code 2)
   stats.py             the effectiveness ledger
   cli.py               doctor · plan · patterns · ask · batch · outcome · stats · advice
   jevtask.py           batching: N items, one question set, measured saving
 bench/
   run.py               E1–E7 microbenchmarks (latency, fan-out, REDUCE, guards)
   ab.py                the A/B evaluation vs the model doing it alone
-tests/                 344 tests, offline, green
+tests/                 424 tests, offline, green
 docs/DESIGN.md         architecture + the mistakes that shaped it
 AGENTS.md              conventions for agents working on this repo
 ```
 
-## 🧭 Status & known limits — `v0.3.0`
+## 🧭 Status & known limits — `v0.7.0`
 
-CLI, skill, bundled scripts, ledger and reference docs (344 offline tests) are
+CLI, skill, bundled scripts, ledger and reference docs (424 offline tests) are
 complete, and there are now two benchmark suites. What is **not** proven:
+
+* **Redaction is not a PII policy.** It catches credential-shaped strings, not
+  personal or business data, and it is pattern-based — a secret in an unusual shape
+  will pass through. Read what you send.
+* **The review thresholds are heuristics.** `--review-below 0.75` /
+  `--review-margin 0.10` are not calibrated guarantees; they are a starting point to
+  tune on your own labelled data.
+* **The no-key path is instruction, not enforcement.** `SKILL.md` tells the agent to
+  ask before judging in Jev's place and to label simulation; nothing in the CLI can
+  verify that it did.
 
 * **Latency is one location.** Measured from Poland. TypeSafe quotes 70–500 ms
   depending on distance — measure your own RTT.
@@ -569,6 +622,7 @@ complete, and there are now two benchmark suites. What is **not** proven:
 | [`skills/jev/references/api.md`](skills/jev/references/api.md) | exact API shapes, both providers, every field, error codes |
 | [`skills/jev/references/patterns.md`](skills/jev/references/patterns.md) | all 9 patterns, worked questions |
 | [`skills/jev/references/prompting.md`](skills/jev/references/prompting.md) | 10 rules, each backed by a measurement |
+| [`skills/jev/references/commands.md`](skills/jev/references/commands.md) | every command, flag and script invocation |
 | [`skills/jev/references/benchmarks.md`](skills/jev/references/benchmarks.md) | every number + threats to validity |
 | [`CHANGELOG.md`](CHANGELOG.md) | versioned history |
 | [`docs/DESIGN.md`](docs/DESIGN.md) | why it's built this way |

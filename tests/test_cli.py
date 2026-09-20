@@ -18,7 +18,11 @@ def fake_decisions(**overrides) -> Decisions:
             "probabilities": {"billing": 0.88, "api": 0.12},
         }),
         "risk": Answer("score", "risk", {
-            "type": "score", "score": 1.4, "confidence": 0.7,
+            # Confident on purpose: the default fixture must represent an
+            # actionable decision, so command-flow tests do not accidentally
+            # exercise the review path (exit 2). Hesitant answers are supplied
+            # explicitly by TestReviewExitContract.
+            "type": "score", "score": 1.4, "confidence": 0.8,
             "legend": {"0": "Low", "1": "Med", "2": "High"},
             "probabilities": {"0": 0.1, "1": 0.5, "2": 0.4},
         }),
@@ -122,6 +126,109 @@ class TestDoctorStages:
     def test_http_is_the_probe_alone(self, capsys, monkeypatch):
         stages = self.stages(capsys, monkeypatch)
         assert stages["http"] < SlowHandshakeClient.HANDSHAKE_S * 1000
+
+
+#: A credential-shaped string that must never reach the provider by default.
+SECRET = "sk-or-v1-0123456789abcdef0123456789abcdef"
+
+
+class TestRedactionDefaults:
+    """Redaction is default-on: the skill ships the caller's data to a third party
+    by design, so the safe behaviour must not need a flag, and the unsafe one must
+    be an explicit choice."""
+
+    def ask(self, capsys, extra: list[str], *, as_json: bool = True):
+        argv = ["ask", "--pattern", "gate", "--state", f"db down; key {SECRET}",
+                "--question-type", "noul", "--name", "problem",
+                "--instructions", "Does `state` report an outage?",
+                "--no-ledger", *extra]
+        if as_json:
+            argv.append("--json")
+        return run(capsys, argv)
+
+    def test_state_is_scrubbed_before_it_is_sent(self, capsys):
+        code, out, _ = self.ask(capsys, [])
+        assert code == 0
+        sent = json.dumps(FakeClient.calls[0]["state"])
+        assert SECRET not in sent
+        assert "[REDACTED:openrouter_key]" in sent
+        assert json.loads(out)["redactions"] == ["openrouter_key"]
+
+    def test_no_redact_is_the_explicit_escape_hatch(self, capsys):
+        code, out, _ = self.ask(capsys, ["--no-redact"])
+        assert code == 0
+        assert SECRET in json.dumps(FakeClient.calls[0]["state"])
+        assert json.loads(out)["redactions"] == []
+
+    def test_the_human_path_also_admits_what_was_scrubbed(self, capsys):
+        code, out, _ = self.ask(capsys, [], as_json=False)
+        assert code == 0 and "redacted: openrouter_key" in out
+
+    def test_clean_state_reports_no_redactions(self, capsys):
+        code, out, _ = run(
+            capsys,
+            ["ask", "--pattern", "gate", "--state", "db connection refused",
+             "--question-type", "noul", "--name", "problem",
+             "--instructions", "Does `state` report an outage?",
+             "--json", "--no-ledger"],
+        )
+        assert code == 0
+        assert json.loads(out)["redactions"] == []
+
+
+class TestReviewExitContract:
+    """Exit 2 = "the model hesitated", distinct from 1 = "the call failed". A
+    harness must be able to branch on that without parsing printed output."""
+
+    HESITANT = Answer("noul", "needs_test", {"type": "noul", "noul": 0.51})
+
+    def hesitating(self, monkeypatch):
+        hesitant = self.HESITANT  # captured: the lambda's `self` is the client
+        monkeypatch.setattr(
+            FakeClient, "decide",
+            lambda self, state, questions, session_id=None, timeout_s=None:
+                fake_decisions(answers={"needs_test": hesitant}))
+
+    def ask(self, capsys, extra: list[str], *, as_json: bool = True):
+        argv = ["ask", "--state", "x", "--question-type", "noul",
+                "--name", "needs_test", "--instructions", "Does `x` hold?",
+                "--no-ledger", *extra]
+        if as_json:
+            argv.append("--json")
+        return run(capsys, argv)
+
+    def test_a_confident_answer_still_exits_zero(self, capsys):
+        code, out, _ = self.ask(capsys, [])
+        assert code == 0
+        assert json.loads(out)["review"] == []
+
+    def test_a_hesitant_answer_exits_two_and_names_itself(self, capsys, monkeypatch):
+        self.hesitating(monkeypatch)
+        code, out, _ = self.ask(capsys, [])
+        payload = json.loads(out)
+        assert code == 2, "review is not an error and must not be reported as one"
+        assert payload["review"] == ["needs_test"]
+        assert payload["needs_review"] == {"needs_test": True}
+
+    def test_the_threshold_is_tunable_from_the_command_line(self, capsys, monkeypatch):
+        self.hesitating(monkeypatch)
+        code, _, _ = self.ask(capsys, ["--review-below", "0.4"])
+        assert code == 0, "a lowered threshold must accept the same answer"
+
+    def test_the_human_path_marks_the_hesitant_answer(self, capsys, monkeypatch):
+        self.hesitating(monkeypatch)
+        code, out, _ = self.ask(capsys, [], as_json=False)
+        assert code == 2 and "needs review" in out
+
+    def test_the_ledger_records_which_answers_hesitated(self, capsys, monkeypatch, tmp_path):
+        self.hesitating(monkeypatch)
+        code, _, _ = run(capsys, ["ask", "--state", "x", "--question-type", "noul",
+                                  "--name", "needs_test", "--instructions", "Does `x` hold?",
+                                  "--ledger-root", str(tmp_path), "--json"])
+        assert code == 2
+        rows = [json.loads(line) for line in
+                (tmp_path / ".jevskill" / "ledger.jsonl").read_text(encoding="utf-8").splitlines()]
+        assert rows[-1]["extra"] == {"review": ["needs_test"]}
 
 
 class TestPatternsCommand:
