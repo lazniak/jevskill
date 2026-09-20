@@ -100,3 +100,82 @@ Per task, 3 runs per agent, raw values plus one aggregate line:
 Final summary: one row per agent, totals across all 10 tasks (sum of `wall_ms`/`cost_usd`, mean
 `calls`, overall success rate out of 30), plus escalation rate, plus which tasks (if any) that
 agent failed on all 3 runs — a 0/3 task is a finding, keep it, do not drop it from the table.
+
+## Running it
+
+The harness is `bench/cu_run.py` (runs and grades) plus `bench/cu_report.py` (renders
+the tables above from what the runner wrote). Both are stdlib-only and repo-relative,
+like `bench/cu_bench.py`.
+
+```bash
+python bench/cu_run.py --dry-run          # the default: touches nothing
+python bench/cu_report.py                 # the table, marked DRY RUN
+
+python bench/cu_run.py --live --i-am-not-streaming --agent jevskill.cu.loop:run --runs 3
+python bench/cu_report.py --compare bench/cu_runs_kofanlabs.json --label jev-cu --compare-label kofanlabs
+```
+
+**`--dry-run` is the default and `--live` needs `--i-am-not-streaming`.** A live run
+opens applications, types into them, takes the foreground, and for
+`settings_dark_mode` flips this machine's theme while it is in progress. No
+environment variable and no config file can supply that flag; the one assertion that
+must not be automatable is "nobody is being filmed right now". `make_powershell_phase`
+— the only code that executes a task's `setup`/`teardown` — refuses to be constructed
+until the flag has armed it.
+
+A dry run does four things, none of which touch the desktop: it validates the schema of
+`cu_tasks.json`, parses **every** `setup`/`teardown` snippet through
+`[System.Management.Automation.Language.Parser]::ParseInput` (which builds a syntax tree
+and never executes what it is given — one `pwsh` process for all 42 snippets, skipped
+with a message when `pwsh` is absent), runs a deterministic fake agent, and grades it
+with a fake oracle that always passes. Every row it writes carries `"mode": "dry-run"`
+and `"synthetic": true`, and the report prints DRY RUN in the title of every table built
+from such rows. Synthetic numbers are useful for checking that the columns are wired to
+the right fields; they are evidence about nothing.
+
+### The contract
+
+`jevskill/cu/contract.py` is what the harness and every agent share — `StepRecord`,
+`RunResult`, `RunOptions`, and one callable, `run(goal: str, opts: RunOptions) ->
+RunResult`. **`RunResult` has no `success` field and must not grow one**: success is
+the oracle's verdict, carried on `TaskRun`, which only the harness builds. `summarise`,
+`escalation_rate` and `escalations_per_task` are pure functions of a list of results, so
+the report is testable without a desktop.
+
+### Where the implementation departs from the method above, and why
+
+| Method says | Harness does | Why |
+|---|---|---|
+| poll the oracle independently, stop the clock the instant it is first true | evaluates the oracle once, after the agent returns | A concurrent poller would need a thread per run and would still not see a state the agent has already torn down. Both clocks are recorded instead: `wall_ms` is the agent's own, `harness_wall_ms` is goal-handed-over to agent-returned. When the two disagree, the gap is the agent's book-keeping error and is visible rather than hidden. |
+| per-run cap of 60 s or the loop's step budget | `RunOptions(max_steps=25, budget_s=90.0)`, reported not enforced | The harness cannot preempt a Python callable. An overrun is recorded as a note on the row; the agent is expected to stop itself. |
+| randomize run order per repeat | shuffled per repeat (`--seed`, default 0), then `restores_state` tasks forced last | Both rules from this file at once: a cold first call should not always land on the same task, and `settings_dark_mode` should never land in the middle of a sequence someone is recording. |
+| oracles as written in `cu_tasks.json` | `file_exists`, `file_contains`, `all_of`/`any_of` and `registry_value` are graded in Python; `uia_value`, `window_title_contains` and `clipboard_equals` raise `OracleUnsupported` | Those three need a live accessibility/window reader, which is `cu/observe.py` (Phase 4.1). Until it lands, five of the ten tasks — `calc_multiply`, `calc_scientific_power`, `chrome_find_continue`, `chrome_open_url`, `explorer_view_details` — cannot be graded, and an ungraded run is recorded as a failure with a reason, per "Success is judged by the oracle only" above. It is never back-filled from how the agent stopped. The other five — `explorer_new_folder`, `explorer_rename`, `notepad_replace`, `notepad_save_as`, `settings_dark_mode` — are graded by filesystem and registry reads alone. `tests/test_cu_run.py` pins both lists, so this sentence cannot drift from the code. |
+| results in `cu_task_results.json` (plan item 4.7) | `bench/cu_runs.json` | One file for both agents, keyed by `(task_id, run, mode, provider)` and merged rather than truncated, so two agents and two providers are four invocations into one table. The dry run's output is not committed: it is synthetic, and nothing quotes it. |
+
+### Escalation accounting (Phase 4.8)
+
+Counted two ways, because they are two different failures. `decided_by == "escalation"`
+on a step is a step handed to a VLM or a human mid-run; `stop_reason == "escalated"` is
+a run that ended there. `escalation_rate` is the **step** figure — plan item 4.8's
+"odsetek kroków eskalowanych" — and `escalated_run_rate` is the run figure. The report
+prints both on every table, including when they are zero, and lists escalations per
+task; a rate that only appears when it is non-zero is a rate nobody checks. If an
+agent's self-reported `escalations` disagrees with the number of steps that say
+`decided_by: "escalation"`, the mismatch is printed as an accounting problem rather than
+averaged in.
+
+### Order of phases, and what is guaranteed
+
+`run_task(task, agent, setup, oracle, teardown, opts)` takes its four side-effecting
+collaborators as arguments, which is how the ordering guarantees are tested with fakes
+rather than with a desktop:
+
+- **Teardown always runs** — after a clean run, after an agent that raised, after a
+  setup that failed, after an oracle that blew up.
+- **The oracle is consulted even when the agent errored.** An agent can reach the goal
+  and crash on the way out; grading that as a failure because of how the agent felt
+  about it is the same mistake as trusting its `done`.
+- **A failed setup means the agent never runs** — the run did not start from a known
+  state, so anything measured after it is about some other state.
+- **The agent does not name its own cell**: `task_id` and `run` are overwritten by the
+  harness's own loop.
