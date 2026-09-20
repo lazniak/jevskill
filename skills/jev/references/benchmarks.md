@@ -140,8 +140,8 @@ question was too vague, here it was precise about the wrong attribute.
 
 ## External corroboration
 
-Two independent sources measured the same structural effect this suite measures,
-which is worth recording because a single author's numbers deserve scepticism.
+Three independent sources bear on what this suite measures, which is worth
+recording because a single author's numbers deserve scepticism.
 
 **The vendor, on fan-out.** TypeSafe's own
 [parallel-questions cookbook](https://docs.typesafe.ai/cookbooks/parallel_questions)
@@ -161,6 +161,20 @@ the latency multiple is nearly identical.
 listing known weaknesses of this model version. Worth reading before trusting it
 with anything consequential — a vendor documenting its model's failure modes is a
 better signal than any benchmark.
+
+**A third party, on accuracy — and it is not flattering.**
+[`anisselbd/jev-phishing-bench`](https://github.com/anisselbd/jev-phishing-bench)
+ran 2,000 phishing/legitimate emails through both Jev and Claude Haiku 4.5
+(17 September 2026). Jev's **single verdict scored 62.6%** against Haiku's
+**81.3%**, "McNemar p < 0.0001". Five atomic signal Nouls **from the same call**,
+combined in a logistic regression, scored **95.1%** (AUROC 0.988, ECE 0.027) —
+statistically tied with Haiku given the same five questions (93.2%), and above a
+hand-written regex (91.8% on the held-out half). Jev's measured advantage there was
+price and latency: "about 27 times cheaper and 5 times faster than Haiku".
+
+That is the only external *accuracy* figure this repository cites, and it is the
+reason nothing in this skill claims Jev out-judges an LLM. It is one dataset, with
+synthetic email bodies, which the authors say up front.
 
 **Where no external check exists.** Our REDUCE recall figures (`8/14`, `3/14`) and
 the guard accuracy run have no independent replication. Treat them as one careful
