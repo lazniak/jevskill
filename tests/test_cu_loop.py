@@ -518,6 +518,311 @@ class TestEscalation:
         assert result.steps[0].executed is False
 
 
+class TestEscalationIsNotAnAuthorisation:
+    """An escalation handler's Action gets the same checks a model's does.
+
+    It did not: a probe returned a click on "Delete all documents" and the loop
+    performed it with ``destructive_gates == 0`` and ``confirm`` never called,
+    while this module's docstring promises a run with no human attached cannot.
+    """
+
+    def delete_screen(self):
+        return simple([UIElement(id="e3", role="button",
+                                 name="Delete all documents",
+                                 bbox=(160, 10, 120, 30), patterns=("invoke",))])
+
+    def low(self):
+        return ScriptedClient(response(op_probs={"click": 0.51, "key": 0.49}))
+
+    def test_a_destructive_escalation_is_gated_counted_and_refused(self):
+        from jevskill.cu.act import Action
+
+        asked, executor = [], Executor()
+        result = run(GOAL, RunOptions(max_steps=2),
+                     observe=Frames(self.delete_screen()), execute=executor,
+                     client=self.low(), settle_ms=1,
+                     escalate=lambda ctx: Action(op="click", target="e3",
+                                                 source="escalation"),
+                     confirm=lambda prompt, a, e: asked.append(prompt) or False)
+        assert result.stop_reason == "blocked"
+        assert result.destructive_gates == 1
+        assert executor.actions == []
+        assert "Delete all documents" in asked[0]
+
+    def test_the_default_gate_refuses_an_escalation_too(self):
+        from jevskill.cu.act import Action
+
+        executor = Executor()
+        result = run(GOAL, RunOptions(max_steps=2),
+                     observe=Frames(self.delete_screen()), execute=executor,
+                     client=self.low(), settle_ms=1,
+                     escalate=lambda ctx: Action(op="click", target="e3",
+                                                 source="escalation"))
+        assert result.stop_reason == "blocked" and executor.actions == []
+
+    def test_a_yes_lets_the_escalation_through(self):
+        from jevskill.cu.act import Action
+
+        executor = Executor()
+        result = run(GOAL, RunOptions(max_steps=1),
+                     observe=Frames(self.delete_screen()), execute=executor,
+                     client=self.low(), settle_ms=1, confirm=lambda *a: True,
+                     escalate=lambda ctx: Action(op="click", target="e3",
+                                                 source="escalation"))
+        assert result.destructive_gates == 1
+        assert [a.target for a in executor.actions] == ["e3"]
+
+    def test_an_incoherent_escalation_is_refused_rather_than_performed(self):
+        from jevskill.cu.act import Action
+
+        executor = Executor()
+        result = run(GOAL, RunOptions(max_steps=2), observe=Frames(simple()),
+                     execute=executor, client=self.low(), settle_ms=1,
+                     escalate=lambda ctx: Action(op="type", target="e1",
+                                                 text="x", source="escalation"))
+        assert result.stop_reason == "escalated"
+        assert executor.actions == []                  # type on a button
+        assert "role_op_mismatch" in result.steps[-1].note
+
+    def test_enter_on_a_destructive_default_is_gated(self):
+        from jevskill.cu.act import Action
+
+        screen = simple([UIElement(id="e3", role="button",
+                                   name="Delete all documents", focused=True,
+                                   bbox=(160, 10, 120, 30), patterns=("invoke",))])
+        executor = Executor()
+        result = run(GOAL, RunOptions(max_steps=1), observe=Frames(screen),
+                     execute=executor, client=self.low(), settle_ms=1,
+                     escalate=lambda ctx: Action(op="key", key="enter",
+                                                 source="escalation"))
+        assert result.stop_reason == "blocked" and executor.actions == []
+
+    def test_an_escalated_action_claims_no_outcome_it_did_not_measure(self):
+        """``ActResult.ok`` is "the call returned", never "the screen changed".
+
+        The next step's observation is what measures it — the same two hashes
+        every other step is judged by.
+        """
+        from jevskill.cu.act import Action
+
+        first, second = notepad_frames()
+        target = clickable(first)
+        client = ScriptedClient(response(target=target,
+                                         op_probs={"click": 0.51, "key": 0.49}),
+                                response(target=clickable(second)))
+        run(GOAL, RunOptions(max_steps=2), observe=Frames(first, second),
+            execute=Executor(), client=client, settle_ms=1,
+            escalate=lambda ctx: Action(op="click", target=target,
+                                        source="escalation"))
+        outcomes = [call["state"]["last_action"]["outcome"]
+                    for call in client.calls]
+        assert outcomes[0] is None
+        # Step 2 was told what the hashes say, not what the executor returned.
+        assert outcomes[1] == "new_window"
+
+
+class TestKeyChord:
+    """``op=key`` used to die in ``execute`` on "key without a chord"."""
+
+    def dialog(self, extra=()):
+        return window(list(extra) + [
+            UIElement(id="e1", role="button", name="OK", focused=True,
+                      bbox=(10, 10, 60, 30), patterns=("invoke",)),
+            UIElement(id="d0", role="dialog", name="Save changes?")])
+
+    def test_a_key_decision_becomes_a_real_keystroke(self):
+        executor = Executor()
+        result = run("Confirm the dialog", RunOptions(max_steps=1),
+                     observe=Frames(self.dialog()), execute=executor,
+                     client=ScriptedClient(response(target="none", op="key")),
+                     settle_ms=1)
+        assert [(a.op, a.key) for a in executor.actions] == [("key", "enter")]
+        assert result.steps[0].executed
+        assert "key enter" in result.steps[0].note
+
+    def test_a_goal_that_cancels_gets_escape(self):
+        executor = Executor()
+        run("Cancel the dialog and discard the changes", RunOptions(max_steps=1),
+            observe=Frames(self.dialog()), execute=executor,
+            client=ScriptedClient(response(target="none", op="key")), settle_ms=1)
+        assert executor.actions[0].key == "escape"
+
+    def test_a_screen_with_no_row_escalates_instead_of_failing_twice(self):
+        body = window([UIElement(id="e1", role="document", name="body",
+                                 focused=True, bbox=(0, 0, 400, 300),
+                                 patterns=("value",))])
+        executor = Executor()
+        result = run(GOAL, RunOptions(max_steps=3), observe=Frames(body),
+                     execute=executor, client=ScriptedClient(
+                         response(target="none", op="key")), settle_ms=1)
+        assert result.stop_reason == "escalated" and result.escalations == 1
+        assert executor.actions == []
+        assert "no_chord" in result.steps[-1].note
+
+    def test_enter_on_a_destructive_default_asks_the_human(self):
+        """No focused default, so what Enter fires is unknown — and one of the
+        dialog's buttons deletes."""
+        screen = window([
+            UIElement(id="e1", role="button", name="OK", bbox=(10, 10, 60, 30),
+                      patterns=("invoke",)),
+            UIElement(id="e2", role="button", name="Delete all documents",
+                      bbox=(90, 10, 120, 30), patterns=("invoke",)),
+            UIElement(id="d0", role="dialog", name="Delete these files?")])
+        asked, executor = [], Executor()
+        result = run("Confirm", RunOptions(max_steps=1), observe=Frames(screen),
+                     execute=executor,
+                     client=ScriptedClient(response(target="none", op="key")),
+                     settle_ms=1,
+                     confirm=lambda prompt, a, e: asked.append(prompt) or False)
+        assert result.stop_reason == "blocked" and result.destructive_gates == 1
+        assert executor.actions == [] and asked == ["key enter?"]
+
+
+class TestSettleSeesWhatTheActionChanged:
+    """A successful ``type`` changes only ``value``, which the default hash drops."""
+
+    def field(self, value=""):
+        return simple([UIElement(id="e3", role="edit", name="File name",
+                                 bbox=(10, 60, 200, 28), patterns=("value",),
+                                 value=value)])
+
+    def typing_client(self):
+        return ScriptedClient(response(target="e3", op="type",
+                                       probs={"e3": 0.96, "none": 0.04},
+                                       nouls={"needs_text": 0.9}),
+                              text_ok=0.95)
+
+    def test_a_type_that_only_fills_the_field_counts_as_a_change(self):
+        result = run("Type a file name", RunOptions(max_steps=1),
+                     observe=Frames(self.field(""), self.field("draft.txt")),
+                     execute=Executor(), client=self.typing_client(),
+                     settle_ms=5, compose_text=lambda g, e: "draft.txt")
+        assert result.steps[0].tree_changed is True
+        assert result.stop_reason == "max_steps"
+
+    def test_the_next_step_is_told_changed_and_not_unchanged(self):
+        client = self.typing_client()
+        run("Type a file name", RunOptions(max_steps=2),
+            observe=Frames(self.field(""), self.field("draft.txt")),
+            execute=Executor(), client=client, settle_ms=5,
+            compose_text=lambda g, e: "draft.txt")
+        steps = [call for call in client.calls if "target" in call["questions"]]
+        assert steps[1]["state"]["last_action"]["outcome"] == "changed"
+
+    def test_a_macro_is_learned_from_a_type_that_worked(self, tmp_path):
+        cache = MacroCache(tmp_path / "m.json", autosave=False)
+        run("Type a file name", RunOptions(max_steps=1),
+            observe=Frames(self.field(""), self.field("draft.txt")),
+            execute=Executor(), client=self.typing_client(), settle_ms=5,
+            macros=cache, compose_text=lambda g, e: "draft.txt")
+        assert len(cache) == 1
+
+    def test_a_type_that_did_nothing_still_reads_unchanged(self):
+        """The fix must not make every `type` look successful."""
+        result = run("Type a file name", RunOptions(max_steps=1),
+                     observe=Frames(self.field("")), execute=Executor(),
+                     client=self.typing_client(), settle_ms=1,
+                     compose_text=lambda g, e: "draft.txt")
+        assert result.steps[0].tree_changed is False
+
+    def test_a_click_still_settles_on_the_default_ignore(self):
+        """A `value` that ticks on its own is not a click's effect."""
+        before = simple([UIElement(id="e3", role="progressbar", name="Progress",
+                                   bbox=(10, 60, 200, 10), value="10")])
+        after = simple([UIElement(id="e3", role="progressbar", name="Progress",
+                                  bbox=(10, 60, 200, 10), value="20")])
+        result = run(GOAL, RunOptions(max_steps=1), observe=Frames(before, after),
+                     execute=Executor(), client=ScriptedClient(response()),
+                     settle_ms=1)
+        assert result.steps[0].tree_changed is False
+
+    def test_a_combobox_raises_a_short_ceiling_to_the_published_cap(self):
+        """act.md §4's 200 ms, applied the only way a hash poll can: as a floor."""
+        from jevskill.cu import act as act_mod
+
+        seen = {}
+        original = act_mod.settle
+
+        def spy(observe, prev, **kwargs):
+            seen.update(kwargs)
+            return original(observe, prev, **kwargs)
+
+        combo = simple([UIElement(id="e3", role="combobox", name="Save as type",
+                                  bbox=(10, 60, 200, 28),
+                                  patterns=("select", "expand"))])
+        monkey = pytest.MonkeyPatch()
+        monkey.setattr(act_mod, "settle", spy)
+        try:
+            run(GOAL, RunOptions(max_steps=1), observe=Frames(combo),
+                execute=Executor(), settle_ms=1.0,
+                client=ScriptedClient(response(target="e3", op="select",
+                                               probs={"e3": 0.96, "none": 0.04})))
+        finally:
+            monkey.undo()
+        assert seen["timeout_ms"] == act_mod.SETTLE_CAP_COMBOBOX_MS
+
+
+class TestDecidedByCode:
+    """``contract.DECIDED_BY`` documents ``code``; nothing ever produced it."""
+
+    def field(self, value=""):
+        return simple([UIElement(id="e3", role="edit", name="File name",
+                                 bbox=(10, 60, 200, 28), patterns=("value",),
+                                 value=value)])
+
+    def combo(self, value=""):
+        """An editable combobox: `click` is legal on it and so is `type`.
+
+        The override only exists where both are — on a plain ``edit`` the
+        role/op check refuses the `click` first, which is a different rule
+        doing a different job.
+        """
+        return simple([UIElement(id="e3", role="combobox", name="File name",
+                                 bbox=(10, 60, 200, 28),
+                                 patterns=("expand", "value"), value=value)])
+
+    def test_a_click_turned_into_a_type_is_the_codes_decision(self):
+        client = ScriptedClient(response(target="e3", op="click",
+                                         probs={"e3": 0.96, "none": 0.04},
+                                         nouls={"needs_text": 0.9}),
+                                text_ok=0.95)
+        executor = Executor()
+        result = run("Type a file name", RunOptions(max_steps=1),
+                     observe=Frames(self.combo(""), self.combo("draft.txt")),
+                     execute=executor, client=client, settle_ms=5,
+                     compose_text=lambda g, e: "draft.txt")
+        assert executor.actions[0].op == "type"
+        assert result.steps[0].decided_by == "code"
+        assert executor.actions[0].source == "code"
+
+    def test_a_type_the_model_chose_is_still_the_models(self):
+        client = ScriptedClient(response(target="e3", op="type",
+                                         probs={"e3": 0.96, "none": 0.04},
+                                         nouls={"needs_text": 0.9}),
+                                text_ok=0.95)
+        result = run("Type a file name", RunOptions(max_steps=1),
+                     observe=Frames(self.field(""), self.field("draft.txt")),
+                     execute=Executor(), client=client, settle_ms=5,
+                     compose_text=lambda g, e: "draft.txt")
+        assert result.steps[0].decided_by == "jev"
+
+    def test_the_clear_and_retry_is_the_codes_too(self):
+        client = ScriptedClient(response(target="e3", op="type",
+                                         probs={"e3": 0.96, "none": 0.04},
+                                         nouls={"needs_text": 0.9}),
+                                text_ok=0.12)
+        result = run("Type a file name", RunOptions(max_steps=1),
+                     observe=Frames(self.field(""), self.field("qqqq")),
+                     execute=Executor(), client=client, settle_ms=5,
+                     compose_text=lambda g, e: "draft.txt")
+        assert result.steps[0].decided_by == "code"
+
+    def test_every_value_the_loop_writes_is_in_the_contract(self):
+        from jevskill.cu.contract import DECIDED_BY
+
+        assert "code" in DECIDED_BY
+
+
 class TestMacros:
     def test_a_hit_skips_the_call_and_is_marked_as_a_macro(self, tmp_path):
         screen = simple()
