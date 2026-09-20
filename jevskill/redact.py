@@ -11,6 +11,19 @@ personal data. Email addresses are opt-in (`redact_emails=True`) because for man
 triage tasks the address *is* the signal. `--no-redact` exists for the rare run
 where the secret is the subject under test.
 
+**Cost on a hot path, measured rather than assumed.** A per-step agent loop runs
+this on every step, so it was timed before being kept: on a 60-element UI tree
+(6,727 characters — the same state the API bills at 6,041 input tokens with the
+computer-use question bundle), `redact_state` takes a median of **0.642 ms** over
+20 repetitions, and 0.699 ms with `redact_emails=True`. Reproduce with
+`python bench/cu_bench.py --micro`; the number is recorded in
+`bench/cu_results.json`.
+
+That is well under the 2 ms at which a hash-keyed LRU cache would have been worth
+its own invalidation bugs, so there is **no cache**: a step that spends ~300 ms in
+the network will not notice 0.6 ms of regex. The cost is linear in the number of
+patterns and in the size of the state, so re-measure if you add either.
+
 The bundled zero-install script `skills/jev/scripts/jev_query.py` carries a
 compiled copy of these patterns (same rule as `PROVIDERS`): the Skill must work
 with nothing installed, so it cannot import this package. Keep the two lists in
