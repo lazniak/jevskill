@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 
 import pytest
 
@@ -76,6 +77,51 @@ def run(capsys, argv):
     code = cli.main(argv)
     captured = capsys.readouterr()
     return code, captured.out, captured.err
+
+
+class SlowHandshakeClient(FakeClient):
+    """A fake whose connection setup and warm-up cost real milliseconds.
+
+    The real client opens a connection in ``__enter__`` and warms it in ``warm()``.
+    An instant fake hides the difference between those costs and a build step, so
+    the timing bug this guards against was invisible without a delay.
+    """
+
+    HANDSHAKE_S = 0.05
+
+    def __enter__(self):
+        time.sleep(self.HANDSHAKE_S)
+        return self
+
+    def warm(self):
+        time.sleep(self.HANDSHAKE_S)
+        return self.HANDSHAKE_S * 1000
+
+
+class TestDoctorStages:
+    """`doctor` is the demonstration of the staged-timing contract, so it is the
+    one command whose breakdown is quoted in the README. Its staging must match
+    `ask`: the handshake is `warm`, not `build`, and never lands in `http`."""
+
+    def stages(self, capsys, monkeypatch):
+        monkeypatch.setattr(cli, "JevClient", SlowHandshakeClient)
+        code, out, _ = run(capsys, ["doctor", "--json"])
+        assert code == 0
+        return json.loads(out)["stages_ms"]
+
+    def test_the_declared_warm_stage_is_actually_marked(self, capsys, monkeypatch):
+        stages = self.stages(capsys, monkeypatch)
+        assert stages["warm"] >= SlowHandshakeClient.HANDSHAKE_S * 1000
+
+    def test_the_handshake_is_not_charged_to_build(self, capsys, monkeypatch):
+        stages = self.stages(capsys, monkeypatch)
+        # Doctor's payload is a static probe: build must stay near zero however
+        # expensive the connection is.
+        assert stages["build"] < SlowHandshakeClient.HANDSHAKE_S * 1000 / 2
+
+    def test_http_is_the_probe_alone(self, capsys, monkeypatch):
+        stages = self.stages(capsys, monkeypatch)
+        assert stages["http"] < SlowHandshakeClient.HANDSHAKE_S * 1000
 
 
 class TestPatternsCommand:

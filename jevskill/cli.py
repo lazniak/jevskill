@@ -160,8 +160,12 @@ def _baseline_tokens(state: object, questions: dict) -> int:
 
 def cmd_doctor(args: argparse.Namespace) -> int:
     stages = Stages.begin()
-    config = Config.from_env(provider=getattr(args, "provider", None))
+    # `t_decision` is the instant the harness committed to Jev, so it must be the
+    # first mark. Resolving the config is setup, not the decision, and belongs to
+    # `profile` — marking it first (as this command once did) reported the config
+    # lookup as the decision time.
     stages.mark("t_decision")
+    config = Config.from_env(provider=getattr(args, "provider", None))
     report: dict = {
         "version": __version__,
         "ok": False,
@@ -190,10 +194,19 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         return 2
 
     stages.mark("plan")
+    # Doctor's payload is a fixed probe, so there is nothing to build: `build` is
+    # marked before the client exists and stays ~0 ms. Marking it *inside* the
+    # `with` block (as this command once did) attributed the TCP/TLS handshake to
+    # `build` — 814.7 ms of "query construction" for a two-key payload — and left
+    # the declared `warm` stage unmarked, which pushed the handshake into `http`
+    # and made the reported inference time exceed the real decision latency.
+    stages.mark("build")
     try:
         with JevClient(config) as client:
-            stages.mark("build")
             warm_ms = client.warm()
+            # Same rationale as `cmd_ask`: the handshake is real work a harness
+            # pays once, and it must not be charged to the model.
+            stages.mark("warm")
             started = time.perf_counter()
             result = client.decide(
                 {"probe": "connectivity check"},

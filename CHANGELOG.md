@@ -19,6 +19,50 @@ replaced.
 - Live verification of the vendor endpoint. It is verified by 51 unit tests plus
   endpoint existence, but not by a real call — no TypeSafe key was available.
 
+## [0.6.1] — 2026-09-21
+
+A measurement bug in `jevskill doctor`, found by running the released 0.6.0
+build rather than by any test. No published number changes: the stage breakdown
+quoted in the README comes from `ask`, which was always correct. `doctor` was
+wrong, and `doctor` is the command a new user runs first — so the first timing
+breakdown anyone saw was misattributed.
+
+### Fixed
+
+**`doctor` charged the connection handshake to `build`.** `stages.mark("build")`
+sat *inside* the `with JevClient(config)` block, so the delta it recorded was
+`JevClient` construction plus `__enter__` — TCP and TLS setup — rather than query
+construction. Doctor's payload is a static two-key probe, so its honest `build`
+is ~0 ms:
+
+```
+before                              after
+  build           814.7 ms          build             0.0 ms
+  (no warm stage)                   warm            796.4 ms
+  http            748.5 ms          http            564.8 ms
+```
+
+Three consequences, all fixed by moving `build` before the client exists and
+marking the `warm` stage that `STAGE_ORDER` already declared:
+
+- the largest stage in the output was labelled "query construction" when it was
+  network setup;
+- `warm` never appeared at all, so the handshake a harness pays once was not
+  separated from inference;
+- `http` included the 81.6 ms warm-up, so the reported inference time exceeded
+  the real decision latency. `http` now equals the client's own `client_total`
+  (564.8 ms against 564.7 ms), which is the check that proves the split.
+
+This is the same defect that was fixed in `ask` in 0.4.0 — *"1189 ms of `http`
+against a 345 ms decision"* — fixed there but not here, because `doctor` had no
+test. `t_decision` was also marked after configuration resolution instead of
+before it, so the config lookup was reported as the decision instant.
+
+### Added
+- `TestDoctorStages`, three regression tests that fail on 0.6.0. They need a fake
+  client whose construction and warm-up cost real milliseconds: with an instant
+  fake the misattribution is arithmetically invisible, which is how it survived.
+
 ## [0.6.0] — 2026-09-20
 
 The large-dataset path. The objective named *"large datasets"* as the case that
