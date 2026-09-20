@@ -29,3 +29,7 @@ Thumbs.db
 .idea/
 .vscode/
 *.swp
+
+# Agent worktrees created by the Claude Code Agent tool (isolation: "worktree").
+# They are git worktrees of this repo, never source.
+.claude/worktrees/
