@@ -928,19 +928,23 @@ def serve(
     server = make_server(port=port, ledger_root=ledger_root)
     url = "http://127.0.0.1:%d/" % server.server_address[1]
     report = doctor_payload(server.console)
-    print(f"jev · console {__version__} — {url}")
+    lines = [f"jev · console {__version__} — {url}"]
     if report["key_found"]:
-        print(
+        lines.append(
             f"  {report['provider']} · {report['model']} · "
             f"{report['key_name']} ({report['key_source']}) · {report['key_fingerprint']}"
         )
     else:
-        print(
+        lines.append(
             "  NO KEY — set JEV_API_KEY (vendor) or OPENROUTER_API_KEY, then reload "
             "the page. The console will not simulate an answer."
         )
-    print(f"  ledger {report['ledger']}")
-    print("  local only, no authentication — Ctrl+C to stop")
+    lines.append(f"  ledger {report['ledger']}")
+    lines.append("  local only, no authentication — Ctrl+C to stop")
+    # Flushed explicitly: stdout is block-buffered when it is a pipe, and the
+    # next thing this process does is block in serve_forever — so `jevskill web
+    # | tee run.log` showed nothing at all until Ctrl+C.
+    print("\n".join(lines), flush=True)
     if open_browser:
         try:
             webbrowser.open(url)

@@ -160,6 +160,11 @@ body {
   font-size: 13px;
   color: var(--fg-3);
   margin: 8px 0 0;
+  /* These lines carry absolute ledger paths, which are one unbreakable token.
+   * Measured at 375px: without this the history note widened the document to
+   * 468px, and `overflow-x: hidden` on body then hid the symptom rather than
+   * the cause (the fixed grain layer stretched with it). */
+  overflow-wrap: anywhere;
 }
 
 .note.is-warn { color: var(--gold); }
