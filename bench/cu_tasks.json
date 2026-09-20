@@ -1,0 +1,257 @@
+[
+  {
+    "id": "notepad_save_as",
+    "app": "notepad",
+    "goal": "Type the sentence \"The quick brown fox jumps over the lazy dog 42 times.\" into Notepad, then save the file as %TEMP%\\jevcu\\notepad_save_as\\out.txt.",
+    "setup": [
+      "$dir = Join-Path (Join-Path $env:TEMP 'jevcu') 'notepad_save_as'; Remove-Item -Recurse -Force $dir -ErrorAction SilentlyContinue; New-Item -ItemType Directory -Path $dir -Force | Out-Null",
+      "$before = Get-Process | Select-Object -ExpandProperty Id; Start-Process notepad.exe; Start-Sleep -Milliseconds 800; $newId = Get-Process | Where-Object { ($before -notcontains $_.Id) -and $_.MainWindowTitle } | Select-Object -First 1 -ExpandProperty Id; $dir = Join-Path (Join-Path $env:TEMP 'jevcu') 'notepad_save_as'; Set-Content -Path (Join-Path $dir 'pid.txt') -Value $newId"
+    ],
+    "teardown": [
+      "$dir = Join-Path (Join-Path $env:TEMP 'jevcu') 'notepad_save_as'; $storedId = Get-Content (Join-Path $dir 'pid.txt') -ErrorAction SilentlyContinue; if ($storedId) { Stop-Process -Id $storedId -Force -ErrorAction SilentlyContinue }",
+      "Remove-Item -Recurse -Force (Join-Path (Join-Path $env:TEMP 'jevcu') 'notepad_save_as') -ErrorAction SilentlyContinue"
+    ],
+    "oracle": {
+      "type": "file_contains",
+      "path": "%TEMP%\\jevcu\\notepad_save_as\\out.txt",
+      "contains": "The quick brown fox jumps over the lazy dog 42 times."
+    },
+    "human_steps": 4,
+    "irreversible": false,
+    "restores_state": false,
+    "coverage_risk": "uia",
+    "notes": "Modern Windows 11 Notepad can restore previous session tabs on launch; setup does not touch that global preference (it is the streamer's own), so a stale tab may appear and the agent must open a new one itself (Ctrl+N) -- not counted in human_steps, which assumes a clean blank tab. Ctrl+S on an untitled document opens Save As directly; typing a full path into the filename field skips folder navigation, but is not the only valid strategy. Save As dialog and the main Notepad window are two separate top-level UIA windows -- an observer that snapshots only 'the foreground window' by title can lose track of the dialog. Process is still named notepad.exe on this build, but setup resolves the PID by diffing the process list rather than assuming that, since Windows 11 Notepad is a packaged app behind a thin launcher and the exact process name has changed across builds before.",
+    "expected_agent_steps_min": 5
+  },
+  {
+    "id": "explorer_new_folder",
+    "app": "explorer",
+    "goal": "In the Explorer window that is open, create a new folder named \"jevcu_new\".",
+    "setup": [
+      "$dir = Join-Path (Join-Path $env:TEMP 'jevcu') 'explorer_new'; Remove-Item -Recurse -Force $dir -ErrorAction SilentlyContinue; New-Item -ItemType Directory -Path $dir -Force | Out-Null",
+      "$dir = Join-Path (Join-Path $env:TEMP 'jevcu') 'explorer_new'; Start-Process explorer.exe -ArgumentList $dir; Start-Sleep -Milliseconds 800"
+    ],
+    "teardown": [
+      "$dir = Join-Path (Join-Path $env:TEMP 'jevcu') 'explorer_new'; $leaf = Split-Path $dir -Leaf; $shell = New-Object -ComObject Shell.Application; foreach ($w in @($shell.Windows())) { try { if ($w.LocationURL -like ('*' + $leaf + '*')) { $w.Quit() } } catch {} }",
+      "Remove-Item -Recurse -Force (Join-Path (Join-Path $env:TEMP 'jevcu') 'explorer_new') -ErrorAction SilentlyContinue"
+    ],
+    "oracle": {
+      "type": "file_exists",
+      "path": "%TEMP%\\jevcu\\explorer_new\\jevcu_new",
+      "kind": "dir",
+      "expect": true
+    },
+    "human_steps": 3,
+    "irreversible": false,
+    "restores_state": false,
+    "coverage_risk": "uia",
+    "notes": "All explorer.exe windows normally share ONE shell process (it also hosts the desktop and taskbar); Start-Process explorer.exe against a path typically hands the request to that existing process via DDE instead of spawning a new one, so its returned PID is not reliable and must never be used to kill it -- doing so can take down the taskbar on the streamer's live desktop. Teardown instead closes only the matching window via Shell.Application COM enumeration, never taskkill /IM explorer.exe. The new folder's default localized name ('Nowy folder' on this Polish build) appears already in an inline rename box; the agent must replace it and press Enter -- a name typed without committing does not count.",
+    "expected_agent_steps_min": 4
+  },
+  {
+    "id": "explorer_rename",
+    "app": "explorer",
+    "goal": "In the Explorer window that is open, rename the file a.txt to b.txt.",
+    "setup": [
+      "$dir = Join-Path (Join-Path $env:TEMP 'jevcu') 'explorer_rename'; Remove-Item -Recurse -Force $dir -ErrorAction SilentlyContinue; New-Item -ItemType Directory -Path $dir -Force | Out-Null; Set-Content -Path (Join-Path $dir 'a.txt') -Value 'jevcu rename fixture'",
+      "$dir = Join-Path (Join-Path $env:TEMP 'jevcu') 'explorer_rename'; Start-Process explorer.exe -ArgumentList $dir; Start-Sleep -Milliseconds 800"
+    ],
+    "teardown": [
+      "$dir = Join-Path (Join-Path $env:TEMP 'jevcu') 'explorer_rename'; $leaf = Split-Path $dir -Leaf; $shell = New-Object -ComObject Shell.Application; foreach ($w in @($shell.Windows())) { try { if ($w.LocationURL -like ('*' + $leaf + '*')) { $w.Quit() } } catch {} }",
+      "Remove-Item -Recurse -Force (Join-Path (Join-Path $env:TEMP 'jevcu') 'explorer_rename') -ErrorAction SilentlyContinue"
+    ],
+    "oracle": {
+      "type": "all_of",
+      "all_of": [
+        {"type": "file_exists", "path": "%TEMP%\\jevcu\\explorer_rename\\b.txt", "kind": "file", "expect": true},
+        {"type": "file_exists", "path": "%TEMP%\\jevcu\\explorer_rename\\a.txt", "kind": "file", "expect": false}
+      ]
+    },
+    "human_steps": 4,
+    "irreversible": false,
+    "restores_state": false,
+    "coverage_risk": "uia",
+    "notes": "File extensions are hidden by default in Explorer on this machine, so the F2/rename inline editor pre-selects only the base name 'a' -- an agent that types 'b.txt' over that selection ends up with 'b.txt.txt' unless it first checks whether extensions are shown. The oracle only inspects the resulting filenames on disk, so grading is unaffected by locale or extension-visibility, but this is the single most common failure mode for this task shape and should be logged as a distinct reason, not a generic mismatch. Same explorer-window-by-COM teardown caveat as explorer_new_folder.",
+    "expected_agent_steps_min": 5
+  },
+  {
+    "id": "settings_dark_mode",
+    "app": "settings",
+    "goal": "Turn on dark mode for apps in Windows Settings.",
+    "setup": [
+      "$dir = Join-Path (Join-Path $env:TEMP 'jevcu') 'settings_dark_mode'; New-Item -ItemType Directory -Path $dir -Force | Out-Null",
+      "$regPath = 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize'; $prev = (Get-ItemProperty -Path $regPath -Name AppsUseLightTheme -ErrorAction SilentlyContinue).AppsUseLightTheme; if ($null -eq $prev) { $prev = 1 }; $dir = Join-Path (Join-Path $env:TEMP 'jevcu') 'settings_dark_mode'; Set-Content -Path (Join-Path $dir 'prev_value.txt') -Value $prev; Set-ItemProperty -Path $regPath -Name AppsUseLightTheme -Value 1 -Type DWord",
+      "Start-Process 'ms-settings:personalization-colors'; Start-Sleep -Milliseconds 1200"
+    ],
+    "teardown": [
+      "Stop-Process -Name SystemSettings -Force -ErrorAction SilentlyContinue",
+      "$dir = Join-Path (Join-Path $env:TEMP 'jevcu') 'settings_dark_mode'; $prev = Get-Content (Join-Path $dir 'prev_value.txt') -ErrorAction SilentlyContinue; if ($null -eq $prev) { $prev = 1 }; Set-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize' -Name AppsUseLightTheme -Value ([int]$prev) -Type DWord",
+      "Remove-Item -Recurse -Force (Join-Path (Join-Path $env:TEMP 'jevcu') 'settings_dark_mode') -ErrorAction SilentlyContinue"
+    ],
+    "oracle": {
+      "type": "registry_value",
+      "hive": "HKCU",
+      "path": "Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+      "name": "AppsUseLightTheme",
+      "expect": 0
+    },
+    "human_steps": 5,
+    "irreversible": false,
+    "restores_state": true,
+    "coverage_risk": "uia",
+    "notes": "VISIBLY CHANGES THE REAL DESKTOP THEME WHILE THE TASK RUNS, on a machine the user is live-streaming from -- warn before the first run. Setup forces light mode first so the task is never vacuously already-done, and teardown restores the value captured immediately before that forced flip (the streamer's real prior preference), but the visible theme will flip live during every run; schedule this task last, or pause the stream for it. A raw registry write in teardown restores the stored value but does not itself repaint already-open app chrome the way going through the Settings UI does (that path also broadcasts WM_SETTINGCHANGE) -- some already-open windows may look stale for a few seconds after teardown. Settings is single-instance and holds no user documents, so it is closed directly by process name rather than by a tracked PID (unlike Notepad/Chrome, this cannot lose the streamer's unsaved work). Oracle checks AppsUseLightTheme only, per spec; the same toggle also writes SystemUsesLightTheme, which is not checked here.",
+    "expected_agent_steps_min": 6
+  },
+  {
+    "id": "calc_multiply",
+    "app": "calc",
+    "goal": "Using Calculator, compute 12 \u00d7 34 and leave the result on screen.",
+    "setup": [
+      "$dir = Join-Path (Join-Path $env:TEMP 'jevcu') 'calc_multiply'; New-Item -ItemType Directory -Path $dir -Force | Out-Null",
+      "$before = Get-Process | Select-Object -ExpandProperty Id; Start-Process calc.exe; Start-Sleep -Milliseconds 1000; $newId = Get-Process | Where-Object { ($before -notcontains $_.Id) -and $_.MainWindowTitle } | Select-Object -First 1 -ExpandProperty Id; $dir = Join-Path (Join-Path $env:TEMP 'jevcu') 'calc_multiply'; Set-Content -Path (Join-Path $dir 'pid.txt') -Value $newId"
+    ],
+    "teardown": [
+      "$dir = Join-Path (Join-Path $env:TEMP 'jevcu') 'calc_multiply'; $storedId = Get-Content (Join-Path $dir 'pid.txt') -ErrorAction SilentlyContinue; if ($storedId) { Stop-Process -Id $storedId -Force -ErrorAction SilentlyContinue }",
+      "Remove-Item -Recurse -Force (Join-Path (Join-Path $env:TEMP 'jevcu') 'calc_multiply') -ErrorAction SilentlyContinue"
+    ],
+    "oracle": {
+      "type": "uia_value",
+      "automation_id": "CalculatorResults",
+      "expect_contains": "408",
+      "fallback": {
+        "type": "clipboard_equals",
+        "expect": "408",
+        "note": "Only meaningful if the goal text is extended to also ask the agent to copy the result (Ctrl+C); the default goal above does not ask for that. Use only if uia_value proves unreliable for the installed Calculator build."
+      }
+    },
+    "human_steps": 6,
+    "irreversible": false,
+    "restores_state": false,
+    "coverage_risk": "uia",
+    "notes": "Calculator (CalculatorApp.exe) launches through a calc.exe/Calculator.exe shim that can exit right after handing off to the real app, so setup resolves the PID by diffing the process list rather than assuming an image name. AutomationId 'CalculatorResults' is the documented id for the result display; its accessible Name is a full localized sentence ('Wy\u015bwietlacz to 408' in Polish) -- match the trailing digits, never the sentence prefix, to stay language-independent. Setup does not force Standard mode explicitly; a cold launch defaults to it, but a window left over from a differently-moded previous run (Scientific/Programmer/a converter) could violate that -- the PID-diff approach only guarantees a fresh process, not a fresh UI state, so confirm mode if flakiness appears.",
+    "expected_agent_steps_min": 7
+  },
+  {
+    "id": "chrome_open_url",
+    "app": "chrome",
+    "goal": "Open the local page at %TEMP%\\jevcu\\chrome_open_url\\page1.html in Chrome using the address bar, and confirm the page loaded.",
+    "setup": [
+      "$dir = Join-Path (Join-Path $env:TEMP 'jevcu') 'chrome_open_url'; Remove-Item -Recurse -Force $dir -ErrorAction SilentlyContinue; New-Item -ItemType Directory -Path (Join-Path $dir 'profile') -Force | Out-Null; Set-Content -Path (Join-Path $dir 'page1.html') -Value '<!doctype html><html><head><title>Jevcu Page One</title></head><body><h1>Jevcu benchmark fixture page one</h1></body></html>'",
+      "$dir = Join-Path (Join-Path $env:TEMP 'jevcu') 'chrome_open_url'; $prof = Join-Path $dir 'profile'; $url = 'file:///' + ($dir.Replace('\\','/')) + '/page1.html'; $p = Start-Process -FilePath 'chrome' -ArgumentList @('--user-data-dir=' + $prof, '--no-first-run', '--no-default-browser-check', $url) -PassThru; $p.Id | Out-File (Join-Path $dir 'pid.txt')"
+    ],
+    "teardown": [
+      "$dir = Join-Path (Join-Path $env:TEMP 'jevcu') 'chrome_open_url'; $prof = Join-Path $dir 'profile'; Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'chrome.exe' -and $_.CommandLine -and $_.CommandLine.Contains($prof) } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }",
+      "Remove-Item -Recurse -Force (Join-Path (Join-Path $env:TEMP 'jevcu') 'chrome_open_url') -ErrorAction SilentlyContinue"
+    ],
+    "oracle": {
+      "type": "window_title_contains",
+      "substring": "Jevcu Page One",
+      "case_sensitive": false
+    },
+    "human_steps": 3,
+    "irreversible": false,
+    "restores_state": false,
+    "coverage_risk": "mixed",
+    "notes": "Runs in an isolated --user-data-dir profile so the streamer's real signed-in Chrome window/session is never launched into, reused, or killed -- teardown matches processes by that profile path in their command line, never a blanket chrome.exe kill. Chrome only builds a UIA tree once an accessibility client has attached at least once in that process, which adds latency to the FIRST observation of a freshly launched isolated instance -- this is why coverage_risk is 'mixed' rather than plain 'uia'. file:// avoids network/DNS variance across runs. The window/tab title always contains our fixture's literal English <title>, so the oracle is locale-independent even though Chrome's own chrome (menus, any appended suffix) is not. --no-first-run/--no-default-browser-check suppress most first-run dialogs on the fresh profile; a managed-policy sign-in nag can still appear -- dismiss it, never sign in.",
+    "expected_agent_steps_min": 4
+  },
+  {
+    "id": "chrome_find_continue",
+    "app": "chrome",
+    "goal": "On the page that is open, find the text \"Welcome\" and click the link named \"Continue\".",
+    "setup": [
+      "$dir = Join-Path (Join-Path $env:TEMP 'jevcu') 'chrome_find_continue'; Remove-Item -Recurse -Force $dir -ErrorAction SilentlyContinue; New-Item -ItemType Directory -Path (Join-Path $dir 'profile') -Force | Out-Null; Set-Content -Path (Join-Path $dir 'page1.html') -Value '<!doctype html><html><head><title>Jevcu Page One</title></head><body><h1>Welcome</h1><div style=''height:1400px''></div><a href=''page2.html''>Continue</a></body></html>'; Set-Content -Path (Join-Path $dir 'page2.html') -Value '<!doctype html><html><head><title>Jevcu Page Two</title></head><body><h1>Jevcu Page Two</h1></body></html>'",
+      "$dir = Join-Path (Join-Path $env:TEMP 'jevcu') 'chrome_find_continue'; $prof = Join-Path $dir 'profile'; $url = 'file:///' + ($dir.Replace('\\','/')) + '/page1.html'; $p = Start-Process -FilePath 'chrome' -ArgumentList @('--user-data-dir=' + $prof, '--no-first-run', '--no-default-browser-check', '--window-size=1280,800', $url) -PassThru; $p.Id | Out-File (Join-Path $dir 'pid.txt')"
+    ],
+    "teardown": [
+      "$dir = Join-Path (Join-Path $env:TEMP 'jevcu') 'chrome_find_continue'; $prof = Join-Path $dir 'profile'; Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'chrome.exe' -and $_.CommandLine -and $_.CommandLine.Contains($prof) } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }",
+      "Remove-Item -Recurse -Force (Join-Path (Join-Path $env:TEMP 'jevcu') 'chrome_find_continue') -ErrorAction SilentlyContinue"
+    ],
+    "oracle": {
+      "type": "window_title_contains",
+      "substring": "Jevcu Page Two",
+      "case_sensitive": false
+    },
+    "human_steps": 2,
+    "irreversible": false,
+    "restores_state": false,
+    "coverage_risk": "mixed",
+    "notes": "Fixed --window-size=1280,800 makes the 1400px filler div reliably push 'Continue' below the fold every run, so 'find' requires an actual scroll (or OCR/UIA scan) instead of the link already being the only thing on screen -- otherwise this task would not exercise search at all. This benchmark targets a UIA/vision-based Windows CU agent, not a DOM-reading one, so 'find text' should be answered from the rendered surface, even though Chrome's own DOM trivially contains the answer. Same isolated-profile safety and UIA-attach-latency caveats as chrome_open_url; uses its own profile directory so the two Chrome tasks never race on the same profile lock file.",
+    "expected_agent_steps_min": 3
+  },
+  {
+    "id": "notepad_replace",
+    "app": "notepad",
+    "goal": "In the open document, replace every occurrence of the word \"foo\" with \"bar\", then save the file.",
+    "setup": [
+      "$dir = Join-Path (Join-Path $env:TEMP 'jevcu') 'notepad_replace'; Remove-Item -Recurse -Force $dir -ErrorAction SilentlyContinue; New-Item -ItemType Directory -Path $dir -Force | Out-Null; Set-Content -Path (Join-Path $dir 'doc.txt') -Value 'foo starts the file. Then foo repeats: foo, foo, and one more foo at the end.'",
+      "$dir = Join-Path (Join-Path $env:TEMP 'jevcu') 'notepad_replace'; $before = Get-Process | Select-Object -ExpandProperty Id; Start-Process notepad.exe -ArgumentList (Join-Path $dir 'doc.txt'); Start-Sleep -Milliseconds 800; $newId = Get-Process | Where-Object { ($before -notcontains $_.Id) -and $_.MainWindowTitle } | Select-Object -First 1 -ExpandProperty Id; Set-Content -Path (Join-Path $dir 'pid.txt') -Value $newId"
+    ],
+    "teardown": [
+      "$dir = Join-Path (Join-Path $env:TEMP 'jevcu') 'notepad_replace'; $storedId = Get-Content (Join-Path $dir 'pid.txt') -ErrorAction SilentlyContinue; if ($storedId) { Stop-Process -Id $storedId -Force -ErrorAction SilentlyContinue }",
+      "Remove-Item -Recurse -Force (Join-Path (Join-Path $env:TEMP 'jevcu') 'notepad_replace') -ErrorAction SilentlyContinue"
+    ],
+    "oracle": {
+      "type": "all_of",
+      "all_of": [
+        {"type": "file_contains", "path": "%TEMP%\\jevcu\\notepad_replace\\doc.txt", "contains": "bar"},
+        {"type": "file_contains", "path": "%TEMP%\\jevcu\\notepad_replace\\doc.txt", "not_contains": "foo"}
+      ]
+    },
+    "human_steps": 7,
+    "irreversible": false,
+    "restores_state": false,
+    "coverage_risk": "uia",
+    "notes": "Notepad's Replace dialog (opened with Ctrl+H, labelled 'Zamie\u0144' on this Polish build) is a separate modeless top-level window layered over the document window -- an observer tracking only a single 'foreground window' snapshot can lose the document window's identity while the dialog has focus; both need to stay visible to the loop. 'Match case' is unchecked by default in Notepad's Find/Replace, so the fixture uses only lowercase 'foo' throughout to keep the expected outcome unambiguous regardless of that checkbox's state. Ctrl+S here saves directly with no Save As dialog, because the file already has a path from setup, unlike notepad_save_as -- an agent that always expects a Save As prompt after Ctrl+S will stall waiting for one that never appears.",
+    "expected_agent_steps_min": 8
+  },
+  {
+    "id": "explorer_view_details",
+    "app": "explorer",
+    "goal": "In the Explorer window that is open, switch the file list to Details view.",
+    "setup": [
+      "$dir = Join-Path (Join-Path $env:TEMP 'jevcu') 'explorer_view_details'; Remove-Item -Recurse -Force $dir -ErrorAction SilentlyContinue; New-Item -ItemType Directory -Path $dir -Force | Out-Null; 1..3 | ForEach-Object { Set-Content -Path (Join-Path $dir ('file' + $_ + '.txt')) -Value ('jevcu fixture ' + $_) }",
+      "$dir = Join-Path (Join-Path $env:TEMP 'jevcu') 'explorer_view_details'; Start-Process explorer.exe -ArgumentList $dir; Start-Sleep -Milliseconds 800"
+    ],
+    "teardown": [
+      "$dir = Join-Path (Join-Path $env:TEMP 'jevcu') 'explorer_view_details'; $leaf = Split-Path $dir -Leaf; $shell = New-Object -ComObject Shell.Application; foreach ($w in @($shell.Windows())) { try { if ($w.LocationURL -like ('*' + $leaf + '*')) { $w.Quit() } } catch {} }",
+      "Remove-Item -Recurse -Force (Join-Path (Join-Path $env:TEMP 'jevcu') 'explorer_view_details') -ErrorAction SilentlyContinue"
+    ],
+    "oracle": {
+      "type": "uia_value",
+      "window_title_contains": "explorer_view_details",
+      "find_control_type": "Header",
+      "expect": "exists"
+    },
+    "human_steps": 2,
+    "irreversible": false,
+    "restores_state": false,
+    "coverage_risk": "uia",
+    "notes": "REPLACES the brief's original 'Clock/Alarms: set and start a 1-minute timer' task. Rejected because a running timer has no clean, instantaneous oracle: sampling its UIA countdown text races the wall clock (the exact remaining-seconds string depends on exactly when the oracle samples), the Clock app's timer/alarm list persists across launches so 'a timer is running' is not obviously false at start without first clearing app state through the UI, and 'started' vs 'about to finish' vs 'already rang' is ambiguous at an arbitrary sampling instant -- exactly the flaky, time-coupled oracle this benchmark's determinism requirement rules out. Details view is used instead because a Win32 ListView in report mode exposes a distinct UIA Header control (the column-header row) that no other Explorer view (Icons/List/Tiles/Content) exposes, giving a structural, instantaneous, language-independent signal. Caveat, stated plainly: Explorer remembers the last-used view per FOLDER CONTENT-TYPE, not just per folder, so a brand-new empty folder is not guaranteed to start outside Details view on every machine/profile -- this was not live-verified while writing this spec (no GUI automation was performed for this task, by design). Before the first real run, confirm manually that a fresh folder under %TEMP%\\jevcu opens in a non-Details view; if it already opens in Details, either force a non-Details starting view with an explicit pre-timing step in setup, or swap this slot for a different verifiable, non-destructive, UIA-covered task.",
+    "expected_agent_steps_min": 3
+  },
+  {
+    "id": "calc_scientific_power",
+    "app": "calc",
+    "goal": "Switch Calculator to Scientific mode and compute 2 raised to the power of 10.",
+    "setup": [
+      "$dir = Join-Path (Join-Path $env:TEMP 'jevcu') 'calc_scientific_power'; New-Item -ItemType Directory -Path $dir -Force | Out-Null",
+      "$before = Get-Process | Select-Object -ExpandProperty Id; Start-Process calc.exe; Start-Sleep -Milliseconds 1000; $newId = Get-Process | Where-Object { ($before -notcontains $_.Id) -and $_.MainWindowTitle } | Select-Object -First 1 -ExpandProperty Id; $dir = Join-Path (Join-Path $env:TEMP 'jevcu') 'calc_scientific_power'; Set-Content -Path (Join-Path $dir 'pid.txt') -Value $newId"
+    ],
+    "teardown": [
+      "$dir = Join-Path (Join-Path $env:TEMP 'jevcu') 'calc_scientific_power'; $storedId = Get-Content (Join-Path $dir 'pid.txt') -ErrorAction SilentlyContinue; if ($storedId) { Stop-Process -Id $storedId -Force -ErrorAction SilentlyContinue }",
+      "Remove-Item -Recurse -Force (Join-Path (Join-Path $env:TEMP 'jevcu') 'calc_scientific_power') -ErrorAction SilentlyContinue"
+    ],
+    "oracle": {
+      "type": "uia_value",
+      "automation_id": "CalculatorResults",
+      "expect_contains": "1024"
+    },
+    "human_steps": 7,
+    "irreversible": false,
+    "restores_state": false,
+    "coverage_risk": "uia",
+    "notes": "Mode switch uses the nav-view hamburger button then a list item labelled 'Scientific' (localized 'Naukowy' on this Polish build); the oracle never inspects that label, only the final numeric result, so locale does not affect grading. The power-operator button's exact AutomationId was not empirically confirmed while writing this spec (no GUI automation was performed) -- Calculator's internal ids for scientific-only buttons tend to follow the operator's internal name rather than its printed glyph ('x^y'); confirm the id with a live UIA snapshot before wiring the act module, and fall back to matching by visible Name/glyph if it differs. Same PID-resolution caveat as calc_multiply (CalculatorApp.exe behind a calc.exe shim).",
+    "expected_agent_steps_min": 8
+  }
+]
