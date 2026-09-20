@@ -1,0 +1,11 @@
+# Normalise line endings so the repository is identical regardless of platform.
+# Files are stored with LF in git; the working copy on Windows may use CRLF.
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.wav binary
+*.ico binary
+
+# PowerShell scripts are most robust with CRLF on Windows.
+*.ps1 text eol=crlf

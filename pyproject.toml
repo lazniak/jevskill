@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jevskill"
+version = "0.1.0"
+description = "Use the Jev decision model (System One) inside coding harnesses: routing, triage, gating, grading, ranking, and reducing large data — with real per-stage effectiveness statistics."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "lazniak" }]
+keywords = ["jev", "typesafe", "decisions", "llm", "agent", "skill", "openrouter", "classification", "routing"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = []
+
+[project.optional-dependencies]
+fast = ["httpx[http2]>=0.27", "orjson>=3.9"]
+dev = ["pytest>=8", "httpx[http2]>=0.27", "orjson>=3.9"]
+
+[project.urls]
+Homepage = "https://github.com/lazniak/jevskill"
+Issues = "https://github.com/lazniak/jevskill/issues"
+
+[project.scripts]
+jevskill = "jevskill.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["jevskill*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

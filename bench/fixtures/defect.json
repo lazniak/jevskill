@@ -1,0 +1,22 @@
+{
+  "task": "Fix the invoice tax rounding defect reported by enterprise customer",
+  "repo": "acme/billing",
+  "defect_report": {
+    "title": "Invoice total is off by one cent on tax-inclusive line items",
+    "body": "When a line item has tax applied and the quantity is greater than one, the invoice total is rounded once at the end instead of per line. Enterprise customer Hexart reports a 0.01 EUR discrepancy on every invoice with more than 4 line items. Started after we migrated to Decimal in billing/invoice.py.",
+    "reporter_tier": "enterprise",
+    "severity_claimed": "high"
+  },
+  "code": {
+    "file": "src/billing/invoice.py",
+    "lines": [
+      "def total(lines: list[LineItem], tax_rate: Decimal) -> Decimal:",
+      "    subtotal = sum(line.unit_price * line.quantity for line in lines)",
+      "    return (subtotal * (1 + tax_rate)).quantize(CENT, rounding=ROUND_HALF_UP)"
+    ]
+  },
+  "change": {
+    "summary": "Round each line item to cents before summing, then apply tax",
+    "intent": "Make per-line rounding explicit so the total matches the printed lines"
+  }
+}

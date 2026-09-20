@@ -1,0 +1,339 @@
+---
+name: jev
+description: >-
+  Use the Jev decision model (TypeSafe System One, via OpenRouter) for bounded
+  decisions inside coding workflows — routing, triage, classification, gating,
+  rubric grading, ranking, and reducing large data before it reaches the main
+  model. Use when a decision has a fixed set of possible answers, when data is
+  too large or too noisy to put in context, when the same judgement must be made
+  many times, or when an irreversible action needs a cheap safety check. Jev
+  emits no text: never use it for prose, code generation, summaries or reasoning.
+  Triggers: "classify", "categorize", "which of these", "route", "triage",
+  "gate", "should we", "rank", "prioritize", "grade", "too many logs",
+  "reduce the data", "save tokens", "batch decisions", "is it safe to".
+license: MIT
+---
+
+# Jev: decisions, not text
+
+Jev is a **System One** model. You give it one *state* (the data) and any number
+of typed *questions*, and it returns typed decisions with real probability
+distributions — in about 300 ms, for about $0.00002.
+
+It cannot write. Not a summary, not a line of code, not an explanation. What it
+does instead is answer **"which of these N things is it?"**, **"is this true?"**,
+and **"how much, on this scale?"** — faster and cheaper than any chat model, and
+with a calibrated confidence you can branch on.
+
+That is the whole trade. Use it where the answer is a decision. Use the LLM where
+the answer is text.
+
+> Measured, not estimated. Every number in this skill comes from
+> `bench/run.py` against the live API and is recorded in the effectiveness
+> ledger. Run `jevskill stats` to see this machine's own record.
+
+---
+
+## 1. The three primitives
+
+Everything Jev does is built from three question types. Pick by the *shape* of the
+answer you need — never by topic.
+
+| You need | Primitive | Returns | Reach for it when |
+|---|---|---|---|
+| yes / no | `noul` | `P(true)` as a float 0–1 | filtering, guardrails, verification |
+| one of N things | `choice` | winner + **full distribution** + confidence | routing, triage, classification, tool pick |
+| how much on a scale | `score` | weighted mean (e.g. `1.4`), legend, distribution | grading, priority, severity, quality |
+
+```bash
+# a gate
+jevskill ask --state "$DIFF" --question-type noul --name breaks_api \
+  --instructions "Does this diff change a public API signature?" \
+  --true-text "A public name, signature or return type changes." \
+  --false-text "Only internals, comments, tests or formatting change."
+
+# a route
+jevskill ask --state "$ERROR_REPORT" --question-type choice --name owner \
+  --instructions "Which subsystem owns the fix?" \
+  --options billing api ui db unclear
+
+# a grade
+jevskill ask --state "$PR_DESCRIPTION" --question-type score --name risk \
+  --instructions "How risky is deploying this unreviewed?" \
+  --levels Trivial Low Moderate High Critical
+```
+
+All three at once, in **one call**, is the normal case:
+
+```json
+{
+  "owner":     {"type": "choice", "instructions": "Which subsystem owns the fix?",
+                "criteria": {"billing": "Invoices, tax, payments.",
+                             "api": "HTTP layer, serialization.",
+                             "db": "Schema, migrations, queries.",
+                             "unclear": "Not enough information to decide."}},
+  "risk":      {"type": "score", "instructions": "How risky is deploying this unreviewed?",
+                "criteria": ["Trivial", "Low", "Moderate", "High", "Critical"]},
+  "needs_test":{"type": "noul", "instructions": "Does this change require a new automated test?"}
+}
+```
+
+## 2. Before anything: is Jev the right tool?
+
+Ask this first. It is free, instant, and it is the single most common mistake.
+
+```bash
+jevskill plan "classify 900 build log lines and keep the 8 that matter" --state-file build.log
+```
+
+**Use Jev when the answer is one of N things you can list up front.**
+
+| Signal | Verdict |
+|---|---|
+| You can enumerate the possible answers | ✅ Jev |
+| The same judgement repeats over many items | ✅ Jev |
+| The decision gates something expensive | ✅ Jev |
+| The data is large and mostly irrelevant | ✅ Jev (REDUCE) |
+| The answer is a sentence, summary or explanation | ❌ LLM |
+| The answer is code | ❌ LLM |
+| The answer set is open-ended ("find all possible…") | ❌ LLM |
+| You need step-by-step reasoning to justify the answer | ❌ LLM |
+
+If Jev is wrong for the task, say so and use the LLM. Reaching for Jev out of
+novelty costs a round trip and produces nothing usable.
+
+## 3. The usage palette
+
+Nine patterns cover essentially every legitimate use in a coding workflow. Full
+detail, worked questions and pitfalls: `references/patterns.md`.
+
+| Pattern | Shape | Coding example | Layers |
+|---|---|---|---|
+| **gate** | one boolean about one text | "Does this diff break a public API?" | two-stage: cheap signals → code-combined policy |
+| **triage** | many items → one bounded category each | "Which module owns this failing test?" | two-stage: coarse bucket → fine bucket |
+| **reduce** | large sequence → small shortlist | "Which 8 of these 900 log lines matter?" | two-stage: chunk-score → final question on survivors |
+| **rank** | several items → an order | "Rank these 12 lint findings by user impact" | two-stage: score-all → re-score top-k with more context |
+| **route** | one task → one tier of effort | "One-line fix or architectural change?" | two-stage: route → verify the route |
+| **verify** | one artifact → a rubric score | "Does this test actually exercise the bug?" | two-stage: atomic Nouls → combine in code |
+| **guard** | one proposed action → safe / unsafe | "Does this command delete data outside the repo?" | two-stage: guard → require human confirmation |
+| **shortlist** | a close call → ask again, narrower | top two at 0.51/0.44 → re-ask over those two | **iterative** |
+| **extract** | unstructured text → fixed fields | stack trace → language, exception, frame | two-stage: presence gate per field → Choice over candidates |
+
+## 4. The four rules that decide whether this works
+
+### Rule 1 — Fan out. One call, many questions.
+
+Questions share one state and are evaluated **in parallel**. Adding a question
+costs a few input tokens and almost no latency.
+
+Measured: **8 questions in one call = 1 call's worth of latency.** Eight
+sequential calls cost **9.4×** the time and **~1.9×** the tokens, because you pay
+for the same state eight times.
+
+```
+GOOD:  1 call  {q1, q2, q3, q4, q5, q6}
+BAD:   6 calls, each with one question and the same state
+```
+
+If you catch yourself writing a loop that calls Jev once per question, stop —
+restructure into a dict of questions and make one call.
+
+### Rule 2 — Decompose into atomic signals, combine in code.
+
+This is the highest-leverage habit, and it is the one with independent evidence
+behind it. One broad question hides several judgements and gets *worse* as it
+gets broader. Several narrow gates, weighted in plain code, beat it.
+
+```python
+signals = jev.decide(state, {
+    "claims_tests_pass":  noul("Does the summary claim the tests pass?"),
+    "cite_diff_line":     noul("Does it reference a specific changed line?"),
+    "contradicts_diff":   noul("Does the claim contradict the diff?"),
+})
+risk = (0.45 * signals.noul("claims_tests_pass")
+        + 0.30 * (1 - signals.noul("cite_diff_line"))
+        + 0.25 * signals.noul("contradicts_diff"))
+```
+
+An independent 2,000-email study found Jev's *single* verdict statistically worse
+than a small chat model — and the same study found that **five cheap signals
+combined in a logistic regression reached 95.1%**. Treat Jev as a signal
+generator you query broadly, not an oracle you query once.
+
+### Rule 3 — Budget the state, and cut it with code first.
+
+Latency is essentially **flat** with respect to state size — measured, growing the
+state from ~330 to ~5,000 tokens moved p50 by *less than 10 ms*. Cost is not:
+it scales linearly with input tokens.
+
+So the constraint is **accuracy and cost, not speed**. Irrelevant state is a
+distractor that degrades the decision, and it is billed. Default budget: 8,000
+tokens per state (the hard ceiling is 32K on OpenRouter, and accuracy falls off
+before the limit).
+
+If your data does not fit, do **not** just raise the budget. Use REDUCE:
+
+```bash
+# profile it first
+jevskill plan "keep the salient lines" --state-file build.log
+#   -> 18000 tokens exceeds the 8000 budget: split into ~3 chunks of 6000 tokens
+#      and use the REDUCE pattern — score or filter each chunk, keep the
+#      shortlist, then ask a final question over the survivors.
+```
+
+### Rule 4 — Route on uncertainty. Iterate instead of accepting.
+
+A `choice` answer is not a label, it is a **distribution**. When the top two
+options are close, the honest move is to narrow and ask again — not to accept the
+winner because it happened to come first.
+
+```bash
+# round 1: four candidates
+#   net/client.py 0.51   net/retry.py 0.44   net/timeout.py 0.05   net/pool.py 0.00
+#   -> gap 0.07, too close: NARROW, do not accept
+# round 2: only the two leaders, plus the context that discriminates them
+#   net/retry.py 0.91   net/client.py 0.09
+#   -> gap 0.82: ACCEPT net/retry.py
+```
+
+```python
+round_one = jev.decide(state, {"owner": choice(..., all_four)})
+verdict = next_round(round_one.probs("owner"), confidence=round_one.confidence("owner"))
+if verdict.action == "narrow":
+    round_two = jev.decide(
+        {**state, "discriminator": extract_only_the_difference()},
+        {"owner": choice("...", verdict.next_options)},
+    )
+elif verdict.action == "escalate":
+    hand_to_llm_or_human()   # never guess
+```
+
+Two rounds is the useful budget. Beyond that you are paying for a coin flip.
+
+## 5. Iterative design: how to plan multi-call work
+
+A single call is rarely the whole answer. Design the *sequence* before the first
+call. Three reusable shapes:
+
+**Cascade — coarse, then fine.** Cheap broad buckets first, then a second call
+over only the winner's children. Turns 40 options into 5+5 and keeps both calls
+accurate.
+
+**Reduce — score everything, keep the survivors.** Chunk the data, score each
+chunk for relevance, keep the top-k, then ask the real question over just those.
+This is where the token savings live: 900 log lines (~15k tokens) collapse to a
+shortlist of ~8 lines (~90 tokens) — **99% of the data never reaches the LLM.**
+
+**Fan-out then combine — many gates, one decision in code.** Ask every independent
+signal about the same state in one call, then weight them yourself. Use this when
+no single question captures the judgement.
+
+Budget the calls before starting: `jevskill plan "<problem>"` returns the pattern,
+the layer strategy and the expected call count for free.
+
+## 6. Measure it — the skill's own statistics
+
+Every `ask` writes a row to the effectiveness ledger with the pattern used, the
+stages, the tokens, the cost, the confidence, and how much context was kept out
+of the LLM. Pair a decision with reality and the accuracy becomes real rather
+than asserted.
+
+```bash
+jevskill ask --state-file diff.txt --questions @"q.json" --intent "pre-commit API gate"
+#   ... decision_id d_1a2b3c4d5e6f
+jevskill outcome d_1a2b3c4d5e6f correct --detail "reviewer agreed, API break confirmed"
+
+jevskill stats
+#   JEV effectiveness ledger — 128 decisions
+#     latency  : p50 311 ms   p95 402 ms
+#     jev cost : $0.004210
+#     vs LLM   : saved 94.3%, 412k tokens kept out of LLM context
+#     accuracy : 94.1% over 118 judged decisions
+```
+
+Pair outcomes whenever the consequence is observable. An unpaired ledger can
+tell you Jev was fast; only a paired one can tell you it was **right**, and
+therefore whether the threshold you chose is the correct one.
+
+Reports carry a full per-stage breakdown so the timing claim is auditable:
+
+```
+  t_decision     12.4 ms    3.1%  #      <- deciding to use the skill
+  profile         0.3 ms    0.1%
+  plan            0.1 ms    0.0%
+  build           8.9 ms    2.2%         <- building state and questions
+  http          371.0 ms   92.4%  #######################  <- network + inference
+  act             7.2 ms    1.8%
+  report          1.4 ms    0.3%
+  TOTAL         401.3 ms  100.0%
+  (serialize)     0.2 ms  (inside build)
+```
+
+`http` is normally 92–96% of the wall clock. That is the point: the skill's own
+overhead is ~3%, so there is no client-side optimisation left worth chasing —
+effort belongs in *choosing good questions* and *reducing the state*.
+
+## 7. Choosing a confidence threshold
+
+There is no universal number, and copying one from a blog post is the most common
+way to ship a bad gate. **Measure it.** Use your ledger:
+
+```bash
+jevskill stats --json | jq '.by_intent'
+```
+
+Then plot confidence against accuracy for your own labelled cases and pick the
+threshold where the accuracy is good enough for what a wrong answer costs you. A
+guard in front of `rm -rf` deserves a different threshold than a routing hint.
+
+Escalate — to the LLM or to a human — when confidence is low, rather than
+accepting an answer the model already told you it was unsure about.
+
+## 8. Hard constraints (do not fight these)
+
+- **No text output.** No prose, code, summaries, explanations. Ever.
+- **Options are fixed per request.** Jev picks from the set you send; it cannot
+  propose an option you did not think of.
+- **Text input only.** No images or audio.
+- **32K context** on OpenRouter, and accuracy degrades before the limit.
+- **Not OpenAI-compatible.** It uses `/api/alpha/decisions`, never
+  `/api/v1/chat/completions`. Chat SDKs will not work.
+- **Hosted only.** No self-hosting, no VPC, no air-gap.
+
+## 9. Failure modes to avoid
+
+| Anti-pattern | Why it hurts | Do instead |
+|---|---|---|
+| Looping one question per call | 9.4× slower, ~2× tokens | one call, many questions |
+| One giant "analyse everything" question | Broad questions underperform | atomic gates, combine in code |
+| Accepting a 0.51 winner | It is a coin flip | narrow and re-ask |
+| Dumping raw data "just in case" | Distracts and bills | 8k budget; REDUCE |
+| Asking Jev to write a summary | It returns no text | use the LLM |
+| Choosing options on the fly per call | Unstable, uncacheable | fixed question bundles |
+| No `unclear` / `none` option | Forces a wrong answer | always include an escape hatch |
+| Assuming Jev is more accurate than an LLM | It is not, on published evidence | use it for speed/cost, combine signals |
+| Threshold copied from a doc | Your risks are not theirs | measure against your ledger |
+
+## 10. Command reference
+
+```
+jevskill doctor                # key, connectivity, warm latency, live cost
+jevskill patterns              # the palette, with shapes and examples
+jevskill plan "<problem>"      # FREE: should Jev be used? which pattern? how many calls?
+jevskill ask --state ... --questions '<json>'
+jevskill ask --state-file diff.txt --question-type choice --name owner --options a b c unclear
+jevskill outcome <decision_id> correct|incorrect|escalated|overridden|no_action
+jevskill stats                 # measured latency, cost, savings, accuracy per pattern
+```
+
+Add `--json` to any command for machine-readable output. State comes from
+`--state`, `--state-file`, or stdin. Every command reports its own stage timings.
+
+## 11. Further reading
+
+- `references/api.md` — exact request/response shapes, all fields, error codes
+- `references/patterns.md` — the nine patterns with full worked questions
+- `references/prompting.md` — how to write instructions and criteria that work
+- `references/benchmarks.md` — every measurement, with method and honesty notes
+- Official docs: <https://docs.typesafe.ai> · Model:
+  <https://openrouter.ai/typesafe/jev-1.13>

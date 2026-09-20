@@ -1,0 +1,183 @@
+{
+  "benchmarked_at": "2026-09-20T11:44:52",
+  "model": "typesafe/jev-1.13",
+  "endpoint": "https://openrouter.ai/api/alpha/decisions",
+  "region_note": "measured from a residential connection in Poland",
+  "warmup_ms": 108.8,
+  "E1_latency": {
+    "cold_ms": 485.145,
+    "warm_p50_ms": 325.1,
+    "warm_p95_ms": 427.4,
+    "warm_min_ms": 299.4,
+    "warm_max_ms": 683.1,
+    "runs": 12,
+    "cost_per_decision_usd": 1.3314e-05,
+    "input_tokens": 317
+  },
+  "E2_state_size": {
+    "rows": [
+      {
+        "label": "small",
+        "est_tokens": 18,
+        "input_tokens": 324,
+        "p50_ms": 353.2,
+        "p95_ms": 471.0,
+        "cost_usd": 1.361e-05
+      },
+      {
+        "label": "medium",
+        "est_tokens": 306,
+        "input_tokens": 920,
+        "p50_ms": 369.5,
+        "p95_ms": 394.8,
+        "cost_usd": 3.864e-05
+      },
+      {
+        "label": "large",
+        "est_tokens": 3962,
+        "input_tokens": 7020,
+        "p50_ms": 468.2,
+        "p95_ms": 600.9,
+        "cost_usd": 0.00029484
+      }
+    ],
+    "latency_delta_large_minus_small_ms": 115.0
+  },
+  "E3_fanout": {
+    "questions": 8,
+    "batched_ms": 288.252,
+    "batched_tokens": 663,
+    "batched_cost_usd": 2.785e-05,
+    "sequential_ms": 3563.6,
+    "sequential_tokens": 2672,
+    "sequential_cost_usd": 0.00011222,
+    "speedup_x": 12.36,
+    "token_amplification_x": 4.03,
+    "per_question_ms": 36.0
+  },
+  "E4_reduce": {
+    "total_lines": 900,
+    "keep": 8,
+    "salient_total": 14,
+    "raw_tokens": 16289,
+    "gate_all": {
+      "calls": 45,
+      "candidates": 14,
+      "salient_hits": 8,
+      "overall_recall_pct": 57.1,
+      "shortlist_tokens": 201,
+      "context_reduction_pct": 98.8,
+      "cost_usd": 0.00611285,
+      "wall_ms": 15971.1
+    },
+    "chunk_first": {
+      "calls": 24,
+      "stage1_calls": 15,
+      "chunks_kept": 3,
+      "chunks_total": 15,
+      "stage1_lines": 180,
+      "stage1_recall_pct": 21.4,
+      "stage2_precision_pct": 100.0,
+      "salient_hits": 3,
+      "overall_recall_pct": 21.4,
+      "shortlist_tokens": 67,
+      "context_reduction_pct": 99.6,
+      "cost_usd": 0.00288427,
+      "wall_ms": 10259.1
+    },
+    "verdict": "Pre-filtering chunks is a cost/recall trade, not a free win. Gate every line when a miss is unacceptable; pre-filter chunks when the corpus is homogeneous and the call budget matters."
+  },
+  "E4_reduce_legacy_failure": {
+    "total_lines": 900,
+    "keep": 8,
+    "salient_hits": 1,
+    "keep_pct": 12.5,
+    "cost_usd": 0.00166396,
+    "raw_tokens": 16351,
+    "shortlist_tokens": 156
+  },
+  "E5_guards": {
+    "sample": 49,
+    "accuracy": 1.0,
+    "precision": 1.0,
+    "recall": 1.0,
+    "p50_ms": 379.8,
+    "cost_usd": 0.00079351,
+    "tokens": 18893,
+    "calibration": {
+      "0-20%": {
+        "n": 40,
+        "mean_p": 0.033,
+        "actual_rate": 0.0
+      },
+      "80-100%": {
+        "n": 9,
+        "mean_p": 0.98,
+        "actual_rate": 1.0
+      }
+    }
+  },
+  "E7_iteration": {
+    "clear": {
+      "expected": "accept in round 1",
+      "rounds": [
+        {
+          "options": [
+            "net/client.py",
+            "net/retry.py",
+            "net/timeout.py",
+            "net/pool.py"
+          ],
+          "chosen": "net/retry.py",
+          "confidence": 1.0,
+          "probabilities": {
+            "net/pool.py": 0.0,
+            "net/client.py": 0.0,
+            "net/timeout.py": 0.0,
+            "net/retry.py": 1.0
+          },
+          "latency_ms": 313.75,
+          "verdict": "accept",
+          "reason": "confidence 1.00 >= 0.7"
+        }
+      ],
+      "narrowed": false,
+      "total_ms": 313.8
+    },
+    "ambiguous": {
+      "expected": "narrow, then accept or escalate",
+      "rounds": [
+        {
+          "options": [
+            "net/client.py",
+            "net/retry.py",
+            "net/timeout.py",
+            "net/pool.py"
+          ],
+          "chosen": "net/client.py",
+          "confidence": 0.92,
+          "probabilities": {
+            "net/pool.py": 0.01,
+            "net/retry.py": 0.05,
+            "net/client.py": 0.94,
+            "net/timeout.py": 0.0
+          },
+          "latency_ms": 346.508,
+          "verdict": "accept",
+          "reason": "confidence 0.92 >= 0.7"
+        }
+      ],
+      "narrowed": false,
+      "total_ms": 346.5
+    },
+    "narrowing_triggered": false
+  },
+  "E6_llm_contrast": {
+    "model": "google/gemini-2.5-flash-lite",
+    "runs": 3,
+    "p50_ms": 429.3,
+    "mean_tokens": 42,
+    "mean_cost_usd": 5.7e-06,
+    "pricing_note": "list price $0.10/M in, $0.40/M out"
+  }
+}

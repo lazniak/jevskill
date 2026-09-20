@@ -1,0 +1,563 @@
+"""The command-line surface. This is what a harness shells out to.
+
+A billing harness does not import a Python library — it runs a command and reads
+JSON. Every command therefore:
+
+* prints a single machine-readable JSON object when ``--json`` is given, and a
+  human report otherwise,
+* writes one row to the effectiveness ledger (except for the pure planning
+  commands, which spend nothing and are therefore free to call often),
+* times its own stages from process start, so ``t_decision`` genuinely covers
+  "the moment the harness decided to use the skill".
+
+Run ``jevskill --help`` for the surface, or ``jevskill patterns`` to see the
+palette of coding-workflow uses.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+import time
+from pathlib import Path
+
+# Captured at import: the earliest honest timestamp for "the harness decided to
+# use this skill". Every command measures its first stage from here.
+_T_IMPORT_NS = time.perf_counter_ns()
+
+from . import __version__
+from .client import JevClient
+from .config import Config
+from .errors import JevApiError, JevConfigError, JevError, JevQuestionError
+from .orchestrate import (
+    PATTERNS,
+    choose_pattern,
+    estimate_saving,
+    plan_for,
+    profile,
+    should_use_jev,
+)
+from .primitives import choice, noul, score, validate_questions
+from .stages import Stages, format_stages
+from .stats import ledger_path, load_records, record_decision, record_outcome, summarize
+
+_PRIMITIVE_BUILDERS = {"noul": noul, "choice": choice, "score": score}
+
+
+# --------------------------------------------------------------------------- #
+# Helpers
+# --------------------------------------------------------------------------- #
+
+
+def _emit(payload: dict, as_json: bool, human: str) -> None:
+    if as_json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(human)
+
+
+def _load_state(args: argparse.Namespace) -> object:
+    if args.state_file:
+        path = Path(args.state_file)
+        if not path.exists():
+            raise JevError(f"state file not found: {path}")
+        text = path.read_text(encoding="utf-8")
+        if args.state_file.lower().endswith(".json"):
+            try:
+                return json.loads(text)
+            except json.JSONDecodeError:
+                return text
+        return text
+    if args.state is not None:
+        return args.state
+    if not sys.stdin.isatty():
+        text = sys.stdin.read()
+        if text.strip():
+            return text
+    raise JevError("no state supplied — pass --state, --state-file, or pipe it on stdin")
+
+
+def _build_questions(args: argparse.Namespace) -> dict[str, dict]:
+    """Build question bundle from --questions JSON, or from single-question flags."""
+    if args.questions:
+        try:
+            questions = json.loads(args.questions)
+        except json.JSONDecodeError as exc:
+            raise JevQuestionError(f"--questions is not valid JSON: {exc}") from exc
+        validate_questions(questions)
+        return questions
+
+    if not args.question_type:
+        raise JevQuestionError(
+            "no questions given — use --questions '<json>' or "
+            "--question-type {noul,choice,score} with --name/--instructions"
+        )
+
+    kind = args.question_type
+    name = args.name or "q0"
+    instructions = args.instructions or "Answer the question."
+    if kind == "noul":
+        question = noul(instructions, args.true_text, args.false_text)
+    elif kind == "choice":
+        options = [o for o in (args.options or []) if o]
+        if len(options) < 2:
+            raise JevQuestionError("choice needs at least 2 --options")
+        question = choice(instructions, {o: o for o in options})
+    else:
+        levels = [l for l in (args.levels or []) if l]
+        if len(levels) < 2:
+            raise JevQuestionError("score needs at least 2 --levels")
+        question = score(instructions, levels)
+    questions = {name: question}
+    validate_questions(questions)
+    return questions
+
+
+def _baseline_tokens(state: object, questions: dict) -> int:
+    """Estimate the context an LLM would have needed for the same judgement.
+
+    This is the number the ledger stores as ``baseline_tokens`` and the number
+    the README's savings figure is built from, so it is stated plainly rather
+    than buried: the *data itself*, plus the question text an LLM would have
+    needed, plus ~350 tokens of scaffolding (system prompt, output-format
+    instructions). It is treated as input because an LLM must read it.
+    """
+    import json as _json
+
+    state_tokens = (len(_json.dumps(state, ensure_ascii=False)) if not isinstance(state, str)
+                    else len(state)) / 3.6
+    question_tokens = sum(
+        len(_json.dumps(q, ensure_ascii=False)) for q in questions.values()
+    ) / 3.6
+    return int(state_tokens + question_tokens)
+
+
+# --------------------------------------------------------------------------- #
+# Commands
+# --------------------------------------------------------------------------- #
+
+
+def cmd_doctor(args: argparse.Namespace) -> int:
+    stages = Stages.begin()
+    config = Config.from_env()
+    stages.mark("t_decision")
+    report: dict = {
+        "version": __version__,
+        "ok": False,
+        "key_found": config.has_key(),
+        "key_source_hint": config.api_key[:12] + "..." if config.api_key else None,
+        "model": config.model,
+        "endpoint": config.decisions_url,
+        "ledger": str(ledger_path()),
+        "ledger_exists": ledger_path().exists(),
+    }
+    stages.mark("profile")
+    if not config.has_key():
+        report["error"] = (
+            "No API key. Set OPENROUTER_API_KEY, or write {'api_key': '...'} to "
+            "~/.jevskill/config.json"
+        )
+        _emit(report, args.json, f"NOT OK: {report['error']}")
+        stages.mark("report")
+        report["stages_ms"] = stages.ordered()
+        return 2
+
+    stages.mark("plan")
+    try:
+        with JevClient(config) as client:
+            stages.mark("build")
+            warm_ms = client.warm()
+            started = time.perf_counter()
+            result = client.decide(
+                {"probe": "connectivity check"},
+                {"alive": noul("Is this request working?", "Yes.", "No.")},
+            )
+            stages.mark("http")
+            stages.absorb(result.timing_ms)
+            report.update(
+                {
+                    "ok": True,
+                    "warm_ms": round(warm_ms, 1),
+                    "probe_noul": result.noul("alive"),
+                    "latency_ms": round((time.perf_counter() - started) * 1000, 1),
+                    "resolved_model": result.model,
+                    "input_tokens": result.input_tokens,
+                    "cost_usd": result.cost_usd,
+                }
+            )
+    except JevApiError as exc:
+        report["error"] = str(exc)
+        report["hint"] = exc.hint
+    except JevError as exc:
+        report["error"] = str(exc)
+
+    stages.mark("report")
+    report["stages_ms"] = stages.ordered()
+
+    if args.json:
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+    else:
+        status = "OK" if report["ok"] else "NOT OK"
+        lines = [
+            f"jevskill {__version__} — {status}",
+            f"  key       : {'found' if report['key_found'] else 'MISSING'}",
+            f"  model     : {report['model']}",
+            f"  endpoint  : {report['endpoint']}",
+            f"  ledger    : {report['ledger']}",
+        ]
+        if report["ok"]:
+            lines += [
+                f"  warm      : {report['warm_ms']} ms",
+                f"  probe     : {report['latency_ms']} ms  (noul={report['probe_noul']})",
+                f"  tokens    : {report['input_tokens']}  cost ${report['cost_usd']:.8f}",
+            ]
+        else:
+            lines.append(f"  error     : {report.get('error')}")
+        lines.append("  stages    :")
+        lines.append(format_stages(report["stages_ms"]))
+        print("\n".join(lines))
+    return 0 if report["ok"] else 2
+
+
+def cmd_ask(args: argparse.Namespace) -> int:
+    """One decision: state + questions -> typed answers, timed and ledgered."""
+    stages = Stages.begin()
+    stages.mark("t_decision")
+
+    state = _load_state(args)
+    questions = _build_questions(args)
+    stages.mark("profile")
+    stages.mark("plan")
+
+    shape = profile(state, max_state_tokens=args.max_state_tokens)
+    if not shape.fits and not args.force:
+        payload = {
+            "ok": False,
+            "error": "state exceeds budget",
+            "shape": shape.to_dict(),
+            "advice": shape.note,
+        }
+        stages.mark("report")
+        payload["stages_ms"] = stages.ordered()
+        _emit(payload, args.json, f"REFUSED: {shape.note}")
+        return 3
+
+    config = Config.from_env(max_state_tokens=args.max_state_tokens)
+    baseline_tokens = _baseline_tokens(state, questions)
+    stages.mark("build")
+
+    with JevClient(config) as client:
+        if args.warm:
+            client.warm()
+        started = time.perf_counter()
+        result = client.decide(state, questions, session_id=args.session_id)
+        wall_ms = (time.perf_counter() - started) * 1000
+        stages.mark("http")
+        stages.absorb(result.timing_ms)
+
+    confidences = {
+        name: answer.confidence
+        for name, answer in result.answers.items()
+        if answer.confidence is not None
+    }
+
+    payload = {
+        "ok": True,
+        "answers": {name: answer.to_dict() for name, answer in result.answers.items()},
+        "values": {name: result.value(name) for name in result.answers},
+        "model": result.model,
+        "usage": result.usage,
+        "timing_ms": result.timing_ms,
+        "wall_ms": round(wall_ms, 1),
+        "shape": shape.to_dict(),
+        "baseline_tokens": baseline_tokens,
+    }
+
+    # The ledger should capture the stage breakdown *including* the work of
+    # applying and recording the decision, so `act` is marked before the write
+    # and the snapshot is taken for the row.
+    decision_id = ""
+    stages.mark("act")
+    recorded_stages = stages.ordered()
+    if not args.no_ledger:
+        decision_id = record_decision(
+            which=args.pattern or choose_pattern(args.intent or args.instructions or "")[0],
+            intent=args.intent or "",
+            stages_ms=recorded_stages,
+            latency_ms=result.timing_ms.get("total_ms", wall_ms),
+            tokens_in=result.input_tokens,
+            tokens_out=int(result.usage.get("output_tokens", 0) or 0),
+            cost_usd=result.cost_usd,
+            questions=len(questions),
+            state_tokens=shape.tokens,
+            confidence=confidences,
+            baseline_tokens=baseline_tokens,
+            session_id=args.session_id or "",
+            version=__version__,
+            root=args.ledger_root,
+        )
+        payload["decision_id"] = decision_id
+    payload["ledger"] = str(ledger_path(args.ledger_root))
+
+    stages.mark("report")
+    stages_dict = stages.ordered()
+    payload["stages_ms"] = stages_dict
+
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        lines = [f"JEV decided ({result.model}) in {result.timing_ms.get('total_ms', wall_ms):.0f} ms"]
+        for name, answer in result.answers.items():
+            lines.append(f"  {name}: {_render_answer(answer)}")
+        lines.append("")
+        lines.append(
+            f"  tokens {result.input_tokens}  cost ${result.cost_usd:.8f}"
+            f"  (LLM baseline ~{baseline_tokens} tok)"
+        )
+        if decision_id:
+            lines.append(f"  decision_id {decision_id}")
+        lines.append("  stages:")
+        lines.append(format_stages(stages_dict))
+        print("\n".join(lines))
+    return 0
+
+
+def _render_answer(answer) -> str:
+    if answer.kind == "noul":
+        return f"P(true)={answer.value}"
+    if answer.kind == "choice":
+        top = answer.top(3)
+        detail = "  ".join(f"{k}={v:.2f}" for k, v in top)
+        return f"{answer.value!r} (conf {answer.confidence})  [{detail}]"
+    if answer.kind == "score":
+        return f"{answer.value} (conf {answer.confidence})"
+    return json.dumps(answer.raw, ensure_ascii=False)[:120]
+
+
+def cmd_plan(args: argparse.Namespace) -> int:
+    """Zero-cost planning: should Jev be used, which pattern, how many calls."""
+    stages = Stages.begin()
+    stages.mark("t_decision")
+    data = None
+    if args.state_file or args.state:
+        data = _load_state(args)
+    verdict = should_use_jev(args.problem or "", data)
+    stages.mark("profile")
+    stages.mark("plan")
+    saving = estimate_saving(state=data, questions=args.questions) if data is not None else None
+    if saving:
+        verdict["saving"] = saving
+    stages.mark("report")
+    verdict["stages_ms"] = stages.ordered()
+
+    if args.json:
+        print(json.dumps(verdict, ensure_ascii=False, indent=2))
+    else:
+        if not verdict["use_jev"]:
+            print(f"DO NOT USE JEV ({verdict['reason']})\n  {verdict['why']}")
+        else:
+            plan = verdict["plan"]
+            print(f"USE JEV — pattern '{plan['pattern']}'")
+            print(f"  why    : {plan['why']}")
+            print(f"  layers : {plan['layers']}")
+            print(f"  calls  : {plan['calls']}")
+            print(f"  data   : {plan['shape']['tokens']} tok — {plan['note']}")
+            if saving:
+                print(
+                    f"  cost   : ${saving['jev_cost_usd']:.8f} (Jev) vs "
+                    f"${saving['llm_cost_usd']:.6f} (LLM)  = {saving['ratio']}x"
+                )
+    return 0
+
+
+def cmd_patterns(args: argparse.Namespace) -> int:
+    """The palette. Free to call; this is the discovery surface for a harness."""
+    payload = {"version": __version__, "patterns": PATTERNS}
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 0
+    print(f"JEV usage palette for coding harnesses (jevskill {__version__})\n")
+    for name, info in PATTERNS.items():
+        print(f"  {name}")
+        print(f"      shape   : {info['shape']}")
+        print(f"      why     : {info['why']}")
+        print(f"      example : {info['example']}")
+        print(f"      layers  : {info['layers']}")
+    print("\nRule of thumb: if the answer is prose, code, or an open-ended set,")
+    print("Jev cannot do it. If the answer is one of N things you can list up")
+    print("front, Jev does it in ~300 ms for about $0.00002.")
+    return 0
+
+
+def cmd_stats(args: argparse.Namespace) -> int:
+    """Report the measured record of this skill's own effectiveness."""
+    paths = None
+    if args.ledger:
+        paths = [Path(args.ledger)]
+    elif args.global_only:
+        from .stats import global_ledger_path
+
+        paths = [global_ledger_path()]
+    records = load_records(paths)
+    summary = summarize(records)
+
+    if args.json:
+        print(json.dumps(summary, ensure_ascii=False, indent=2))
+        return 0
+
+    if not summary.get("decisions"):
+        print(f"No decisions recorded yet. Ledger: {ledger_path()}")
+        print("Run 'jevskill ask ...' or 'jevskill bench' to populate it.")
+        return 0
+
+    lat = summary["latency_ms"]
+    print(f"JEV effectiveness ledger — {summary['decisions']} decisions")
+    print(f"  window     : {summary['first_ts']} .. {summary['last_ts']}")
+    print(f"  questions  : {summary['questions_asked']}")
+    print(f"  latency    : p50 {lat['p50']} ms   p95 {lat['p95']} ms   min {lat['min']}   max {lat['max']}")
+    print(f"  jev cost   : ${summary['cost_usd']:.6f}  (${summary['cost_usd_per_decision']:.8f}/decision)")
+    print(f"  input tok  : {summary['input_tokens']}")
+    if summary["saved_pct"] is not None:
+        print(
+            f"  vs LLM     : ${summary['baseline_cost_usd']:.4f} baseline -> "
+            f"saved ${summary['saved_usd']:.4f} ({summary['saved_pct']}%), "
+            f"{summary['baseline_tokens_avoided']} tokens kept out of LLM context"
+        )
+    if summary["accuracy"] is not None:
+        print(f"  accuracy   : {summary['accuracy']*100:.1f}% over {summary['judged']} judged decisions")
+    else:
+        print("  accuracy   : no outcomes paired yet — use 'jevskill outcome <decision_id> correct'")
+    print("\n  by pattern:")
+    for name, entry in sorted(summary["by_pattern"].items(), key=lambda kv: -kv[1]["n"]):
+        acc = f"  acc {entry['accuracy']*100:.0f}%" if entry["accuracy"] is not None else ""
+        print(
+            f"    {name:12s} n={entry['n']:<4d} p50={entry['p50_ms']:7.1f} ms  "
+            f"${entry['cost_usd']:.6f}{acc}"
+        )
+    if summary["by_intent"]:
+        print("\n  by intent:")
+        for name, entry in sorted(summary["by_intent"].items(), key=lambda kv: -kv[1]["n"])[:12]:
+            acc = f"  acc {entry['accuracy']*100:.0f}%" if entry["accuracy"] is not None else ""
+            print(f"    {name[:24]:24s} n={entry['n']:<4d} p50={entry['p50_ms']:7.1f} ms{acc}")
+    return 0
+
+
+def cmd_outcome(args: argparse.Namespace) -> int:
+    """Pair a decision with what actually happened — this is what makes accuracy real."""
+    record_outcome(args.decision_id, args.result, args.detail or "", root=args.ledger_root)
+    payload = {
+        "ok": True,
+        "decision_id": args.decision_id,
+        "outcome": args.result,
+        "ledger": str(ledger_path(args.ledger_root)),
+    }
+    _emit(payload, args.json, f"recorded outcome '{args.result}' for {args.decision_id}")
+    return 0
+
+
+# --------------------------------------------------------------------------- #
+# Parser
+# --------------------------------------------------------------------------- #
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="jevskill",
+        description=(
+            "Use the Jev decision model (typesafe/jev-1.13 via OpenRouter) for bounded "
+            "decisions inside a coding workflow: routing, triage, gating, grading, "
+            "ranking, reducing large data. Emits no text — only typed decisions."
+        ),
+        epilog="Start with 'jevskill patterns' then 'jevskill plan \"<your problem>\"'.",
+    )
+    parser.add_argument("--version", action="version", version=f"jevskill {__version__}")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    def add_state_flags(p: argparse.ArgumentParser) -> None:
+        p.add_argument("--state", help="state inline (text; JSON strings are fine)")
+        p.add_argument("--state-file", help="path to the state (.json is parsed as JSON)")
+        p.add_argument("--max-state-tokens", type=int, default=8000,
+                       help="refuse (with advice) if the state exceeds this (default 8000)")
+        p.add_argument("--json", action="store_true", help="machine-readable output")
+
+    # doctor
+    p = sub.add_parser("doctor", help="check key, connectivity, latency and cost")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_doctor)
+
+    # ask
+    p = sub.add_parser("ask", help="ask one decision (state + questions)")
+    add_state_flags(p)
+    p.add_argument("--questions", help="full questions JSON: {name: {type, instructions, criteria}}")
+    p.add_argument("--question-type", choices=["noul", "choice", "score"],
+                   help="build a single question from flags instead of --questions")
+    p.add_argument("--name", help="question name for single-question mode")
+    p.add_argument("--instructions", help="question instructions")
+    p.add_argument("--true-text", help="noul: what counts as true")
+    p.add_argument("--false-text", help="noul: what counts as false")
+    p.add_argument("--options", nargs="+", help="choice: option keys")
+    p.add_argument("--levels", nargs="+", help="score: ordered levels, lowest first")
+    p.add_argument("--pattern", help="pattern label for the ledger (see 'jevskill patterns')")
+    p.add_argument("--intent", help="free-text label for the ledger")
+    p.add_argument("--session-id", help="group related decisions in the ledger")
+    p.add_argument("--warm", action="store_true", default=True, help="pre-open the connection (default)")
+    p.add_argument("--force", action="store_true", help="send even if over the state budget")
+    p.add_argument("--no-ledger", action="store_true", help="do not write a ledger row")
+    p.add_argument("--ledger-root", help="directory holding .jevskill/ledger.jsonl")
+    p.set_defaults(func=cmd_ask)
+
+    # plan
+    p = sub.add_parser("plan", help="free go/no-go check: should Jev be used, which pattern")
+    p.add_argument("problem", help="plain-language description of the task")
+    p.add_argument("--state", help="optional data to size")
+    p.add_argument("--state-file", help="optional data file to size")
+    p.add_argument("--questions", type=int, default=3, help="assumed question count for the estimate")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_plan)
+
+    # patterns
+    p = sub.add_parser("patterns", help="show the usage palette for coding workflows")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_patterns)
+
+    # stats
+    p = sub.add_parser("stats", help="report measured effectiveness from the ledger")
+    p.add_argument("--ledger", help="specific ledger file")
+    p.add_argument("--global-only", action="store_true", help="use ~/.jevskill/ledger.jsonl only")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_stats)
+
+    # outcome
+    p = sub.add_parser("outcome", help="pair a decision with what actually happened")
+    p.add_argument("decision_id")
+    p.add_argument("result", choices=["correct", "incorrect", "escalated", "overridden", "no_action"])
+    p.add_argument("--detail", help="free-text note")
+    p.add_argument("--ledger-root")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_outcome)
+
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    try:
+        return int(args.func(args))
+    except (JevError, JevApiError, JevConfigError, JevQuestionError) as exc:
+        message = {"ok": False, "error": str(exc), "error_type": type(exc).__name__}
+        if getattr(exc, "hint", None):
+            message["hint"] = exc.hint
+        if getattr(args, "json", False):
+            print(json.dumps(message, ensure_ascii=False, indent=2), file=sys.stdout)
+        else:
+            print(f"error: {exc}", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:  # pragma: no cover
+        print("interrupted", file=sys.stderr)
+        return 130
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())
