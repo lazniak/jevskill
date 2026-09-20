@@ -35,6 +35,14 @@ jobs:
           python -m jevskill --version
           python -m jevskill patterns --json > /dev/null
           python -m jevskill plan "categorize which module owns this failure" > /dev/null
+          python -m jevskill web --help > /dev/null
+
+      - name: The console's assets are installed, not just present in the tree
+        # `pip install -e .` is a checkout, so a missing package-data entry is
+        # invisible locally and only shows up as a 404 from a real wheel. Read
+        # them the way the server does instead of trusting the file system.
+        run: |
+          python -c "import importlib.resources as r, jevskill.web; names = sorted(p.name for p in r.files('jevskill.web').joinpath('static').iterdir()); print(names); assert names == ['app.css', 'app.js', 'index.html'], names"
 
       - name: Bundled skill scripts work without the package
         # The skill must be usable with nothing installed. Run its scripts

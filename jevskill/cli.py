@@ -914,6 +914,31 @@ def cmd_outcome(args: argparse.Namespace) -> int:
     return 0
 
 
+#: The console's default port, repeated here so the parser can print it in
+#: ``--help`` without importing :mod:`jevskill.web.server` — which pulls in
+#: ``http.server`` and would add that import to *every* ``jevskill ask``. The
+#: duplication is pinned by a test rather than trusted:
+#: ``tests/test_web.py::TestCli::test_the_default_port_matches_the_server``.
+WEB_DEFAULT_PORT = 8765
+
+
+def cmd_web(args: argparse.Namespace) -> int:
+    """Serve the local console until Ctrl+C.
+
+    The import is local on purpose: `http.server` and `webbrowser` are not
+    cheap, and no other command needs them. A decision path that got 15 ms
+    slower so that an unrelated subcommand could be listed is exactly the kind
+    of cost this project measures rather than accepts.
+    """
+    from .web.server import serve
+
+    return serve(
+        port=args.port,
+        open_browser=not args.no_open,
+        ledger_root=args.ledger_dir,
+    )
+
+
 # --------------------------------------------------------------------------- #
 # Parser
 # --------------------------------------------------------------------------- #
@@ -1090,6 +1115,31 @@ def build_parser() -> argparse.ArgumentParser:
                    help="how many 'unproven' groups to print (default 5; use --json for all)")
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_advice)
+
+    # web
+    p = sub.add_parser(
+        "web",
+        help="open the local web console (127.0.0.1 only, no authentication)",
+        description=(
+            "Serve a single-user console for writing question bundles and reading "
+            "the distributions back. Decisions made here are written to the same "
+            "ledger as 'jevskill ask' (tagged which=web), so 'jevskill stats' sees "
+            "them. Ctrl+C stops it."
+        ),
+        epilog=(
+            "There is deliberately no --host flag. The console has no "
+            "authentication and spends a live API key, so it is served on "
+            "127.0.0.1 only; binding it to a routable address would publish an "
+            "unauthenticated spend endpoint on your network. If you need it from "
+            "another machine, forward the port over SSH."
+        ),
+    )
+    p.add_argument("--port", type=int, default=WEB_DEFAULT_PORT,
+                   help=f"port on 127.0.0.1 (default {WEB_DEFAULT_PORT}; 0 picks a free one)")
+    p.add_argument("--no-open", action="store_true",
+                   help="do not open the default browser (the URL is still printed)")
+    p.add_argument("--ledger-dir", help="directory holding .jevskill/ledger.jsonl")
+    p.set_defaults(func=cmd_web)
 
     # outcome
     p = sub.add_parser("outcome", help="pair a decision with what actually happened")

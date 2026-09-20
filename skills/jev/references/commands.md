@@ -16,7 +16,34 @@ jevskill batch items.jsonl --text-key line --question-type choice --name owner -
 jevskill outcome <decision_id> correct|incorrect|escalated|overridden|no_action
 jevskill stats                 # measured latency, cost, savings, accuracy per pattern
 jevskill advice                # what to do about it: KEEP / STOP / ESCALATE / UNPROVEN
+jevskill web                   # the local console on http://127.0.0.1:8765
 ```
+
+### `jevskill web` — the local console
+
+A browser page for writing a question bundle by hand and reading the distribution
+back: state with a live token estimate, question cards for the three primitives,
+the patterns as templates, and answers drawn as bars with confidence, margin and a
+`needs review` badge. Decisions land in the **same ledger** as `ask`, tagged
+`which=web`, so `jevskill stats` counts them.
+
+| Flag | Default | Effect |
+|---|---|---|
+| `--port N` | `8765` | port on 127.0.0.1; `0` picks a free one |
+| `--no-open` | off | do not open the browser (the URL is still printed) |
+| `--ledger-dir DIR` | — | directory holding `.jevskill/ledger.jsonl` |
+
+**There is no `--host` flag, deliberately.** The console has no authentication and
+spends a live API key, so it binds `127.0.0.1` only and `make_server` raises on any
+other address. Forward the port over SSH if you need it from another machine. With
+no key the page loads, names the variable to set, and disables Run — it never
+simulates an answer.
+
+The JSON API behind it is the same surface, for scripting: `GET /api/doctor`
+(never key material — variable name, source and an 8-hex fingerprint),
+`POST /api/estimate`, `POST /api/decide`, `POST /api/plan`, `GET /api/templates`,
+`GET /api/history?limit=20`, `GET /healthz`. Every failure is
+`{"error", "hint", "status"}`, with the `hint` a provider error carries.
 
 ## The zero-install scripts (`skills/jev/scripts/`)
 
