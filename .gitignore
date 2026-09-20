@@ -33,3 +33,7 @@ Thumbs.db
 # Agent worktrees created by the Claude Code Agent tool (isolation: "worktree").
 # They are git worktrees of this repo, never source.
 .claude/worktrees/
+
+# Synthetic output of `python bench/cu_run.py --dry-run`. A live run is written with
+# --out bench/cu_task_results.json and committed on purpose, like results.json.
+bench/cu_runs.json
