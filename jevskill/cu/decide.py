@@ -47,8 +47,17 @@ from .types import UIElement, as_elements
 #: The nine operations, with contrastive ``what``/``not_for`` criteria. Eight of
 #: them are ``jev-ultrafast``'s set; ``key`` is the ninth. Splitting ``key`` into
 #: press_enter/press_escape is deliberately *not* done — which key follows from
-#: the focused role, the dialog and ``last_action``, and making a model choose
-#: between near-synonyms is the "indirection" failure mode (prompting.md §0).
+#: the focused role, the dialog and ``last_action``
+#: (:func:`jevskill.cu.act.chord_for` is that derivation), and making a model
+#: choose between near-synonyms is the "indirection" failure mode
+#: (prompting.md §0).
+#:
+#: **There is no ``none`` option, and that is not an oversight.** ``target`` has
+#: one because "no listed control helps" is a real answer about a *list*;
+#: ``op``'s equivalent answer is about the *screen*, and it is ``blocked`` —
+#: "this screen needs something no other option expresses". Adding a second
+#: escape hatch would split the escalation counter act.md §7 calls the metric
+#: that decides whether a loop is worth running.
 OPS: Dict[str, Dict[str, str]] = {
     "click": {"what": "Activate `target` — press a button, tick a checkbox, open a menu, follow a link.",
               "not_for": "Typing text, choosing from an already-open list, or moving the viewport."},
@@ -77,9 +86,18 @@ NO_TARGET_OPS = frozenset({"scroll_up", "scroll_down", "key", "wait", "done", "b
 #: Ops that end or defer the step instead of driving a control.
 TERMINAL_OPS = frozenset({"done", "blocked"})
 
-#: Role/op legality (act.md §4). Role *or* pattern: a WinUI "button" typed as
-#: ``custom`` that advertises ``invoke`` is still clickable, and a ``document``
-#: that advertises ``value`` can still be typed into.
+#: Role/op legality (act.md §4) — **the one table**. act.md §1's example, §4's
+#: rule and §8's listing all quote these two constants rather than restating
+#: them, and ``tests/test_cu_decide.py`` regenerates the published table from
+#: here and fails when the document says something else. Three hand-written
+#: copies is how act.md ended up allowing ``type`` only into
+#: ``textbox``/``combobox`` (§4) — a role :data:`jevskill.cu.types.CONTROL_TYPES`
+#: never emits, so the rule as written forbade typing into anything at all —
+#: while §8 allowed ``document`` and this table also allows ``spinner``.
+#:
+#: Role *or* pattern: a WinUI "button" typed as ``custom`` that advertises
+#: ``invoke`` is still clickable, and a ``document`` that advertises ``value``
+#: can still be typed into.
 ALLOWED_ROLES: Dict[str, frozenset] = {
     "click": frozenset({"button", "checkbox", "hyperlink", "menuitem", "radiobutton",
                         "splitbutton", "tab", "tabitem", "listitem", "treeitem",
@@ -275,6 +293,13 @@ def destructive_ids(candidates: Sequence[Any], *, risky_ids: Sequence[str] = (),
     in candidate order, until the cap. A screen with more command controls than
     the cap gets the ones nearest focus and inside the active dialog, because
     that is the order :func:`jevskill.cu.reduce.prioritise` already put them in.
+
+    **The truncation is silent here, and must not stay silent downstream.** On
+    ``synthetic_500:commands`` the chosen target ``e183`` sat past the cap, so
+    its Noul was never asked — and a never-asked question used to read back as
+    0.0, the same number a measured "safe" produces.
+    :attr:`Decision.asked_destructive` records exactly this list for that
+    reason, and :func:`validate` gates a command control missing from it.
     """
     els = as_elements(candidates)
     present = {el.id for el in els}
@@ -415,6 +440,14 @@ class Decision:
     needs_text: float = 0.0
     is_destructive: float = 0.0
     per_element_destructive: Dict[str, float] = field(default_factory=dict)
+    #: The ids a ``destructive_<id>`` Noul was actually **asked** about, or
+    #: ``None`` when the question was not part of this decision at all — a
+    #: macro replay, a speculation, a cascade that stopped at stage 1. The
+    #: distinction is the whole point: ``frozenset()`` means "asked about
+    #: nothing on a screen that had the questions available", ``None`` means
+    #: "this path never carries them and has its own guard" (the name list for
+    #: a macro, ``REFUSED_OPS`` plus the name list for a speculation).
+    asked_destructive: Optional[frozenset] = None
     tokens_in: int = 0
     cost_usd: float = 0.0
     timing: Dict[str, Any] = field(default_factory=dict)
@@ -441,15 +474,34 @@ class Decision:
     raw: Any = None
     note: str = ""
 
-    def destructive_for(self, element_id: Optional[str]) -> float:
-        """The per-element Noul for one id, or 0.0 when it was not asked.
+    def destructive_for(self, element_id: Optional[str]) -> Optional[float]:
+        """The per-element Noul for one id, or ``None`` when it was not asked.
 
-        0.0 is "not asked", not "safe": the deterministic name list in
-        :mod:`jevskill.cu.act` is the gate, and this Noul only adds to it.
+        ``None``, never 0.0. It used to return 0.0 for an id nobody asked
+        about, which is byte-for-byte what a measured "this control is safe"
+        returns — and :data:`DESTRUCTIVE_QUESTION_CAP` guarantees the case
+        exists: on ``synthetic_500:commands`` the chosen ``e183`` was past the
+        cap of 12 and read back as 0.0. The caller must decide what an absent
+        measurement means; :func:`validate` decides it means "gate".
         """
         if not element_id:
-            return 0.0
-        return float(self.per_element_destructive.get(element_id, 0.0))
+            return None
+        if element_id in self.per_element_destructive:
+            return float(self.per_element_destructive[element_id])
+        return None
+
+    def asked_about(self, element_id: Optional[str]) -> bool:
+        """Did this decision carry a ``destructive_<id>`` question for ``id``?
+
+        ``False`` both when the bundle asked about other ids and not this one,
+        and when it carried none at all — :attr:`asked_destructive` is what
+        separates those two, and only :func:`validate` needs the difference.
+        """
+        if not element_id:
+            return False
+        if element_id in self.per_element_destructive:
+            return True
+        return bool(self.asked_destructive and element_id in self.asked_destructive)
 
 
 def from_decisions(result: Any, *, source: str = "jev") -> Decision:
@@ -477,6 +529,11 @@ def from_decisions(result: Any, *, source: str = "jev") -> Decision:
         needs_text=float(result.noul("needs_text") or 0.0),
         is_destructive=float(result.noul("is_destructive") or 0.0),
         per_element_destructive=per_element,
+        # An answer exists for every question that was asked, so the answer
+        # names *are* the asked set — and an empty one here still means "this
+        # call carried the destructive questions", which is what separates it
+        # from a macro replay's ``None``.
+        asked_destructive=frozenset(per_element),
         tokens_in=int(result.input_tokens), cost_usd=float(result.cost_usd),
         timing=dict(result.timing_ms or {}), target_confidence=target_conf,
         op_confidence=op_conf, op_probs=result.probs("op"), source=source,
@@ -697,6 +754,12 @@ class Verdict:
     bigger"; ``stop`` means the run should end for a reason that is not a
     failure (``done``). ``requires_confirm`` means a human has to say yes
     **whatever the confidence was** — see :func:`validate`.
+
+    There is no ``log_only``. It carried "act above 0.85 and log it", which is
+    the policy this module's docstring and act.md §3 explicitly reject —
+    confidence decides whether the model's opinion is read, never whether the
+    human is asked — and nothing ever read the field. A flag encoding a
+    rejected policy is a trap for the next reader, not documentation of one.
     """
 
     ok: bool = False
@@ -710,7 +773,6 @@ class Verdict:
     escalate: bool = False
     stop: bool = False
     needs_text: bool = False
-    log_only: bool = False
 
     def __bool__(self) -> bool:
         return self.ok
@@ -748,15 +810,20 @@ def validate(decision: Decision, candidates: Sequence[Any], *,
     is a deliberate resolution of a contradiction in act.md — §3's table said
     "act, and log it" above 0.85 while §4 and the §8 loop confirmed
     unconditionally — and the measurement is why it resolves this way: the
-    per-element Noul returned 0.78 and 0.82 for a button literally named
-    "Delete all documents" (§9 and the 2026-09-20 review run), so no confidence
-    band earns the right to skip the human.
+    per-element Noul returned 0.79 and 0.76 for a button literally named
+    "Delete all documents" (§9, ``bench/act_validate_out.json``), so no
+    confidence band earns the right to skip the human.
+
+    **A command control with no measurement gates too.** The bundle caps the
+    per-element Nouls, so the chosen target can be one the question never
+    reached; treating that silence as 0.0 made an unasked control
+    indistinguishable from a measured-safe one. See
+    :meth:`Decision.destructive_for`.
     """
     els = as_elements(candidates)
     by_id = {el.id: el for el in els}
     floor = float(thresholds.get("floor", THRESHOLDS["floor"]))
     margin_floor = float(thresholds.get("margin", THRESHOLDS["margin"]))
-    auto = float(thresholds.get("auto", THRESHOLDS["auto"]))
     noul_gate = float(thresholds.get("destructive_noul", THRESHOLDS["destructive_noul"]))
 
     op, target = decision.op, decision.target
@@ -811,11 +878,31 @@ def validate(decision: Decision, candidates: Sequence[Any], *,
         # evidence before it believes this.
         return Verdict(ok=False, reason="done_proposed", stop=True, **base)
 
+    measured = decision.destructive_for(target)
+    # "Not asked" is not "safe". The bundle caps the per-element Nouls at
+    # DESTRUCTIVE_QUESTION_CAP, so on a screen with more command controls than
+    # that the chosen one can have no measurement at all — and a command
+    # control is precisely the role that can do something irreversible. It
+    # gates, and the loop's `confirm` decides.
+    #
+    # The condition is "asked about others but not this one", not "unasked":
+    # a decision that carries no per-element evidence *at all* came from a path
+    # that never has it (a macro replay, a speculation, a hand-built payload),
+    # each with its own guard, and `build_bundle` cannot produce that case for
+    # a command control anyway — under the default `commands` scope every
+    # command control up to the cap gets a question, so an empty set means the
+    # screen had none.
+    unmeasured_command = (el is not None
+                          and bool(decision.asked_destructive)
+                          and not decision.asked_about(target)
+                          and el.role in COMMAND_ROLES)
     risky = (target in set(risky_ids)
-             or decision.destructive_for(target) >= noul_gate)
+             or (measured is not None and measured >= noul_gate)
+             or unmeasured_command)
+    detail = "destructive question never asked for %s" % target if (
+        unmeasured_command and target not in set(risky_ids)) else ""
     return Verdict(ok=True, reason="ok", requires_confirm=bool(risky),
-                   needs_text=bool(op == "type"),
-                   log_only=bool(risky and decision.confidence >= auto), **base)
+                   needs_text=bool(op == "type"), detail=detail, **base)
 
 
 def _nameless_rivals(decision: Decision, by_id: Mapping[str, UIElement]) -> int:

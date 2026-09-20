@@ -372,11 +372,60 @@ class TestValidate:
 
     def test_the_name_list_gates_regardless_of_confidence(self):
         # 0.99 on "Delete all documents" still asks the human: the per-element
-        # Noul measured 0.76-0.82 for exactly this button, so no band earns the
-        # right to skip the gate.
+        # Noul measured 0.76-0.79 for exactly this button
+        # (``bench/act_validate_out.json``), so no band earns the right to skip
+        # the gate.
         sure = decisions(target="e2", probs={"e2": 0.99, "none": 0.01})
         verdict = validate(from_decisions(sure), screen(), risky_ids=["e2"])
-        assert verdict.ok and verdict.requires_confirm and verdict.log_only
+        assert verdict.ok and verdict.requires_confirm
+
+    def test_there_is_no_log_only_flag_to_act_above_0_85_on(self):
+        """The rejected policy must not survive as a field nobody reads.
+
+        ``Verdict.log_only`` encoded "act above 0.85 and log it", which is what
+        act.md §3 and this module's docstring reject; nothing ever read it, so
+        the only thing it could do was mislead the next person who did.
+        """
+        from dataclasses import fields
+
+        from jevskill.cu.decide import Verdict
+
+        assert "log_only" not in {f.name for f in fields(Verdict)}
+
+    def test_a_command_control_the_question_never_reached_gates(self):
+        """act.md §4's gate, applied to silence rather than to a number.
+
+        The bundle caps the per-element Nouls; past the cap the chosen control
+        has no measurement, and 0.0 used to be indistinguishable from a
+        measured "safe".
+        """
+        answer = decisions(target="e1")
+        answer.answers["destructive_e2"] = Answer(
+            "noul", "destructive_e2", {"type": "noul", "noul": 0.10})
+        verdict = validate(from_decisions(answer), screen(), risky_ids=[])
+        assert verdict.ok and verdict.requires_confirm
+        assert "never asked" in verdict.detail
+
+    def test_a_measured_safe_command_control_does_not_gate(self):
+        """The counterpart: asked and answered low is evidence, and it passes."""
+        answer = decisions(target="e1")
+        answer.answers["destructive_e1"] = Answer(
+            "noul", "destructive_e1", {"type": "noul", "noul": 0.02})
+        verdict = validate(from_decisions(answer), screen(), risky_ids=[])
+        assert verdict.ok and not verdict.requires_confirm
+
+    def test_a_macro_replay_is_left_to_the_name_list(self):
+        """A path that never carries the Nouls must not gate on their absence.
+
+        Otherwise every macro replay of a button — the whole point of the cache
+        — would stop for a human, and the same for a speculation.
+        """
+        replay = Decision(target="e1", op="click", source="macro")
+        verdict = validate(replay, screen(), require_confidence=False)
+        assert verdict.ok and not verdict.requires_confirm
+        gated = validate(Decision(target="e2", op="click", source="macro"),
+                         screen(), require_confidence=False, risky_ids=["e2"])
+        assert gated.requires_confirm
 
     def test_a_high_per_element_noul_gates_a_name_the_list_missed(self):
         answer = decisions(target="e1")
@@ -438,10 +487,30 @@ class TestDecide:
     def test_per_element_destructive_answers_are_collected(self):
         answer = decisions()
         answer.answers["destructive_e2"] = Answer("noul", "destructive_e2",
-                                                  {"type": "noul", "noul": 0.78})
+                                                  {"type": "noul", "noul": 0.79})
         decision = from_decisions(answer)
-        assert decision.destructive_for("e2") == pytest.approx(0.78)
-        assert decision.destructive_for("e1") == 0.0   # not asked, not "safe"
+        assert decision.destructive_for("e2") == pytest.approx(0.79)
+
+    def test_an_unasked_id_reads_none_and_never_zero(self):
+        """0.0 is what a measured "safe" looks like; silence must not share it.
+
+        ``DESTRUCTIVE_QUESTION_CAP`` guarantees the case: a screen with more
+        command controls than the cap can have its chosen target fall outside
+        the questions entirely.
+        """
+        answer = decisions()
+        answer.answers["destructive_e2"] = Answer("noul", "destructive_e2",
+                                                  {"type": "noul", "noul": 0.79})
+        decision = from_decisions(answer)
+        assert decision.destructive_for("e1") is None
+        assert decision.asked_about("e1") is False
+        assert decision.asked_about("e2") is True
+        assert decision.asked_destructive == frozenset({"e2"})
+
+    def test_a_decision_that_never_carried_the_question_says_so(self):
+        """``None`` (macro, speculation) is not ``frozenset()`` (asked nothing)."""
+        assert Decision(target="e1", op="click").asked_destructive is None
+        assert from_decisions(decisions()).asked_destructive == frozenset()
 
 
 class TestCascade:
