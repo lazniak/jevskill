@@ -291,8 +291,9 @@ HOT_HEDGE_DEFAULT = False
 
 #: The warm-up decision: the smallest well-formed call that exercises the whole
 #: path (TLS, H2, auth, the decisions endpoint, the parser) rather than only the
-#: socket. Costs one decision — ~300 input tokens, ~$0.000013 — which is the
-#: price of not paying the cold penalty on the first *real* step.
+#: socket. Costs one decision — measured at 310 input tokens and $0.000013 on
+#: both providers (``warm_cost_usd_median`` in ``bench/cu_results.json``) —
+#: which is the price of not paying the cold penalty on the first *real* step.
 WARM_STATE = "warm-up ping"
 WARM_QUESTIONS: dict[str, dict] = {
     "ready": {
@@ -635,8 +636,9 @@ class JevClient(_DecisionCore):
 
         ``mode="head"`` sends ``HEAD /v1/models``: free, but it only proves the
         socket. ``mode="decision"`` sends one minimal real decision
-        (:data:`WARM_STATE` / :data:`WARM_QUESTIONS`): ~300 input tokens,
-        ~$0.000013, and it exercises the path the next call will actually take.
+        (:data:`WARM_STATE` / :data:`WARM_QUESTIONS`): 310 input tokens,
+        $0.000013 measured, and it exercises the path the next call will
+        actually take.
 
         The default comes from measurement, not from taste — see
         :data:`jevskill.config.DEFAULT_WARM_MODE`,

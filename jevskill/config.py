@@ -144,16 +144,20 @@ DEFAULT_HEDGE_AFTER_MS = 400.0
 #: it is a ``ValueError`` at construction rather than a surprise on the bill.
 MIN_HEDGE_AFTER_MS = 50.0
 #: How ``warm()`` opens the connection. ``"head"`` sends ``HEAD /v1/models``;
-#: ``"decision"`` sends one minimal real decision (~300 tokens, ~$0.000013).
+#: ``"decision"`` sends one minimal real decision (310 tokens, $0.000013 —
+#: measured, ``warm_cost_usd_median`` in ``bench/cu_results.json``).
 #:
 #: The default is measured, not assumed — ``python bench/cu_bench.py
-#: --warm-bench``, 5 fresh clients per mode, 2026-09-20, recorded in
+#: --warm-bench``, 5 fresh clients per mode, re-run 2026-09-20 and recorded in
 #: ``bench/cu_results.json``:
 #:
-#:   vendor:     no warm-up -> first decision 682 ms; HEAD (594 ms) -> 284 ms;
-#:               decision (658 ms) -> 260 ms; steady state ~270-300 ms
-#:   OpenRouter: no warm-up -> first decision 375 ms; HEAD (89 ms) -> 305 ms;
-#:               decision (353 ms) -> 307 ms; steady state ~315-340 ms
+#:   vendor:     no warm-up -> first decision 693 ms; HEAD (583 ms) -> 293 ms;
+#:               decision (693 ms) -> 266 ms; steady state ~285-310 ms
+#:   OpenRouter: no warm-up -> first decision 342 ms; HEAD (136 ms) -> 314 ms;
+#:               decision (358 ms) -> 304 ms; steady state ~300-315 ms
+#:
+#: The warm-up decision's own price is recorded per row as well, and is 310
+#: input tokens / $0.000013 on both providers.
 #:
 #: HEAD removes the cold penalty on both providers, costs nothing, and finishes
 #: sooner than a warm-up decision does — so it is the default despite the

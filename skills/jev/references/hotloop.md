@@ -10,7 +10,7 @@ screen it was asked about has moved on.
 from jevskill.client import JevClient
 
 with JevClient(hot=True) as jev:          # 1.5 s read, 2 s connect, 0 retries
-    jev.warm()                            # HEAD /v1/models, ~90 ms (see below)
+    jev.warm()                            # HEAD /v1/models (see below)
     for step in loop:
         result = jev.decide(ui_tree, questions)
 ```
@@ -19,9 +19,17 @@ with JevClient(hot=True) as jev:          # 1.5 s read, 2 s connect, 0 retries
 answers *where do I send this, with which key*; it is resolved once from the
 environment and may be shared by several clients and by the CLI. Hot is not a
 fact about the endpoint, it is the call pattern of one client — so it lives where
-the client is built, and the caller's config object is never mutated. Hot mode
-also only retunes fields that still hold their dataclass default: pass
-`Config(timeout_read_s=8)` and you keep 8 seconds.
+the client is built, and the caller's config object is never mutated.
+
+Hot mode retunes **silence, not a number you stated**. `Config(timeout_read_s=8)`
+keeps 8 seconds — and so does `Config(timeout_read_s=60.0)`, the documented
+default said out loud. That distinction is real rather than cosmetic: the three
+retuned fields arrive as `None` and are resolved in `Config.__post_init__`, which
+records what it resolved (`config.is_defaulted("retries")`). An earlier version
+compared each field to its dataclass default, so stating the documented number
+was indistinguishable from saying nothing and was silently retuned to 1.5 s / 0
+retries. `dataclasses.replace` produces a config that reports nothing as
+defaulted, so a copy is never re-tuned behind whoever made it.
 
 | knob | default | hot | why |
 |---|---|---|---|
@@ -29,7 +37,7 @@ also only retunes fields that still hold their dataclass default: pass
 | `timeout_connect_s` | 5 | **2.0** | Only paid on the first call of a pool. |
 | `retries` | 2 | **0** | A retry costs a full round trip *after* the failure is known — past a 1.5 s ceiling the step is gone either way. |
 | `hedge` | off | **off** | Measured: it loses. See below. |
-| `hedge_after_ms` | 400 | 400 | Above the p95 of a healthy small call, so a duplicate fires on the tail, not the body. |
+| `hedge_after_ms` | 400 | 400 | Above the p95 of a healthy small call, so a duplicate fires on the tail, not the body. Below `MIN_HEDGE_AFTER_MS` (50) it is a `ValueError`: at 0 the twin goes out before the primary can answer, so *every* call is sent twice. |
 | `warm_mode` | `head` | `head` | Measured: free and sufficient on both providers. |
 
 `AsyncJevClient` is the same thing on `httpx.AsyncClient` — same request bytes,
@@ -39,25 +47,40 @@ says so (`JevConfigError`) instead of faking a loop over threads.
 ## Warm-up: measured, and the research note was wrong
 
 `python bench/cu_bench.py --provider <p> --warm-bench --warm-repeats 5`, a fresh
-client per repeat (a warm-up can only be measured once per pool), medians of 5:
+client per repeat (a warm-up can only be measured once per pool), medians of 5,
+re-run 2026-09-20 with the warm-up's own tokens and cost recorded per row:
 
 | provider | warm-up | warm-up costs | first decision | next decision |
 |---|---|---:|---:|---:|
-| typesafe | none | – | **682 ms** | 300 ms |
-| typesafe | `head` | 594 ms, $0 | **284 ms** | 282 ms |
-| typesafe | `decision` | 658 ms, $0.000013 | **260 ms** | 269 ms |
-| openrouter | none | – | **375 ms** | 320 ms |
-| openrouter | `head` | 89 ms, $0 | **305 ms** | 339 ms |
-| openrouter | `decision` | 353 ms, $0.000013 | **307 ms** | 315 ms |
+| typesafe | none | – | **693 ms** | 304 ms |
+| typesafe | `head` | 583 ms, $0 | **293 ms** | 285 ms |
+| typesafe | `decision` | 693 ms, 310 tok, $0.000013 | **266 ms** | 310 ms |
+| openrouter | none | – | **342 ms** | 301 ms |
+| openrouter | `head` | 136 ms, $0 | **314 ms** | 315 ms |
+| openrouter | `decision` | 358 ms, 310 tok, $0.000013 | **304 ms** | 299 ms |
 
-The cold penalty is real and provider-specific: 399 ms on the vendor, 70 ms on
-OpenRouter. **`HEAD` removes it on both**, costs nothing, and finishes sooner than
-a warm-up decision does — so it is the default, against the expectation in
-`docs/research-2026-09-20-jev-cu.md` §3 that the vendor's slow `/v1/models` made
-`HEAD` useless. It warms the pool perfectly well; it is only slow itself.
+The warm-up decision's price is now a recorded number rather than an estimate:
+`warm_tokens_in_median` and `warm_cost_usd_median` in `bench/cu_results.json`
+say 310 input tokens and $0.000013 on both providers, which is 310 / 1M x
+$0.042 to the cent-millionth. `head` and `none` record a true zero.
+
+The cold penalty is real and provider-specific: **400 ms on the vendor**
+(693 → 293 with `HEAD`), 28 ms on OpenRouter (342 → 314). The vendor's figure is
+stable across both runs of this bench (399 ms, then 400); OpenRouter's is small
+and moves — it was 70 ms in the first run — which is what a one-hop-closer
+aggregator with a warm edge looks like. **`HEAD` removes it on both**, costs
+nothing, and finishes sooner than a warm-up decision does (`warm+first` 876 ms
+vs 960 on the vendor, 450 vs 662 on OpenRouter) — so it is the default, against
+the expectation in `docs/research-2026-09-20-jev-cu.md` §3 that the vendor's slow
+`/v1/models` made `HEAD` useless. It warms the pool perfectly well; it is only
+slow itself.
 
 `warm(mode="decision")` is kept because it exercises what `HEAD` cannot — key,
 decisions endpoint, parser — so a 401 surfaces at warm-up, not on the first step.
+It is **one attempt** whatever `retries` says: a warm-up that inherited two
+retries spent 751 ms failing against a dead endpoint before returning the shrug
+its contract promises. The decision it made is kept on
+`client.last_warm_decision`, which is where the cost above comes from.
 
 ## Hedging: implemented, measured, and off — it never won
 
@@ -96,6 +119,25 @@ Kept, off: a stuck leg is a real failure mode this sample never produced, and a
 hedge over a *separate* connection or a second provider is an experiment nobody
 has run yet. `JevClient(hot=True, hedge=True)` turns it on; the loser is costed.
 
+**Three bounds on what "on" can cost you**, each of which was unbounded and is
+now not:
+
+* *Hedging does not multiply with retries.* Only attempt 0 hedges; retries go
+  single-leg. `retries=2, hedge=True` used to put **six** requests on the wire
+  for one decision, and now puts at most `retries + 2`.
+* *Abandoned legs cannot starve the pool.* A sync loser is abandoned, not
+  cancelled, so it holds one of the pool's 8 connections until it answers or
+  times out. At most `MAX_ABANDONED_HEDGE_LEGS` (2) may be outstanding; past
+  that the call declines to hedge and records
+  `timing_ms["note"] = "hedge_skipped_saturated"`. The pool timeout is also
+  stated explicitly (`max(read, connect) + 1`) instead of silently inheriting
+  the read timeout, which made a queued request fail before the request ahead of
+  it had finished. The async client needs neither: cancellation really does
+  return the connection.
+* *The estimate is marked in the ledger.* `Record` carries
+  `hedge_cost_usd_est` and `hedge_cost_source` beside `cost_usd`, so a row that
+  blends a billed figure with an estimated one says so.
+
 ## In-loop costs that are not the network
 
 `python bench/cu_bench.py --micro` (offline, free), 60-element UI tree, 6 727
@@ -114,6 +156,17 @@ open/write/close per decision costs more than the whole 0.5 ms `act` budget, so
 `jevskill.stats.Ledger` buffers in memory and a background thread flushes every
 64 rows or 1 s, and on `close()`/`atexit`. Append-only and ordered — 1 000 rows,
 no loss, original order (`tests/test_stats.py::TestBufferedLedger`).
+
+"No loss" now survives a *failed* write as well. The buffer used to be emptied
+before the write, so one `OSError` discarded the batch and the background
+thread's bare `except` said nothing: 5 accepted rows, 0 on disk, `pending == 0`.
+A failed batch goes back at the front of the buffer, `flush_errors` counts it,
+and `close()` raises rather than letting a loop end believing its rows are safe.
+Each batch is one `os.write` to an `O_APPEND` descriptor — 64 rows is ~22 KB,
+which an 8 KiB buffered writer splits into three or more writes that another
+process can append between. On POSIX that makes a batch uninterruptible; on
+Windows `O_APPEND` is seek-then-write, so the window narrows rather than closing.
+Nothing is `fsync`-ed either way.
 
 ## Latency vs state size, both providers
 
