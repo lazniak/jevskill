@@ -243,6 +243,7 @@ Load one file, not all of them.
 | The ledger, `stats`, `advice`, stage timings — is this skill paying for itself? | `references/measure.md` |
 | A hot loop: `hot=True`, hedged requests, warm-up | `references/hotloop.md` |
 | A GUI / computer-use step, end to end | `references/act.md` |
+| Speculation, self-consistency, beam over the cascade — measured, all three off | `references/speculate.md` |
 
 Official docs index: <https://docs.typesafe.ai/llms.txt> ·
 Model card: <https://openrouter.ai/typesafe/jev-1.13>
