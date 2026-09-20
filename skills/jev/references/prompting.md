@@ -5,7 +5,41 @@ no "you are an expert". What exists is a state, a question, and a set of criteri
 — and the way you shape those three decides whether the answer is signal or noise.
 
 This file collects the rules that measurably changed outcomes while building this
-skill, with the measurements attached.
+skill, with the measurements attached. It starts with §0, which is not ours: it is
+the vendor's own list of what this model version gets wrong. Most of the rules that
+follow are the counter-measures.
+
+---
+
+## 0. Known weaknesses of jev-1.13 — the vendor's own list
+
+TypeSafe publishes the failure modes of the model it sells, on
+[model-jaggedness/jev-1.13](https://docs.typesafe.ai/model-jaggedness/jev-1.13.md)
+(**last reviewed 2026-09-17**; fetched for this file 2026-09-20). Read it before
+trusting Jev with anything consequential — and re-read it when the model version
+moves, because the page is versioned with the model.
+
+The page's table names nine modes; **Math and Numbers** documents three distinct
+sub-cases, so they are listed separately here. The quotes are the vendor's; the
+"what to do" line is this skill's rule for it.
+
+| # | Failure mode | The vendor's words | What to do |
+|---|---|---|---|
+| 1 | **Literal reading** | "answers the question you wrote, not the one you meant" | Put the boundary case in `criteria`. When you find yourself explaining what you *really* meant, that sentence is the missing half of the instruction — §2. |
+| 2 | **Math and counting** | "Jev is not a calculator"; "does not count reliably" | Count in code. If you must use the model, ask one Noul per candidate and add the answers up yourself — §11. |
+| 3 | **Numeric representations** | "cannot reliably judge whether two values are near each other" | Convert in code and pass a number or a **named bucket**. Hex, RGB and byte offsets are worse than English names. |
+| 4 | **Math using Score** | "score levels are weak in numerical calibration" | Use a Score to cross a **threshold**, never to interpolate a magnitude between two levels. |
+| 5 | **Date and time comparison** | "reads dates as text, not as ordered quantities" | Extract the parts as a Choice over closed sets (12 months, 31 days); order, subtract and window in code. |
+| 6 | **Indirection** | "double negatives or complex indirection are answered less reliably" | One hop, one judgement, target named with a backtick path — §1. Never ask a negated question. |
+| 7 | **Large state full of irrelevant detail** | "Unrelated detail acts as a distractor" | Filter in code before the call; REDUCE what code cannot filter — §10 and `patterns.md` §3. |
+| 8 | **Adversarial content** | "does not treat it as hostile by default" | Treat `state` as untrusted: a log line, a UI label or an email can carry an injected instruction. A Jev answer is advice, never an authorisation — `patterns.md` §7. |
+| 9 | **Contradictory instructions and criteria** | "When the `instructions` and the `criteria` ask for different things" | Treat criteria as an extension of the instruction. Never map `true` to "no". Lint a shared bundle for drift between the two — §2. |
+| 10 | **Common-sense structural invariants** | "don't hold the model to arithmetic identities between separate questions" | `P(x) ≠ 1 − P(¬x)`: the vendor measured 0.72 and 0.47 for a question and its negation. Do not carry a Noul threshold over to a Choice, and do not derive one answer from another. |
+| 11 | **Generation** | "not trained to generate text" | Enumerate candidates with code, a regex or an LLM, and let Jev *pick* — `patterns.md` §9. Forcing generation by chaining choices "will be very slow". |
+
+The page's own summary of what to avoid is worth keeping in view: asking the model
+something code can compute exactly, hiding several judgements in one question,
+multi-hop ("System Two") tasks, and giving `state` more than the question needs.
 
 ---
 
@@ -108,10 +142,20 @@ number, and you can neither inspect nor tune them.
 
 Atomicity does **not** cost extra round trips — questions in one call run in
 parallel. It costs a few input tokens and buys inspectability, tunability and
-better accuracy. The independent evidence on this is unusually strong: a single
-Jev verdict did not beat a small chat model, while five atomic signals combined in
-a logistic regression reached 95.1% accuracy. Decomposition is where the accuracy
-comes from.
+better accuracy.
+
+The independent evidence for this is unusually strong, and it cuts both ways.
+[`anisselbd/jev-phishing-bench`](https://github.com/anisselbd/jev-phishing-bench)
+put 2,000 emails through both: Jev's single verdict scored **62.6%**, clearly worse
+than Claude Haiku 4.5's **81.3%** ("McNemar p < 0.0001"); five atomic signal Nouls
+from the *same call*, combined in a logistic regression, scored **95.1%** (AUROC
+0.988, ECE 0.027). Haiku asked those same five questions ties it at 93.2%, and a
+hand-written regex already reaches 91.8% on that dataset.
+
+So: decomposition is where the accuracy comes from — not the model. Decompose
+because one broad question hides several judgements, and use Jev for it because it
+is cheap and fast (the benchmark measured p50 239 ms and $0.038 per 1,000 emails
+against 687 ms and $0.462), never because a single Jev verdict out-judges an LLM.
 
 ---
 
@@ -236,7 +280,15 @@ elif risk >= 0.6:
 
 Explicit weights are auditable and tunable. If you have labels, replace the code
 with a small logistic regression over the same probabilities — that is precisely
-what the 95.1% result did.
+what the **95.1%** result in
+[`anisselbd/jev-phishing-bench`](https://github.com/anisselbd/jev-phishing-bench)
+did, against 62.6% for the single verdict question in the same call (95.0%
+[93.5, 96.2] when the weights are fitted on one half and scored on the other).
+
+Two caveats that come with that number. The weights are **fitted**, so hold out a
+split or you are reporting your own training accuracy. And measure a deterministic
+baseline first: on that dataset a two-feature regex reached 91.8%, so most of the
+distance was not the model's to win.
 
 ---
 
@@ -257,6 +309,45 @@ what the 95.1% result did.
 
 ---
 
+## 11. Comparisons, counting and change-detection are code jobs, not questions
+
+A question that asks the model to **compare two states, count things, or notice
+that something changed** is the most expensive kind of mistake in this document,
+because it does not fail loudly — it returns a plausible middling number.
+
+**Measured, 2026-09-20** (`bench/cu_bench.py`, which writes `bench/cu_results.json`;
+a computer-use step: an accessibility tree of N elements, a `goal`, and the
+`last_action` that had just taken effect — four questions in one call):
+
+| | N=12 | N=30 | N=60 |
+|---|---|---|---|
+| `stuck` (noul) — "did the previous action have no effect?", via OpenRouter | 0.42 | 0.48 | 0.56 |
+| `stuck` (noul) — the same call against the vendor endpoint | 0.47 | 0.51 | 0.60 |
+| `target` (choice) — "which element advances the goal?", same calls | **0.99** | **0.99** | **0.99** |
+
+The screen had plainly changed. `stuck` sat near a coin flip on every run and on
+both providers — so it is the *question*, not the route — while the judgement
+question in the very same call was decisive at 0.99. The model has no memory of the
+previous state, and the vendor says so: it "reads dates as text, not as ordered
+quantities" and "does not count reliably" (§0, modes 2 and 5).
+
+**The prescription:**
+
+* **Hash or diff the state in code.** "Did anything change?", "did the dialog
+  close?", "is this the same screen?" are a normalised hash comparison: 0 ms,
+  deterministic, free, and right every time.
+* **Count in code**, or ask one Noul per candidate and sum the answers yourself —
+  that is the vendor's own recommendation for counting.
+* **Compare in code**, then ask Jev only what remains a judgement: *given* that the
+  screen changed, did it change in a way that advances the goal?
+* **If a question's answer is derivable from two snapshots you already hold, you are
+  paying 300 ms for a coin flip.**
+
+The same rule is why REDUCE gates **blocks** rather than lines (`patterns.md` §3):
+a question that compares two lines cannot be answered by a unit that contains one.
+
+---
+
 ## Checklist before you ship a question bundle
 
 - [ ] Does every question name the exact value it is about, with a backtick path?
@@ -266,6 +357,7 @@ what the 95.1% result did.
 - [ ] Are the options atomic — one judgement each?
 - [ ] Are the option keys identifiers your code can branch on?
 - [ ] Are the questions in **one** call rather than a loop?
+- [ ] Is every comparison, count and date arithmetic done in **code** (§0, §11)?
 - [ ] Is the state under budget, and free of irrelevant context?
 - [ ] Is the confidence threshold measured on your own labelled data?
 - [ ] Are you iterating on the distribution instead of re-rolling?
