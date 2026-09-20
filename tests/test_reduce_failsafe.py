@@ -62,6 +62,7 @@ def run_reduce(jev_query, tmp_path, monkeypatch, responses):
     class Args:
         window = 20
         keep = 1
+        blocks = False  # mirror the real argparse namespace
         instructions = None
         state_file = None
         no_recovery = False
@@ -155,6 +156,7 @@ class TestUnjudgedItemsAreKept:
         class Args:
             window = 20
             keep = 1
+            blocks = False  # mirror the real argparse namespace
             instructions = None
             state_file = None
             no_recovery = True
@@ -166,4 +168,4 @@ class TestUnjudgedItemsAreKept:
             jev_query.reduce_state(list(ITEMS), Args(), "sk-or-v1-test",
                                    "openrouter", "typesafe/jev-1.13")
         err = capsys.readouterr().err
-        assert "nothing was written" in err and "chunk 1" in err
+        assert "nothing was written" in err and "window 1" in err

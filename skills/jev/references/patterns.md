@@ -154,6 +154,45 @@ the hot chunks" mostly keeps everything's neighbours.
 line when a miss is unacceptable; pre-filter when the corpus is homogeneous and
 the call budget matters.
 
+### When a line is the wrong unit: `--blocks`
+
+A line-level gate cannot answer a question that compares two lines. Measured, and
+published as a loss for several releases: asked to keep lines where `prod` differs
+from `default` in a feature-flag file, Jev **correctly** flagged `prod: true` at
+p=0.92 — and the arm still scored **0/3**, because
+
+* no single line can satisfy a comparison between two lines, and
+* the flag's *name*, which the test asks for, sits on the line **above**.
+
+`--blocks` gates a **header plus the scalars nested under it** instead. The pair
+lands in one unit, and the kept text still carries the header — so the answer
+survives the reduction. It took that workload from 0/3 to 3/3 with no change to the
+other five, and the same scaffolding is now what the benchmark's gate uses.
+
+```bash
+python scripts/jev_query.py --state-file flags.yaml --blocks --reduce --keep 8 \
+  --instructions 'Does `B{i}` drift from its default?'
+```
+
+The rules, which matter for getting it right:
+
+- **A block is a header (`key:`) plus following lines indented deeper that are not
+  themselves headers.** A nested header starts its own block, so a container like
+  `flags:` stays a one-line block instead of swallowing every flag under it.
+- **Windows are packed by block and never split one.** Slicing raw lines separates a
+  header from its values, which is unanswerable for a reason that has nothing to do
+  with the model.
+- **Flat text has no headers**, so every line stays its own block: a log or CSV
+  behaves exactly as before. Block mode is a generalisation, not a YAML special case.
+- **`--blocks` accepts a raw text file**, not only a JSON array, so you can gate a
+  YAML file directly.
+- The question names the unit as `` `B{i}` `` — the same rule as `` `L{i}` `` in flat
+  mode. Unnamed units return a flat, meaningless answer for everything.
+
+Not established: behaviour on **deep** nesting, and on formats where a "block" is not
+delimited by indentation (XML without pretty-printing, minified JSON). One workload
+proves the fix, not the generality.
+
 ### Always keep the rejected part retrievable
 
 Jev is not an oracle. Measured on 900 synthetic log lines with evenly scattered

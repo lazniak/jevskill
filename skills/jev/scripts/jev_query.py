@@ -103,6 +103,82 @@ REDACT_PATTERNS = (
 )
 EMAIL_PATTERN = ("email", r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+\.[A-Za-z0-9.-]{2,}\b")
 
+# --------------------------------------------------------------------------- #
+# Blocks: judge a structural unit instead of a line.
+#
+# Compiled copy of jevskill/blocks.py — same rule as REDACT_PATTERNS/PROVIDERS,
+# because the Skill must run with nothing installed. This exists because of a
+# measured loss: gating `yaml_drift` line by line scored 0/3 against a structural
+# filter's 3/3, since "prod differs from default" compares two lines and no single
+# line can match it. Grouping a header with its scalar properties makes it
+# answerable, and keeps the header (the answer) in the reduced output.
+# --------------------------------------------------------------------------- #
+
+
+def indent_of(line: str) -> int:
+    """Leading whitespace width; tabs and spaces each count as one character."""
+    return len(line) - len(line.lstrip())
+
+
+def is_header(line: str) -> bool:
+    """A line that introduces a mapping (`key:` with nothing after the colon)."""
+    return line.rstrip().endswith(":")
+
+
+def split_blocks(text) -> list:
+    """Split text into `(label, lines)` units, one per leaf mapping.
+
+    A header plus its scalar properties; a deeper header starts its own block, so a
+    container like `flags:` stays a one-line block instead of swallowing every flag.
+    Flat text has no headers, so every line stays its own block.
+    """
+    lines = text.splitlines() if isinstance(text, str) else list(text)
+    blocks: list = []
+    index, total = 0, len(lines)
+    while index < total:
+        if not lines[index].strip():
+            index += 1
+            continue
+        head = lines[index]
+        base = indent_of(head)
+        group = [head]
+        cursor = index + 1
+        if is_header(head):
+            while cursor < total:
+                current = lines[cursor]
+                if not current.strip():
+                    cursor += 1
+                    continue
+                if indent_of(current) <= base or is_header(current):
+                    break
+                group.append(current)
+                cursor += 1
+        label = head.strip()
+        if label.endswith(":"):
+            # Match jevskill/blocks.py: the label is the header without its colon.
+            label = label[:-1].rstrip()
+        blocks.append((label, group))
+        index = cursor
+    return blocks
+
+
+def pack_blocks(blocks: list, max_lines: int) -> list:
+    """Windows of blocks that never split one; an oversized block goes alone."""
+    if max_lines < 1:
+        raise SystemExit("error: --window must be at least 1")
+    windows: list = []
+    current: list = []
+    used = 0
+    for block in blocks:
+        if current and used + len(block[1]) > max_lines:
+            windows.append(current)
+            current, used = [], 0
+        current.append(block)
+        used += len(block[1])
+    if current:
+        windows.append(current)
+    return windows
+
 #: Review thresholds. Compiled copy of jevskill/review.py — see REDACT_PATTERNS
 #: for why this script carries its own copy. Both are *illustrative heuristics,
 #: not calibrated guarantees*: tune them on held-out data for your workload.
@@ -366,37 +442,83 @@ def render(result: dict) -> list[str]:
     return lines
 
 
-def reduce_state(data, args, key: str, provider: str, model: str) -> dict:
-    """REDUCE: gate each item, keep the hits, store the rest for retrieval."""
-    spec = PROVIDERS[provider]
+def _units_from(data, args) -> tuple[list, str]:
+    """Normalise the input into `[(text, ...)]` units and the state-key prefix.
+
+    Flat mode takes a JSON array (or a single-key object holding one) and treats each
+    element as one item. Block mode additionally accepts raw text — which is the
+    point: a YAML or log file can be gated directly, without pre-splitting it into a
+    JSON array by hand.
+    """
+    if args.blocks:
+        if isinstance(data, str):
+            text = data
+        elif isinstance(data, dict) and len(data) == 1:
+            inner = list(data.values())[0]
+            text = inner if isinstance(inner, str) else "\n".join(str(x) for x in inner)
+        elif isinstance(data, list):
+            text = "\n".join(str(x) for x in data)
+        else:
+            raise SystemExit("error: --blocks needs text, a list of lines, or a "
+                             "single-key object holding either")
+        units = split_blocks(text)
+        if not units:
+            raise SystemExit("error: no blocks found in the input")
+        return units, "B"
+
     if isinstance(data, dict):
         items = list(data.values())[0] if len(data) == 1 else None
     else:
         items = data
     if not isinstance(items, list):
         raise SystemExit("error: --reduce needs a JSON array (or a single-key object "
-                         "whose value is an array)")
+                         "whose value is an array). Pass --blocks to gate a raw text "
+                         "or YAML file instead.")
+    # Same shape in both modes: (label, lines). A flat item is a one-line unit, which
+    # is why block mode is a generalisation rather than a separate code path.
+    return [(str(x), [str(x)]) for x in items], "L"
 
-    window = args.window
-    instructions = args.instructions or "Does the item at `L{i}` matter?"
+
+def reduce_state(data, args, key: str, provider: str, model: str) -> dict:
+    """REDUCE: gate each unit, keep the hits, store the rest for retrieval.
+
+    A unit is a line, or — with ``--blocks`` — a header and the lines nested under
+    it. Blocks exist because a line-level gate cannot answer a question that compares
+    two lines, and because keeping the header is what keeps the answer in the output.
+    """
+    spec = PROVIDERS[provider]
+    units, prefix = _units_from(data, args)
+
     kept, unjudged, calls, cost = [], [], 0, 0.0
     started = time.perf_counter()
-    for start in range(0, len(items), window):
-        chunk = [str(x) for x in items[start:start + window]]
+    # Pack whole units into windows, never slicing one in half: a header separated
+    # from its values is unanswerable for a reason that has nothing to do with the
+    # model, and that is exactly how the line-level version lost.
+    windows = pack_blocks(units, args.window)
+    position = 0
+    for window_number, window in enumerate(windows, start=1):
+        # Carry each unit's index in the whole input, so a kept or rejected unit can
+        # be traced back after the window boundaries have moved it.
+        indexed = [(position + offset, label, lines)
+                   for offset, (label, lines) in enumerate(window)]
+        position += len(window)
+        texts = ["\n".join(lines) for _, _, lines in indexed]
+        instructions = args.instructions or f"Does the block at `{prefix}{{i}}` matter?"
         questions = {
-            f"keep_L{i}": {
+            f"keep_{prefix}{i}": {
                 "type": "noul",
                 # Naming the value with a backticked path is load-bearing: without
-                # it the model returns a flat, meaningless answer for every line.
+                # it the model returns a flat, meaningless answer for every unit.
                 "instructions": instructions.replace("{i}", str(i)),
                 "criteria": {
-                    "true": f"`L{i}` matches. Other items are irrelevant.",
-                    "false": f"`L{i}` does not match. Other items are irrelevant.",
+                    "true": f"`{prefix}{i}` matches. Other blocks are irrelevant.",
+                    "false": f"`{prefix}{i}` does not match. Other blocks are irrelevant.",
                 },
             }
-            for i in range(len(chunk))
+            for i in range(len(indexed))
         }
-        body = json.dumps({"model": model, "state": {f"L{i}": t for i, t in enumerate(chunk)},
+        body = json.dumps({"model": model,
+                           "state": {f"{prefix}{i}": t for i, t in enumerate(texts)},
                            "questions": questions}).encode()
         try:
             result = post(body, key, spec["base_url"], spec["endpoint"],
@@ -404,34 +526,36 @@ def reduce_state(data, args, key: str, provider: str, model: str) -> dict:
         except SystemExit:
             # Report what the run already spent before dying, so a failed chunk
             # does not look like a free run.
-            print(f"error: chunk {start // window + 1} failed after {calls} call(s) "
+            print(f"error: window {window_number} failed after {calls} call(s) "
                   f"and ${cost:.8f}; nothing was written.", file=sys.stderr)
             raise
         calls += 1
         cost += cost_of(provider, result.get("usage") or {})
         answers = result.get("answers") or {}
-        for i, text in enumerate(chunk):
-            raw = (answers.get(f"keep_L{i}") or {}).get("noul")
+        for i, (original_index, _label, _lines) in enumerate(indexed):
+            raw = (answers.get(f"keep_{prefix}{i}") or {}).get("noul")
             if raw is None:
-                # The gate returned no verdict for this item. Coercing that to 0.0
+                # The gate returned no verdict for this unit. Coercing that to 0.0
                 # would file it under `rejected` as though Jev had judged it
                 # unimportant — a silent drop, and the exact failure this pipeline
                 # exists to prevent. Keep it and say so instead.
-                unjudged.append({"index": start + i, "text": text})
+                unjudged.append({"index": original_index, "text": texts[i]})
                 continue
             probability = float(raw)
             if probability >= 0.5:
-                kept.append({"index": start + i, "p": probability, "text": text})
+                kept.append({"index": original_index, "p": probability, "text": texts[i]})
 
     kept.sort(key=lambda row: row["p"], reverse=True)
-    # Unjudged items are never cut by --keep: dropping what could not be evaluated
+    # Unjudged units are never cut by --keep: dropping what could not be evaluated
     # is the one thing a reduction must not do quietly.
     selected = unjudged + kept[:args.keep]
     kept_indexes = {row["index"] for row in selected}
-    rejected = [{"index": i, "text": str(t)} for i, t in enumerate(items) if i not in kept_indexes]
+    rejected = [{"index": i, "text": text}
+                for i, text in enumerate("\n".join(lines) for _, lines in units)
+                if i not in kept_indexes]
 
     elapsed = (time.perf_counter() - started) * 1000
-    raw_tokens = count_tokens(items)
+    raw_tokens = count_tokens(["\n".join(lines) for _, lines in units])
     kept_tokens = count_tokens([row["text"] for row in selected])
 
     handle = None
@@ -443,7 +567,7 @@ def reduce_state(data, args, key: str, provider: str, model: str) -> dict:
             "handle": handle,
             "created": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "source": args.state_file or "stdin",
-            "total_items": len(items),
+            "total_items": len(units),
             "kept": selected,
             "rejected_count": len(rejected),
             "rejected": rejected,
@@ -463,7 +587,7 @@ def reduce_state(data, args, key: str, provider: str, model: str) -> dict:
         "model": model,
         "handle": handle,
         "calls": calls,
-        "items": len(items),
+        "items": len(units),
         "kept": len(selected),
         "rejected": len(rejected),
         "unjudged_count": len(unjudged),
@@ -507,6 +631,11 @@ def main(argv=None) -> int:
     parser.add_argument("--reduce", action="store_true",
                         help="REDUCE pattern: gate every item, keep the hits, store the rest")
     parser.add_argument("--keep", type=int, default=8)
+    parser.add_argument("--blocks", action="store_true",
+                        help="gate structural blocks — a header plus the lines nested "
+                             "under it — instead of single lines. Needed when the "
+                             "judgement compares two lines (e.g. 'prod differs from "
+                             "default'). Accepts a raw text/YAML file, not only JSON")
     parser.add_argument("--window", type=int, default=20)
     parser.add_argument("--no-recovery", action="store_true")
     parser.add_argument("--recovery-dir")

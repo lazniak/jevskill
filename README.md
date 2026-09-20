@@ -7,9 +7,9 @@
 A Skill that makes Claude Code, Codex, DSH and 20+ other agents stop burning
 tokens on decisions — and start making them for **$0.000013** in **325 ms**.
 
-**A/B tested: 99.3% fewer input tokens, and accuracy went *up* (12/18 → 15/18).**
+**A/B tested: 99.3% fewer input tokens, and accuracy up, not down (18/18 vs 15/18).**
 
-[![tests](https://img.shields.io/badge/tests-474%20passing-brightgreen)](#-does-it-actually-help-ab-tested)
+[![tests](https://img.shields.io/badge/tests-509%20passing-brightgreen)](#-does-it-actually-help-ab-tested)
 [![A/B](https://img.shields.io/badge/A%2FB-99.3%25%20fewer%20tokens-blue)](#-does-it-actually-help-ab-tested)
 [![cost](https://img.shields.io/badge/decision-%240.000013-success)](#-cost-per-decision)
 [![license](https://img.shields.io/badge/license-MIT-informational)](LICENSE)
@@ -233,48 +233,67 @@ Then your agent just... uses it. `SKILL.md` teaches it when to reach for Jev and
 ## 🧪 Does it actually help? A/B tested
 
 Six workloads. One question each with a **checkable answer**. Same answering model
-in every arm, so the only variable is what the model reads. Token counts are the
-**provider's own reported usage**. 3 runs per arm.
+in every arm, so the only variable is what the model reads. 3 runs per arm.
 
-| Workload | Tokens direct | Tokens **with Jev** | direct | grep filter | **with Jev** |
-|---|---:|---:|---:|---:|---:|
-| Log needle in haystack | 27,472 | 126 | 3/3 | 3/3 | **3/3** |
-| CSV outlier hunt | 12,065 | 221 | 3/3 | 3/3 | **3/3** |
-| Test-output failure | 19,882 | 142 | 3/3 | 3/3 | **3/3** |
-| Deployment JSON drift | 23,888 | 83 | **0/3** | 2/3 | **3/3** |
-| YAML config drift | 25,133 | 83 | **0/3** | **3/3** | 0/3 |
-| Dashboard HTML alert | 22,064 | 147 | 3/3 | 3/3 | **3/3** |
-| **TOTAL** | **113,352** | **801** | **12/18** | **17/18** | **15/18** |
+`fixture` is the whole context, estimated by the repo's own tokeniser. `direct` and
+`with Jev` are the **provider's own reported usage** for what that arm actually sent.
+Both are shown because they are different measurements and a single column had been
+mixing them.
 
-**99.3% fewer tokens — and accuracy went *up*, from 12/18 to 15/18.**
+| Workload | fixture (est.) | direct (reported) | Tokens **with Jev** | direct | grep filter | **with Jev** |
+|---|---:|---:|---:|---:|---:|---:|
+| Log needle in haystack | 27,472 | 27,049 | 127 | 3/3 | 3/3 | **3/3** |
+| CSV outlier hunt | 12,065 | 19,223 | 218 | 3/3 | 3/3 | **3/3** |
+| Test-output failure | 19,882 | 16,562 | 142 | 3/3 | 3/3 | **3/3** |
+| Deployment JSON drift | 23,888 | 20,542 | 111 | 3/3 | 3/3 | **3/3** |
+| YAML config drift | 25,133 | 18,134 | 87 | 0/3 | 3/3 | **3/3** |
+| Dashboard HTML alert | 22,064 | 12,120 | 145 | 3/3 | 3/3 | **3/3** |
+| **TOTAL** | | **113,632** | **831** | **15/18** | **18/18** | **18/18** |
 
-Look at the JSON row: handed 23,888 tokens of service definitions, the model
-found the one bad image tag **zero times out of three**. Given 83 tokens of
-shortlist, it found it every time. Reduction is not only a cost optimisation —
-it is a **signal-to-noise improvement**.
+**99.3% fewer tokens, and Jev was right 18 times out of 18** — matching the structural
+filter while sending 137× less context than the direct arm.
 
-### And here's where it loses
+Look at the JSON row: handed 20,542 tokens of service definitions, the model found
+the one bad image tag. Given 111 tokens of shortlist, it found it every time.
+Reduction is not only a cost optimisation — it is a **signal-to-noise improvement**.
 
-**The plain regex filter beat both arms (17/18).** On YAML config drift Jev scored
-**0/3** where a 20-line structural pass scored 3/3.
+### The YAML row used to lose. It doesn't any more.
 
-The post-mortem is in the repo because a failure without an explanation is just an
-anecdote: Jev **correctly** flagged `prod: true` at p=0.92, but the test asks for
-the *flag name*, which sits on the line **above**. A line-level gate is the wrong
-granularity when the unit of meaning is a block — and the filter description asked
-about a value when the answer was a name.
+Until v0.10.0 this table had a failure in it, and it stayed published: on YAML config
+drift Jev scored **0/3** where a 20-line structural pass scored 3/3. The post-mortem
+was in the repo, because a failure without an explanation is just an anecdote:
+
+Jev **correctly** flagged `prod: true` at p=0.92, but the test asks for the *flag
+name*, which sits on the line **above**. Two things were wrong, and neither was the
+model:
+
+1. the gate was asked about a **line**, and "prod differs from default" is a
+   comparison *between* two lines — no single line can match it;
+2. the window sliced raw lines, so a header could be separated from its values.
+
+The fix is to gate **blocks**: a header plus the lines nested under it, packed into
+windows that never split one. The pair is then in one unit, and the kept text still
+carries the flag's name. That single change took the row from **0/3 to 3/3** with no
+regression on the other five workloads — and, since flat text has no headers, block
+mode degrades to one line per block, which is what it did before.
+
+```bash
+python scripts/jev_query.py --state-file flags.yaml --blocks --reduce --keep 8
+```
 
 So, plainly:
 
 1. **If a regex or a structural pass can answer it, use that.** Free, instant,
-   deterministic.
-2. **Jev earns its place on semantic anomalies** — "looks non-release, unusual,
-   out of pattern" — which no keyword expresses. That is exactly the `json_drift`
-   row: Jev 3/3, filter 2/3, direct 0/3.
-3. **Gate blocks, not lines, when the answer spans lines.**
+   deterministic. It still ties Jev here, at 18/18.
+2. **Jev earns its place on semantic anomalies** — "looks non-release, unusual, out
+   of pattern" — which no keyword expresses.
+3. **Gate blocks, not lines, when the answer spans lines.** That is now the default
+   in the benchmark, and available to you as `--blocks`.
 
-`n=3` per cell and one cheap answering model: directional, not statistical. Full
-method and threats to validity in
+`n=3` per cell and one cheap answering model: directional, not statistical. The
+`direct` and `grep` arms also feed that sampled model, so they wobble between runs —
+this run's `json_drift` moved 0/3 → 3/3 for `direct` and 2/3 → 3/3 for `grep` with no
+code change to either. Full method and threats to validity in
 [`benchmarks.md`](skills/jev/references/benchmarks.md).
 
 ---
@@ -301,6 +320,21 @@ python scripts/jev_recovery.py rc_92110309381a --index 42 43
 salient lines — and recovery surfaced the **6 it had missed**. A 57%-recall gate
 becomes a **100%-recoverable** pipeline. The rejected bytes never leave your
 machine.
+
+### Blocks, when a line is the wrong unit
+
+`--blocks` gates a **header plus the lines nested under it** instead of single
+lines, and never lets a window split one. Use it when the judgement compares two
+lines — "is `prod` different from `default`?" — which no single line can answer:
+
+```bash
+python scripts/jev_query.py --state-file flags.yaml --blocks --reduce \
+  --keep 8 --instructions 'Does `B{i}` drift from its default?'
+```
+
+It accepts a raw text or YAML file, not only a JSON array, and it degrades to one
+block per line on flat text, so a log file behaves exactly as it did before. This is
+what took the A/B suite's YAML row from 0/3 to 3/3 (§ Does it actually help?).
 
 ---
 
@@ -617,7 +651,7 @@ jevskill/              the Python package — the measurement half
 bench/
   run.py               E1–E7 microbenchmarks (latency, fan-out, REDUCE, guards)
   ab.py                the A/B evaluation vs the model doing it alone
-tests/                 474 tests, offline, green
+tests/                 509 tests, offline, green
 docs/install.md        install guide an agent reads and executes
 docs/DESIGN.md         architecture + the mistakes that shaped it
 AGENTS.md              conventions for agents working on this repo
@@ -625,7 +659,7 @@ AGENTS.md              conventions for agents working on this repo
 
 ## 🧭 Status & known limits — `v0.7.0`
 
-CLI, skill, bundled scripts, ledger and reference docs (474 offline tests) are
+CLI, skill, bundled scripts, ledger and reference docs (509 offline tests) are
 complete, and there are now two benchmark suites. What is **not** proven:
 
 * **Redaction is not a PII policy.** It catches credential-shaped strings, not
@@ -641,13 +675,21 @@ complete, and there are now two benchmark suites. What is **not** proven:
 * **Latency is one location.** Measured from Poland. TypeSafe quotes 70–500 ms
   depending on distance — measure your own RTT.
 * **The A/B suite is `n=3` per cell with one cheap answering model.** Directional,
-  not statistical.
+  not statistical, and the `direct` and `grep` arms are sampled too — they moved
+  between runs with no code change.
 * **The `shortlist` narrowing loop never fired** in testing; both cases resolved at
   ≥0.92 confidence. Logic tested, empirical value unproven.
-* **Jev loses to a plain regex on some workloads** — see the `yaml_drift` row. If a
-  deterministic filter answers it, use that.
-* **Line-level gating breaks blocks.** When the answer spans lines that must stay
-  together, gate blocks instead.
+* **A deterministic filter still ties Jev** (18/18 each) on these six workloads. If a
+  regex or a structural pass can answer it, use that — Jev's case is the semantic
+  judgement no keyword expresses, and the 137× context reduction.
+* **Line-level gating breaks blocks.** It cost this repo a published 0/3 until
+  v0.10.0. Gate blocks (now the default, and `--blocks` in the bundled script) when
+  the answer spans lines that must stay together. **Still unproven:** a block
+  *deeper* than one level, and the `yaml_drift` row is one workload — not evidence
+  that block mode generalises to every structured format.
+* **The `fixture` column is an estimate.** `CHARS_PER_TOKEN` is calibrated on logs and
+  code; on CSV rows it under-counts (12,065 estimated against 19,223 reported), which
+  is exactly why the reported columns are shown separately.
 * **`triage`, `rank`, `route` and `extract` are structurally inferred**, not
   separately benchmarked. `gate`, `verify`, fan-out and REDUCE are measured.
 * **Savings in dollars are modelled** from list prices, not billed.

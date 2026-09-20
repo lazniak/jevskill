@@ -13,14 +13,102 @@ replaced.
 ### Planned
 - A genuinely ambiguous case for the `shortlist` pattern, so narrowing can be
   demonstrated rather than only unit-tested.
-- Block-level REDUCE, so a gate can keep a parent key together with its values.
-  The `yaml_drift` loss in the A/B suite is exactly this gap.
 - Per-repository ledger merging (`jevskill stats --merge`).
 - Live verification of the vendor endpoint. It is verified by 51 unit tests plus
   endpoint existence, but not by a real call — no TypeSafe key was available.
 - A `doctor` contract probe and further providers (Cloudflare Workers AI, Vercel AI
   Gateway). Both need a schema or an account to verify against, so neither is
   shipped as a guess — see the note in 0.9.0.
+- Block mode on **deep** nesting, and on formats whose blocks are not delimited by
+  indentation (minified JSON, unformatted XML). One workload proves the fix, not the
+  generality.
+
+## [0.10.0] — 2026-09-21
+
+The one published loss this repo had left open, fixed — and a second defect found
+while proving it.
+
+### Fixed — `yaml_drift` scored 0/3 against a structural filter's 3/3. Now 3/3.
+
+This row had been failing for several releases and stayed published, with a
+post-mortem, because a failure without an explanation is just an anecdote. The
+post-mortem was right about the symptom and incomplete about the cause. Two things
+were wrong, and neither was the model:
+
+1. **The gate was asked about a line.** "Prod differs from default" is a comparison
+   *between* two lines, and no single line can satisfy it. The model correctly
+   flagged `prod: true` at p=0.92 — the only question it could answer.
+2. **The window sliced raw lines**, so a window boundary could separate a header
+   from its own values — unanswerable for a reason that has nothing to do with the
+   model, and a cause the original post-mortem did not name.
+
+### Added — block-level REDUCE (`--blocks`, `jevskill/blocks.py`)
+
+A **block** is a header (`key:`) plus the scalars nested under it; a deeper header
+starts its own block, so a container like `flags:` stays a one-line block instead of
+swallowing all 520 flags. Windows are packed by block and never split one. The pair
+is then in a single unit of state and the kept text still carries the header — so the
+answer survives the reduction.
+
+```bash
+python scripts/jev_query.py --state-file flags.yaml --blocks --reduce --keep 8
+```
+
+- **Flat text has no headers**, so every line stays its own block: a log or CSV
+  behaves exactly as before. Block mode is a generalisation, not a YAML special case.
+- **It accepts a raw text file**, not only a JSON array, so a YAML file can be gated
+  directly.
+- Measured live end-to-end through the bundled script: 53 lines → 14 blocks → **1
+  kept, 92.6% fewer tokens**, with `flag_0013:` alive in the output.
+- The A/B arm now gates blocks too, and `tests/test_ab_arm.py` fails if anyone
+  reverts it to line gating.
+
+### Changed — the A/B suite, re-run (published numbers superseded)
+
+| | before | after |
+|---|---:|---:|
+| direct tokens | 113,352 | **113,632** |
+| jev tokens | 801 | **831** |
+| direct correct | 12/18 | **15/18** |
+| grep correct | 17/18 | **18/18** |
+| jev correct | 15/18 | **18/18** |
+| `yaml_drift` jev | **0/3** | **3/3** |
+| `json_drift` direct / grep | 0/3 / 2/3 | **3/3 / 3/3** |
+
+**Only the `yaml_drift` change is attributable to this release.** `json_drift`'s
+`direct` and `grep` moved while neither arm was touched: both feed the *sampled*
+answering model, and the benchmark sets no temperature. Their token counts were
+reproducible to within a couple of tokens; their *accuracy* is not. That distinction
+is now a documented threat to validity rather than an unexplained wobble, and it is
+why `n=3` per cell is called directional.
+
+### Fixed — the A/B table mixed two different measurements in one column
+
+The README's "Tokens direct" column held **fixture_tokens** — this repo's own
+estimate — while the TOTAL row of the same column held the direct arm's
+**provider-reported** tokens. Summing the column did not reach the total, and the
+JSON/YAML/HTML rows were 14–82% adrift from what the direct arm actually sent. The
+table now shows `fixture (est.)` and `direct (reported)` as separate columns, and
+`benchmarks.md` records that the estimate under-counts CSV rows by 59%.
+
+### Note — an integrity defect in this release's own tooling
+
+While updating the test count, a `-replace '\D',''` stripped every non-digit from the
+whole `pytest` summary line and produced `509017 tests`. It was caught in the same
+breath and corrected to 509, but it is worth recording: the count is now taken with an
+anchored pattern rather than by deleting characters, because a published number that is
+wrong by three orders of magnitude is exactly the failure this repo's conventions exist
+to prevent.
+
+### Verified
+
+- 509 tests green, from 474. New: `test_blocks.py` (24) and `test_ab_arm.py` (7).
+  Five of the seven arm tests fail against the old line-gating arm, checked by
+  stashing `bench/ab.py` — the fix cannot be silently reverted.
+- Live A/B re-run: `python bench/ab.py --runs 3`, all six workloads, results in
+  `bench/ab_results.json`. `yaml_drift` 0/3 → 3/3, other five rows unchanged.
+- The bundled script verified live on a real YAML file: the drifting flag is kept
+  **with its header**, which is precisely what was missing before.
 
 ## [0.9.0] — 2026-09-21
 

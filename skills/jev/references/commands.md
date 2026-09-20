@@ -25,9 +25,18 @@ python scripts/jev.py doctor                      # delegates to the package if 
 python scripts/jev_query.py --state-file log.txt --question-type noul --name breaks_api \
   --instructions 'Does `state` break a public API?' --true-text 'yes' --false-text 'no'
 python scripts/jev_query.py --state-file build.log --reduce --keep 8   # gate, keep hits
+python scripts/jev_query.py --state-file flags.yaml --blocks --reduce --keep 8
 python scripts/jev_recovery.py --list             # read back what REDUCE rejected
 python scripts/jev_recovery.py rc_1a2b3c4d5e6f --grep "payment" --all
 ```
+
+**`--blocks`** gates a *structural unit* rather than a line: a header (`key:`) plus
+the scalars nested under it, packed into windows that never split one. Use it when
+the judgement compares two lines — "is `prod` different from `default`?" — which no
+single line can answer. It accepts a raw text or YAML file, not only a JSON array,
+and on flat text it degrades to one block per line, so logs and CSVs behave exactly
+as before. Measured: it took the A/B suite's `yaml_drift` row from **0/3 to 3/3**
+with no change to the other five workloads.
 
 **REDUCE never drops what it could not judge.** If the gate returns no verdict for
 an item, that item is reported in `unjudged`, **kept** (and never cut by `--keep`),

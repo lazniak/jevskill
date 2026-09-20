@@ -42,6 +42,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "skills" / "jev" / "scripts"))
 
+from jevskill.blocks import as_state, pack_blocks, split_blocks  # noqa: E402
 from jevskill.client import JevClient  # noqa: E402
 from jevskill.config import Config  # noqa: E402
 from jevskill.orchestrate import count_tokens  # noqa: E402
@@ -325,50 +326,63 @@ def arm_grep(context: str, question: str, model: str, key: str,
 
 def arm_jev(jev: JevClient, context: str, question: str, filter_description: str,
             model: str, key: str, *, window: int = 40, keep: int = 8) -> dict:
-    """REDUCE with Jev: chunk, gate every item, keep the hits.
+    """REDUCE with Jev: pack blocks, gate every block, keep the hits.
+
+    Gates **blocks**, not raw lines. That is the fix for the one workload this arm
+    used to lose outright: `yaml_drift` asks which flag is enabled in prod but
+    disabled by default, and no single line can match a comparison *between* lines.
+    Gating lines scored 0/3 there while a structural filter scored 3/3. A block is a
+    header plus the lines nested under it, so the pair is in one unit and the kept
+    text still carries the flag's name.
+
+    Flat text has no headers, so it degrades to one line per block — the previous
+    behaviour exactly, which is why this is a generalisation and not a special case
+    for YAML. See `jevskill/blocks.py`.
 
     ``filter_description`` must be answer-neutral. The answering ``question`` is
     deliberately NOT passed to the gate: telling the gate to look for
     "payment gateway timeout" would hand it the needle and make the comparison
     meaningless.
     """
-    lines = context.splitlines()
+    blocks = split_blocks(context)
+    windows = pack_blocks(blocks, window)
     kept: list[tuple[float, str]] = []
     calls = 0
     jev_cost = 0.0
     jev_tokens = 0
     started = time.perf_counter()
-    for start in range(0, len(lines), window):
-        chunk = [line for line in lines[start:start + window] if line.strip()]
-        if not chunk:
+    for group in windows:
+        state = as_state(group)
+        if not state:
             continue
         result = jev.decide(
-            {f"L{i}": line for i, line in enumerate(chunk)},
+            state,
             {
-                f"keep_L{i}": noul(
-                    f"Does the line at `L{i}` match this description: "
+                f"keep_B{i}": noul(
+                    f"Does the block at `B{i}` match this description: "
                     f"{filter_description}?",
-                    f"`L{i}` matches. Lines other than `L{i}` are irrelevant.",
-                    f"`L{i}` is routine filler that does not match. "
-                    f"Lines other than `L{i}` are irrelevant.",
+                    f"`B{i}` matches. Blocks other than `B{i}` are irrelevant.",
+                    f"`B{i}` is routine filler that does not match. "
+                    f"Blocks other than `B{i}` are irrelevant.",
                 )
-                for i in range(len(chunk))
+                for i in range(len(group))
             },
         )
         calls += 1
         jev_cost += result.cost_usd
         jev_tokens += result.input_tokens
-        for i, line in enumerate(chunk):
-            probability = result.noul(f"keep_L{i}") or 0.0
+        for i, block in enumerate(group):
+            probability = result.noul(f"keep_B{i}") or 0.0
             if probability >= 0.5:
-                kept.append((probability, line))
+                kept.append((probability, block.text))
         record_decision(
             which="reduce", intent="ab_benchmark",
             latency_ms=result.timing_ms["total_ms"], tokens_in=result.input_tokens,
-            cost_usd=result.cost_usd, questions=len(chunk),
-            state_tokens=count_tokens(chunk), baseline_tokens=count_tokens(chunk), root=ROOT,
+            cost_usd=result.cost_usd, questions=len(group),
+            state_tokens=count_tokens(list(state.values())),
+            baseline_tokens=count_tokens(list(state.values())), root=ROOT,
         )
-    selected = [line for _, line in sorted(kept, key=lambda kv: kv[0], reverse=True)[:keep]]
+    selected = [text for _, text in sorted(kept, key=lambda kv: kv[0], reverse=True)[:keep]]
     reduced = "\n".join(selected)
     result = ask_model(model, reduced, question, key)
     result["arm"] = "jev"
