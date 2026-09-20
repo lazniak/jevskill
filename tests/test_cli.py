@@ -336,6 +336,65 @@ class TestStatsCommand:
         assert payload["by_pattern"]["gate"]["n"] == 1
 
 
+class TestAdviceCommand:
+    def test_empty_ledger_explains_how_to_start(self, capsys):
+        code, out, _ = run(capsys, ["advice"])
+        assert code == 0
+        assert "Nothing to advise yet" in out
+        assert "outcome" in out
+
+    def test_advises_on_real_decisions(self, capsys):
+        run(capsys, ["ask", "--state", "x", "--question-type", "noul", "--name", "q",
+                     "--pattern", "gate", "--json"])
+        code, out, _ = run(capsys, ["advice"])
+        assert code == 0
+        assert "JEV advice" in out
+        assert "gate" in out
+
+    def test_a_small_state_is_reported_as_not_worth_it(self, capsys):
+        """A 500-char state costs ~$0.000014 to read.
+
+        Jev costs about the same to decide it, so the round trip buys nothing. The
+        floor is calibrated around 2,400 tokens of state (roughly 4,000 chars);
+        below that the `not_worth_it` verdict fires.
+        """
+        code, out, _ = run(capsys, ["ask", "--state", "x" * 500, "--question-type",
+                                    "noul", "--name", "q", "--pattern", "gate", "--json"])
+        assert code == 0
+        _, out, _ = run(capsys, ["advice"])
+        assert "STOP" in out
+        assert "to replace" in out
+
+    def test_a_large_state_is_not_reported_as_not_worth_it(self, capsys):
+        """The other side of the floor, so the threshold is not always-true.
+
+        10,000 chars (~6,000 tokens) costs $0.00025 at Jev's own rate against a
+        $0.000013 decision, so reduction is worth doing. No outcomes are paired,
+        so it is UNPROVEN rather than KEEP.
+        """
+        run(capsys, ["ask", "--state", "x" * 10_000, "--question-type", "noul",
+                     "--name", "q", "--pattern", "gate", "--json"])
+        _, out, _ = run(capsys, ["advice"])
+        assert "STOP" not in out
+        assert "UNPROVEN" in out
+
+    def test_json_output_is_valid(self, capsys):
+        run(capsys, ["ask", "--state", "x" * 10_000, "--question-type", "noul",
+                     "--name", "q", "--pattern", "gate", "--json"])
+        code, out, _ = run(capsys, ["advice", "--json"])
+        payload = json.loads(out)
+        assert payload["summary"]["decisions"] == 1
+        assert payload["verdicts"]
+        assert "thresholds" in payload
+
+    def test_limit_unproven_is_accepted(self, capsys):
+        run(capsys, ["ask", "--state", "x" * 10_000, "--question-type", "noul",
+                     "--name", "q", "--pattern", "gate", "--json"])
+        code, out, _ = run(capsys, ["advice", "--limit-unproven", "1"])
+        assert code == 0
+        assert "UNPROVEN" in out
+
+
 class TestArgumentParsing:
     def test_version(self, capsys):
         with pytest.raises(SystemExit) as info:

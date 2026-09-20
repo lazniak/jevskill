@@ -31,6 +31,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
 
+from .config import INPUT_PRICE_PER_MTOK as JEV_INPUT_PRICE_PER_MTOK
+
 LEDGER_DIRNAME = ".jevskill"
 LEDGER_FILENAME = "ledger.jsonl"
 
@@ -101,6 +103,14 @@ class Record:
     confidence: dict[str, float] = field(default_factory=dict)
     baseline_tokens: int = 0
     baseline_cost_usd: float = 0.0
+    #: Cost of the *data* alone at LLM rates, excluding the fixed scaffolding an
+    #: LLM needs. See `_baseline_costs` for why both are stored.
+    baseline_data_cost_usd: float = 0.0
+    #: The same tokens priced at **Jev's** rate. The worth-it question is "does
+    #: Jev earn its call", and answering it against a frontier model's rate is
+    #: apples-to-oranges: Jev is ~71x cheaper per token, so its cost can never
+    #: look significant next to a frontier-rate baseline.
+    data_cost_at_jev_rates_usd: float = 0.0
     outcome: str = ""
     outcome_detail: str = ""
     session_id: str = ""
@@ -117,6 +127,59 @@ def _append(record: Record, *, root: Path | str | None = None) -> str:
     with path.open("a", encoding="utf-8") as handle:
         handle.write(record.to_json() + "\n")
     return record.decision_id
+
+
+def _baseline_costs(baseline_tokens: int, baseline: dict | None) -> tuple[float, float, float]:
+    """Return ``(full_cost, data_cost, data_cost_at_jev_rates)``.
+
+    Three numbers, because they answer different questions and conflating them
+    produced a real bug — twice.
+
+    ``full_cost`` is what an LLM would actually be billed: the data, plus the
+    scaffolding a chat model needs (system prompt, output-format instructions) and
+    the output it would write. This is the honest counterfactual, and it is what
+    the published savings percentage uses.
+
+    ``data_cost`` is the data alone at LLM rates.
+
+    ``data_cost_at_jev_rates`` is the same tokens priced at Jev's own rate.
+
+    The worth-it question — "is Jev earning its round trip?" — must use
+    ``data_cost_at_jev_rates``. Against the LLM rates Jev's own cost is roughly
+    71x smaller per token, so it can never look significant; a 500-character state
+    reads as $0.001 at frontier rates and $0.000014 at Jev's, which turns a
+    "clearly worth it" verdict into the correct "this is too small to bother".
+    The first version of this function compared the two rates directly and every
+    state passed.
+    """
+    if not baseline_tokens and not baseline:
+        return 0.0, 0.0, 0.0
+    spec = {**DEFAULT_BASELINE, **(baseline or {})}
+    in_price = float(spec["input_price_per_mtok"])
+    out_price = float(spec["output_price_per_mtok"])
+    billed_tokens = baseline_tokens + int(spec["overhead_tokens"])
+    full = (billed_tokens / 1_000_000 * in_price
+            + int(spec["output_tokens"]) / 1_000_000 * out_price)
+    data = baseline_tokens / 1_000_000 * in_price
+    data_at_jev = baseline_tokens / 1_000_000 * JEV_INPUT_PRICE_PER_MTOK
+    return full, data, data_at_jev
+
+
+def _data_cost_at_jev_rates(record: dict) -> float:
+    """The row's data cost at Jev's rate, tolerating rows written before it existed.
+
+    Ledgers are append-only and are not rewritten, so a row recorded by an earlier
+    version simply lacks this field. Falling back to recomputing it from
+    ``baseline_tokens`` keeps old ledgers useful instead of reporting every
+    historical bucket as "state was never sized" — which is what happened the
+    first time this field was introduced, and it made the advice command useless
+    on exactly the data it was built to learn from.
+    """
+    stored = record.get("data_cost_at_jev_rates_usd")
+    if stored:
+        return float(stored)
+    tokens = int(record.get("baseline_tokens", 0) or 0)
+    return tokens / 1_000_000 * JEV_INPUT_PRICE_PER_MTOK
 
 
 def record_decision(
@@ -139,14 +202,7 @@ def record_decision(
     root: Path | str | None = None,
 ) -> str:
     """Append one decision. Returns its ``decision_id`` for later pairing."""
-    baseline_cost = 0.0
-    if baseline_tokens or baseline:
-        spec = {**DEFAULT_BASELINE, **(baseline or {})}
-        billed_tokens = baseline_tokens + int(spec["overhead_tokens"])
-        baseline_cost = (
-            billed_tokens / 1_000_000 * float(spec["input_price_per_mtok"])
-            + int(spec["output_tokens"]) / 1_000_000 * float(spec["output_price_per_mtok"])
-        )
+    baseline_cost, baseline_data_cost, data_at_jev = _baseline_costs(baseline_tokens, baseline)
     record = Record(
         decision_id=new_decision_id(),
         ts=time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime()),
@@ -162,6 +218,8 @@ def record_decision(
         confidence=confidence or {},
         baseline_tokens=int(baseline_tokens),
         baseline_cost_usd=round(baseline_cost, 8),
+        baseline_data_cost_usd=round(baseline_data_cost, 8),
+        data_cost_at_jev_rates_usd=round(data_at_jev, 8),
         session_id=session_id,
         version=version,
         extra=extra or {},
@@ -300,12 +358,19 @@ def summarize(records: list[dict]) -> dict:
                 continue
             entry = bucket.setdefault(
                 key, {"n": 0, "latencies": [], "cost": 0.0, "baseline_cost": 0.0,
-                      "baseline_tokens": 0, "outcomes": {}, "confidences": []}
+                      "baseline_data_cost": 0.0, "data_at_jev_rates": 0.0,
+                      "input_tokens": 0, "baseline_tokens": 0,
+                      "outcomes": {}, "confidences": []}
             )
             entry["n"] += 1
             entry["latencies"].append(float(record.get("latency_ms", 0) or 0))
             entry["cost"] += float(record.get("cost_usd", 0) or 0)
             entry["baseline_cost"] += float(record.get("baseline_cost_usd", 0) or 0)
+            entry["baseline_data_cost"] += float(
+                record.get("baseline_data_cost_usd", 0) or 0
+            )
+            entry["data_at_jev_rates"] += _data_cost_at_jev_rates(record)
+            entry["input_tokens"] += int(record.get("tokens_in", 0) or 0)
             entry["baseline_tokens"] += int(record.get("baseline_tokens", 0) or 0)
             outcome = record.get("outcome") or ""
             if outcome:
@@ -323,6 +388,10 @@ def summarize(records: list[dict]) -> dict:
                 "p95_ms": round(_pct(entry["latencies"], 0.95), 1),
                 "cost_usd": round(entry["cost"], 6),
                 "baseline_cost_usd": round(entry["baseline_cost"], 4),
+                "baseline_data_cost_usd": round(entry["baseline_data_cost"], 6),
+                "data_cost_at_jev_rates_usd": round(entry["data_at_jev_rates"], 6),
+                "input_tokens": entry["input_tokens"],
+                "comparable_tokens": entry["baseline_tokens"],
                 "baseline_tokens": entry["baseline_tokens"],
                 "outcomes": entry["outcomes"],
                 "accuracy": (
@@ -364,3 +433,255 @@ def summarize(records: list[dict]) -> dict:
         "first_ts": records[0].get("ts", ""),
         "last_ts": records[-1].get("ts", ""),
     }
+
+
+# --------------------------------------------------------------------------- #
+# Advice: turn the ledger into "should we keep doing this?"
+# --------------------------------------------------------------------------- #
+
+#: Thresholds for the verdicts below. Stated as constants, not buried, because
+#: they are policy and a reader must be able to disagree with them.
+ADVICE = {
+    # Below this many judged decisions, say "unproven" rather than guess.
+    "min_judged_for_accuracy": 5,
+    # An intent whose state costs less than this fraction of the decision itself
+    # is not worth a network round trip, whatever the percentage says. The test
+    # below is a straight economics comparison, so there is no absolute dollar
+    # floor: at the measured $0.000013 per decision the crossover sits at roughly
+    # 310 tokens of state, which is about 520 characters of log or code.
+    "min_saved_pct": 20.0,
+    # Accuracy at or below this means escalate the uncertain cases to the LLM.
+    "min_accuracy": 0.85,
+}
+
+
+def _verdict_for(entry: dict) -> dict:
+    """One row's verdict, with the numbers that produced it.
+
+    Order matters. A saving too small to matter is reported first, because "we
+    are not saving anything" is a more actionable finding than an accuracy figure
+    on a call that should not be happening.
+
+    The worth-it test uses the **data** cost, not the full LLM cost. Against the
+    full baseline every state clears the bar, because a 350-token scaffolding floor
+    dominates the ratio — see :func:`_baseline_costs`. Whether reduction is worth
+    doing is a question about the state, so the state is what gets measured.
+    """
+    n = entry["n"]
+    baseline_tokens = entry.get("baseline_tokens", 0) or 0
+    baseline_cost = entry.get("baseline_cost_usd", 0.0) or 0.0
+    data_cost = entry.get("baseline_data_cost_usd", 0.0) or 0.0
+    # The worth-it test is token-for-token, which sidesteps a units trap that cost
+    # two rewrites. Costs are *per decision*, but a REDUCE run is many decisions
+    # over one document, so per-call cost ratios compared a chunk-sized read
+    # against a document-sized baseline and reported -528% for a pipeline that is
+    # in fact far cheaper.
+    #
+    # The honest frame: Jev's own billed input tokens, versus the tokens it
+    # replaced. Both are the same currency — tokens read — so no price, no
+    # scaffolding and no unit conversion can distort it.
+    jev_tokens = int(entry.get("input_tokens", 0) or 0)
+    comparable_tokens = int(entry.get("comparable_tokens", 0) or 0)
+    saved_tokens = comparable_tokens - jev_tokens
+    saved_pct = (saved_tokens / comparable_tokens * 100) if comparable_tokens else 0.0
+    judged = (entry.get("outcomes") or {}).get("correct", 0) + \
+             (entry.get("outcomes") or {}).get("incorrect", 0)
+    accuracy = entry.get("accuracy")
+
+    # Priced for the report only; the verdict never depends on these.
+    comparable_cost = entry.get("data_cost_at_jev_rates_usd", 0.0) or 0.0
+    cost = entry.get("cost_usd", 0.0) or 0.0
+
+    facts = {
+        "calls": n,
+        "jev_tokens": jev_tokens,
+        "tokens_replaced": comparable_tokens,
+        "saved_tokens_per_call": round(saved_tokens / n) if n else 0,
+        "saved_pct": round(saved_pct, 1),
+        "baseline_tokens_per_call": round(baseline_tokens / n) if n else 0,
+        "cost_usd_per_call": round(cost / n, 8) if n else 0.0,
+        "comparable_cost_usd_per_call": round(comparable_cost / n, 8) if n else 0.0,
+        "accuracy": accuracy,
+        "judged": judged,
+        "p50_ms": entry.get("p50_ms"),
+    }
+
+    if baseline_cost == 0 and cost == 0:
+        return {"verdict": "no_baseline", "why": (
+            "No baseline cost recorded, so there is nothing to compare against. "
+            "Call with a --state so the ledger can size what an LLM would have read."
+        ), "facts": facts}
+
+    if comparable_tokens == 0:
+        return {"verdict": "no_baseline", "why": (
+            "The state was never sized, so there is no read to compare against. "
+            "Pass a --state when recording the decision."
+        ), "facts": facts}
+
+    if saved_pct < ADVICE["min_saved_pct"]:
+        return {"verdict": "not_worth_it", "why": (
+            f"Across {n:,} recorded decision(s), Jev read {jev_tokens:,} input tokens "
+            f"to replace {comparable_tokens:,} — a {saved_pct:.0f}% saving. A decision "
+            "carries its own question text, so on small or heavily chunked states the "
+            "reading it replaces does not cover the reading it costs. Answer these "
+            "directly, batch fewer and larger decisions, or use a chat model."
+        ), "facts": facts}
+
+    if judged < ADVICE["min_judged_for_accuracy"]:
+        return {"verdict": "unproven", "why": (
+            f"Saves {saved_pct:.1f}% of the data cost but only {judged} decision(s) "
+            "paired with an outcome. Run `jevskill outcome` on results to learn "
+            "whether it is right, not just cheap."
+        ), "facts": facts}
+
+    if accuracy is not None and accuracy < ADVICE["min_accuracy"]:
+        return {"verdict": "escalate", "why": (
+            f"Accuracy {accuracy * 100:.0f}% over {judged} judged. It saves "
+            f"{saved_pct:.0f}% of the data cost but is wrong too often to act on "
+            "unattended — gate on confidence and escalate the uncertain cases to "
+            "the LLM or a human."
+        ), "facts": facts}
+
+    if accuracy is not None and accuracy >= ADVICE["min_accuracy"]:
+        return {"verdict": "worth_it", "why": (
+            f"Saves {saved_pct:.0f}% of the data cost at {accuracy * 100:.0f}% "
+            f"accuracy over {judged} judged decisions."
+        ), "facts": facts}
+
+    return {"verdict": "marginal", "why": "Saves tokens; accuracy not yet established here.",
+            "facts": facts}
+
+
+def advise(records: list[dict]) -> dict:
+    """Turn the ledger into decisions about where to keep using Jev.
+
+    The objective this project was built for was not only to *use* the model but
+    to learn **when using it pays off**. `summarize()` reports what happened;
+    this says what to do about it, per pattern and per intent, with the numbers
+    that produced each verdict so it can be argued with rather than trusted.
+
+    Verdicts, best-first in the output:
+
+    ``worth_it``      saves tokens at acceptable measured accuracy
+    ``not_worth_it``  a decision costs about what the read it replaces costs
+    ``escalate``      cheap but too often wrong; gate on confidence
+    ``no_baseline``   nothing to compare against
+    ``marginal``      saves tokens, accuracy not yet established
+    ``unproven``      the saving is real but no outcomes are paired yet
+
+    **Granularity caveat.** The verdict is computed from *recorded decisions*, and
+    a REDUCE run records one decision per chunk. A per-chunk decision reads its
+    chunk plus its questions, so its token ratio is measured chunk-against-chunk —
+    which can look unfavourable even when the pipeline as a whole replaces a large
+    document with a short list. Record an operation-level entry, or read the
+    pipeline totals, when you want to judge the pipeline.
+
+    Building this required nothing new to be collected — baseline tokens, cost,
+    confidence and paired outcomes were already in every row. It was the reading
+    layer that was missing.
+    """
+    if not records:
+        return {"verdicts": [], "summary": {"decisions": 0}, "actionable": []}
+
+    summary = summarize(records)
+    verdicts: list[dict] = []
+
+    for scope, key in (("pattern", "by_pattern"), ("intent", "by_intent")):
+        for name, entry in summary.get(key, {}).items():
+            verdict = _verdict_for(entry)
+            verdict.update({"scope": scope, "name": name})
+            verdicts.append(verdict)
+
+    # Most informative first. A confirmed win and a confirmed waste are both
+    # actionable; "unproven" is the least interesting thing to read. An earlier
+    # ordering put `worth_it` last, which buried the one finding a reader most
+    # wants — where this thing is actually paying off.
+    order = {
+        "worth_it": 0,       # keep doing this
+        "not_worth_it": 1,   # stop doing this
+        "escalate": 2,       # change how you do it
+        "no_baseline": 3,    # cannot tell
+        "marginal": 4,
+        "unproven": 5,       # least actionable: go and collect outcomes
+    }
+    verdicts.sort(key=lambda v: (order.get(v["verdict"], 9), -v["facts"]["calls"]))
+
+    actionable = [v for v in verdicts if v["verdict"] in ("not_worth_it", "escalate")]
+    keep = [v for v in verdicts if v["verdict"] == "worth_it"]
+
+    return {
+        "summary": {
+            "decisions": summary["decisions"],
+            "judged": summary["judged"],
+            "saved_usd": summary["saved_usd"],
+            "saved_pct": summary["saved_pct"],
+            "overall_accuracy": summary["accuracy"],
+        },
+        "verdicts": verdicts,
+        "actionable": actionable,
+        "keep_using": keep,
+        "thresholds": ADVICE,
+    }
+
+
+def format_advice(report: dict, *, limit_unproven: int = 5) -> str:
+    """Render :func:`advise` for a human, actionable items first.
+
+    ``unproven`` rows are capped. On a real ledger most intents are unproven,
+    and a command that prints a hundred near-identical "pair more outcomes"
+    lines is one nobody reads — which defeats the point of measuring at all.
+    """
+    if not report.get("verdicts"):
+        return ("Nothing to advise yet — no decisions in the ledger.\n"
+                "Run `jevskill ask ...` a few times, then `jevskill outcome <id> "
+                "correct|incorrect` so it can learn accuracy, not just cost.")
+
+    labels = {
+        "not_worth_it": "STOP",
+        "escalate": "ESCALATE",
+        "no_baseline": "NO BASELINE",
+        "unproven": "UNPROVEN",
+        "marginal": "MARGINAL",
+        "worth_it": "KEEP",
+    }
+    s = report["summary"]
+    lines = [
+        f"JEV advice — {s['decisions']} decisions, {s['judged']} judged",
+        f"  saved ${s['saved_usd']:.4f}"
+        + (f" ({s['saved_pct']:.1f}%)" if s["saved_pct"] is not None else "")
+        + (f", accuracy {s['overall_accuracy'] * 100:.0f}%" if s["overall_accuracy"] is not None
+           else ", accuracy not measured yet"),
+        "",
+    ]
+
+    shown = 0
+    unproven_seen = 0
+    for verdict in report["verdicts"]:
+        if verdict["verdict"] == "unproven":
+            unproven_seen += 1
+            if unproven_seen > limit_unproven:
+                continue
+        facts = verdict["facts"]
+        label = labels.get(verdict["verdict"], verdict["verdict"].upper())
+        acc = f"  acc {facts['accuracy'] * 100:.0f}%/{facts['judged']}" if facts["accuracy"] is not None else ""
+        lines.append(
+            f"  [{label:11s}] {verdict['scope']}:{verdict['name']}"
+            f"  (n={facts['calls']}, saved {facts['saved_pct']:.0f}%{acc})"
+        )
+        lines.append(f"                {verdict['why']}")
+        shown += 1
+
+    if unproven_seen > limit_unproven:
+        lines.append(
+            f"  ... and {unproven_seen - limit_unproven} more unproven group(s). "
+            "Use --json for all of them, or raise --limit-unproven."
+        )
+
+    lines += [
+        "",
+        f"  thresholds: accuracy {report['thresholds']['min_accuracy']:.0%}"
+        f" · min saved {report['thresholds']['min_saved_pct']:.0f}%"
+        f" · min judged {report['thresholds']['min_judged_for_accuracy']}",
+        "  These are policy, not fact. Change them in stats.ADVICE if your risk tolerance differs.",
+    ]
+    return "\n".join(lines)

@@ -325,6 +325,48 @@ Pair outcomes whenever the consequence is observable. An unpaired ledger can
 tell you Jev was fast; only a paired one can tell you it was **right**, and
 therefore whether the threshold you chose is the correct one.
 
+### Ask the ledger what to do next
+
+`stats` reports what happened. `advice` says what to do about it — and this is the
+command to run before deciding whether to keep using Jev for something:
+
+```bash
+jevskill advice
+# JEV advice — 1311 decisions, 49 judged
+#   saved $5.3239 (95.3%), accuracy 100%
+#
+#   [KEEP       ] pattern:gate  (n=73, saved 99%  acc 100%/49)
+#                 Saves 98.8% at 100% accuracy over 49 judged decisions.
+#   [STOP       ] intent:tiny-diff  (n=40, saved 3%)
+#                 Saves 3.0%. The state is too small for reduction to pay: JEV
+#                 costs a round trip to save almost nothing. Answer this directly.
+#   [ESCALATE   ] intent:log-triage  (n=200, saved 95%  acc 71%/60)
+#                 Accuracy 71% over 60 judged. It saves tokens but is wrong too
+#                 often to act on unattended — gate on confidence and escalate.
+#   [UNPROVEN   ] pattern:reduce  (n=1234, saved 95%)
+#                 Saves 95.1% but 0 decisions paired with an outcome.
+```
+
+Six verdicts, each with the numbers that produced it:
+
+| Verdict | Means |
+|---|---|
+| `KEEP` | saves tokens at measured accuracy — keep doing this |
+| `STOP` | the state is too small; the round trip costs more than it saves |
+| `ESCALATE` | cheap but too often wrong — gate on confidence, escalate the rest |
+| `UNPROVEN` | the saving is real but no outcomes are paired yet |
+| `NO BASELINE` | nothing to compare against — pass a `--state` so it can size the data |
+| `MARGINAL` | saves tokens; accuracy not yet established |
+
+**The `STOP` verdict is the one to look for first.** A reduction that saves 95% of
+a state that only cost $0.00006 has saved nothing and added a network round trip.
+The percentages look impressive and the absolute numbers do not — which is exactly
+the trap this command exists to catch.
+
+Thresholds live in `stats.ADVICE` and are printed with every report, because they
+are **policy, not fact**: 85% accuracy, 20% minimum saving, 5 judged decisions
+before accuracy counts. Change them to match what a wrong answer costs you.
+
 Reports carry a full per-stage breakdown so the timing claim is auditable:
 
 ```
@@ -403,6 +445,7 @@ jevskill ask --state ... --questions '<json>'
 jevskill ask --state-file diff.txt --question-type choice --name owner --options a b c unclear
 jevskill outcome <decision_id> correct|incorrect|escalated|overridden|no_action
 jevskill stats                 # measured latency, cost, savings, accuracy per pattern
+jevskill advice                # what to do about it: KEEP / STOP / ESCALATE / UNPROVEN
 ```
 
 Add `--json` to any command for machine-readable output. State comes from

@@ -21,6 +21,91 @@ replaced.
 - Live verification of the vendor endpoint. It is verified by 51 unit tests plus
   endpoint existence, but not by a real call — no TypeSafe key was available.
 
+## [0.5.0] — 2026-09-20
+
+The layer the original objective asked for and the project did not have: not only
+using the model and measuring it, but **learning when using it pays off**.
+
+### Added
+
+**`jevskill advice`** — reads the effectiveness ledger and says what to do about
+it, per pattern and per intent. `stats` reported numbers; nothing turned them into
+decisions. Six verdicts, each carrying the numbers that produced it:
+
+| Verdict | Means |
+|---|---|
+| `worth_it` | saves tokens at measured accuracy — keep doing this |
+| `not_worth_it` | the state is too small; the round trip costs more than it saves |
+| `escalate` | cheap but too often wrong — gate on confidence, escalate the rest |
+| `no_baseline` | nothing to compare against; pass a `--state` so it can size the data |
+| `marginal` | saves tokens; accuracy not yet established |
+| `unproven` | the saving is real but no outcomes are paired yet |
+
+`not_worth_it` is evaluated **before** accuracy on purpose: "this replaces nothing"
+is more actionable than an accuracy figure on a call that should not be happening.
+A state that costs less to read than the decision costs to make has not been
+optimised, it has been ritualised.
+
+Nothing new had to be collected for this. Baseline tokens, input tokens, cost,
+confidence and paired outcomes were already in every ledger row; the *reading*
+layer was missing.
+
+**The worth-it comparison is token-for-token**, and getting there took three
+attempts, each wrong in a different way:
+
+1. A percentage against the full LLM counterfactual. The 350-token scaffolding in
+   `DEFAULT_BASELINE` is a *constant*, so it dominated the ratio and every state
+   reported a ~99% win — `not_worth_it` was unreachable.
+2. The state priced at a frontier model's $3/Mtok against Jev's $0.042/Mtok. Jev is
+   ~71× cheaper per token, so its cost could never look significant. Every state
+   passed again.
+3. Costs compared per decision, across a pipeline that records many decisions per
+   document. A per-chunk cost ratio compared a chunk-sized read against a
+   document-sized baseline.
+
+The final form compares **Jev's own billed input tokens against the tokens it
+replaced**. Both sides are the same currency, so no price, no scaffolding and no
+unit conversion can distort it. The crossover sits at roughly 310 tokens of state:
+below that, a decision reads more than it replaces.
+
+`data_cost_at_jev_rates_usd` and `baseline_data_cost_usd` are recorded alongside
+the full baseline so the intermediate numbers stay inspectable, and rows written
+before the field existed are handled by recomputing from `baseline_tokens` rather
+than being reported as "never sized" — which is what happened on first
+introduction and made the command useless on exactly the data it was built to
+learn from.
+
+**Granularity caveat, stated in the command's own help.** The verdict is computed
+from *recorded decisions*, and a REDUCE run records one decision per chunk, so its
+ratio is chunk-against-chunk. That can look unfavourable even when the pipeline
+replaces a large document with a short list. Judge the pipeline from pipeline
+totals, not from per-chunk rows.
+
+Thresholds (85% accuracy, 20% minimum saving, 5 judged decisions before accuracy
+counts) live in `stats.ADVICE` and are printed with every report, because they are
+policy rather than fact and a reader must be able to disagree with them.
+
+`--limit-unproven` caps the unproven rows, defaulting to 5: on a real ledger most
+intents are unproven, and a command that prints a hundred near-identical lines is
+one nobody reads.
+
+### Fixed
+- **`worth_it` sorted last.** The first implementation ordered verdicts
+  worst-first, which buried the one finding a reader most wants — where this thing
+  is actually paying off. Confirmed wins now lead, followed by confirmed waste,
+  with `unproven` last because it is the least actionable.
+
+### Documented
+- `SKILL.md` §6 gained "Ask the ledger what to do next", including the advice
+  output and the note that `STOP` is the verdict to look for first.
+- README documents the command as the payoff of the measuring loop.
+
+### Tests
+23 new tests in `tests/test_advice.py` pin the policy boundaries explicitly: a
+saving too small to matter is `not_worth_it` **even at 100% accuracy**, an
+unmeasured intent is never a win, `escalated` outcomes do not count as accuracy,
+and the unproven output is capped and says how many were withheld. 266 → 289.
+
 ## [0.4.0] — 2026-09-20
 
 Support for the vendor's own endpoint, so the skill is not tied to one gateway.

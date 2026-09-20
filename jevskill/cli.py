@@ -41,7 +41,15 @@ from .orchestrate import (
 )
 from .primitives import choice, noul, score, validate_questions
 from .stages import Stages, format_stages
-from .stats import ledger_path, load_records, record_decision, record_outcome, summarize
+from .stats import (
+    advise,
+    format_advice,
+    ledger_path,
+    load_records,
+    record_decision,
+    record_outcome,
+    summarize,
+)
 
 _PRIMITIVE_BUILDERS = {"noul": noul, "choice": choice, "score": score}
 
@@ -469,6 +477,32 @@ def cmd_stats(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_advice(args: argparse.Namespace) -> int:
+    """Turn the ledger into decisions about where to keep using Jev.
+
+    `stats` reports what happened. This says what to do about it — which patterns
+    pay for themselves, which should be escalated, and which are not worth the
+    round trip at all. It is the reading layer over the measurements the rest of
+    the tool already collects.
+    """
+    if args.ledger:
+        paths = [Path(args.ledger)]
+    elif args.global_only:
+        from .stats import global_ledger_path
+
+        paths = [global_ledger_path()]
+    else:
+        paths = [ledger_path()]
+    records = load_records(paths, include_global=bool(args.include_global))
+    report = advise(records)
+
+    if args.json:
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+    else:
+        print(format_advice(report, limit_unproven=args.limit_unproven))
+    return 0
+
+
 def cmd_outcome(args: argparse.Namespace) -> int:
     """Pair a decision with what actually happened — this is what makes accuracy real."""
     record_outcome(args.decision_id, args.result, args.detail or "", root=args.ledger_root)
@@ -570,6 +604,26 @@ def build_parser() -> argparse.ArgumentParser:
                         "explicit ledger must mean exactly that ledger)")
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_stats)
+
+    # advice
+    p = sub.add_parser(
+        "advice",
+        help="what to do about the ledger: which patterns pay off, which to escalate",
+        description=(
+            "Reads the effectiveness ledger and says where Jev is worth using, where "
+            "it saves too little to bother, and where it is cheap but too often wrong. "
+            "Pair decisions with `jevskill outcome` so it can measure accuracy, not "
+            "just cost."
+        ),
+    )
+    p.add_argument("--ledger", help="specific ledger file")
+    p.add_argument("--global-only", action="store_true", help="use ~/.jevskill/ledger.jsonl only")
+    p.add_argument("--include-global", action="store_true",
+                   help="also merge ~/.jevskill/ledger.jsonl")
+    p.add_argument("--limit-unproven", type=int, default=5,
+                   help="how many 'unproven' groups to print (default 5; use --json for all)")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_advice)
 
     # outcome
     p = sub.add_parser("outcome", help="pair a decision with what actually happened")

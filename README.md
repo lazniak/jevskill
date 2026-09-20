@@ -9,7 +9,7 @@ tokens on decisions — and start making them for **$0.000013** in **325 ms**.
 
 **A/B tested: 99.3% fewer input tokens, and accuracy went *up* (12/18 → 15/18).**
 
-[![tests](https://img.shields.io/badge/tests-266%20passing-brightgreen)](#-does-it-actually-help-ab-tested)
+[![tests](https://img.shields.io/badge/tests-293%20passing-brightgreen)](#-does-it-actually-help-ab-tested)
 [![A/B](https://img.shields.io/badge/A%2FB-99.3%25%20fewer%20tokens-blue)](#-does-it-actually-help-ab-tested)
 [![cost](https://img.shields.io/badge/decision-%240.000013-success)](#-cost-per-decision)
 [![license](https://img.shields.io/badge/license-MIT-informational)](LICENSE)
@@ -405,8 +405,45 @@ and, once you pair it with reality, whether it was **right**:
 ```bash
 jevskill ask --state-file failures.txt --questions @q.json --intent "ci-triage"
 jevskill outcome d_1a2b3c4d5e6f correct    # what actually happened
-jevskill stats
+jevskill stats                             # what happened, measured
+jevskill advice                            # what to DO about it
 ```
+
+### `jevskill advice` — the part that learns when JEV pays off
+
+`stats` reports numbers. `advice` turns them into decisions, per pattern and per
+intent:
+
+```
+JEV advice — 1311 decisions, 49 judged
+  saved $5.3239 (95.3%), accuracy 100%
+
+  [KEEP       ] pattern:gate  (n=73, saved 99%  acc 100%/49)
+                Saves 99% of the data cost at 100% accuracy over 49 judged decisions.
+  [STOP       ] pattern:reduce  (n=1204, saved -523%)
+                Across 1,204 recorded decisions, Jev read 6,017,596 input tokens to
+                replace 966,047. A decision carries its own question text, so on
+                small or heavily chunked states the reading it replaces does not
+                cover the reading it costs.
+  [ESCALATE   ] intent:log-triage  (n=200, saved 95%  acc 71%/60)
+                Saves tokens but is wrong too often to act on unattended — gate
+                on confidence and escalate the uncertain cases.
+```
+
+**`STOP` is the verdict to hunt for.** A state that costs less to read than the
+decision costs to make has not been optimised, it has been ritualised. The
+comparison is **token-for-token** — Jev's own billed input tokens against the tokens
+it replaced — so no price, no scaffolding and no unit conversion can flatter it.
+
+The `reduce` row above is a real result and it is not flattering: the benchmark
+records one decision *per chunk*, and each carries its own question text, so under
+heavy chunking the reading it replaces does not cover the reading it costs. Judge a
+pipeline from pipeline totals, not from per-chunk rows.
+
+Thresholds are printed with every report because they are **policy, not fact**
+(85% accuracy, 20% minimum saving, 5 judged decisions). Change them to match what a
+wrong answer costs you.
+
 
 ```
 JEV effectiveness ledger — 148 decisions
@@ -452,18 +489,18 @@ jevskill/              the Python package — the measurement half
   primitives.py        noul / choice / score, with validation that prevents 400s
   orchestrate.py       pattern selection, profiling, chunking, iteration rules
   stats.py             the effectiveness ledger
-  cli.py               doctor · plan · patterns · ask · outcome · stats
+  cli.py               doctor · plan · patterns · ask · outcome · stats · advice
 bench/
   run.py               E1–E7 microbenchmarks (latency, fan-out, REDUCE, guards)
   ab.py                the A/B evaluation vs the model doing it alone
-tests/                 266 tests, offline, green
+tests/                 293 tests, offline, green
 docs/DESIGN.md         architecture + the mistakes that shaped it
 AGENTS.md              conventions for agents working on this repo
 ```
 
 ## 🧭 Status & known limits — `v0.3.0`
 
-CLI, skill, bundled scripts, ledger and reference docs (266 offline tests) are
+CLI, skill, bundled scripts, ledger and reference docs (293 offline tests) are
 complete, and there are now two benchmark suites. What is **not** proven:
 
 * **Latency is one location.** Measured from Poland. TypeSafe quotes 70–500 ms
