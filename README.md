@@ -725,11 +725,27 @@ docs/DESIGN.md         architecture + the mistakes that shaped it
 AGENTS.md              conventions for agents working on this repo
 ```
 
-## 🧭 Status & known limits — `v0.11.0`
+## 🧭 Status & known limits — `v0.12.0`
 
-CLI, skill, bundled scripts, ledger and reference docs (1252 offline tests) are
-complete, and there are now two benchmark suites. What is **not** proven:
+CLI, skill, bundled scripts, ledger, reference docs and the computer-use half
+(`jevskill.cu`: observe · reduce · hashing · decide · act · loop · macros) are
+complete and offline-tested. What is **not** proven, stated plainly:
 
+* **The live UIA execution path has never been run against a desktop.** Every
+  `act.execute()`/`loop.run()` test drives it through fakes; the only Windows
+  machine available was live-streaming on 2026-09-20. The first live run is the
+  next task (`bench/cu_run.py --live --i-am-not-streaming`), and until it happens
+  the loop is a measured design, not a measured agent.
+* **No computer-use benchmark result exists yet.** `bench/cu_tasks.json` has the
+  ten tasks and their oracles; `bench/cu_run.py --dry-run` proves the harness,
+  and every dry-run number is marked synthetic.
+* **Four accelerations ship off because they lost when measured**: hedged
+  requests (66 fired, 0 won), speculative planning (1 of 8 hits, +48 % tokens),
+  self-consistency for destructive actions (0 of 28 fired), beam over the cascade
+  (0 of 12 changes). The flags exist; the numbers are in `bench/*.json`.
+* **The destructive name list is English-only.** On a Polish Calculator no name
+  matched and the per-element noul sat at 0.42–0.51 — well under the 0.85 gate.
+  Localise the list before trusting the gate on a non-English desktop.
 * **Redaction is not a PII policy.** It catches credential-shaped strings, not
   personal or business data, and it is pattern-based — a secret in an unusual shape
   will pass through. Read what you send.
