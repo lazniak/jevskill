@@ -22,6 +22,11 @@ dependencies = []
 [project.optional-dependencies]
 fast = ["httpx[http2]>=0.27", "orjson>=3.9"]
 dev = ["pytest>=8", "httpx[http2]>=0.27", "orjson>=3.9"]
+# jevskill.cu (Windows computer-use perception). comtypes only: the UI
+# Automation client is measured 2-3x faster through a CacheRequest than through
+# uiautomation or pywinauto, both of which read every property live. The marker
+# keeps `pip install "jevskill[cu]"` a no-op elsewhere rather than an error.
+cu = ['comtypes>=1.2; sys_platform == "win32"']
 
 [project.urls]
 Homepage = "https://github.com/lazniak/jevskill"

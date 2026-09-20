@@ -1,0 +1,675 @@
+{
+ "note": "Real UIA snapshot of an app this script launched. Window title, every value and every content-bearing name are replaced; roles, rectangles, patterns and nesting are real.",
+ "snapshot": {
+  "app": "Notepad.exe",
+  "elapsed_ms": 103.8539999999557,
+  "elements": [
+   {
+    "bbox": [
+     130,
+     130,
+     1831,
+     1625
+    ],
+    "class_name": "Notepad",
+    "id": "e0",
+    "name": "notepad",
+    "role": "window"
+   },
+   {
+    "bbox": [
+     136,
+     205,
+     1819,
+     1512
+    ],
+    "class_name": "NotepadTextBox",
+    "depth": 1,
+    "id": "e1",
+    "parent": "e0",
+    "region": "e0",
+    "role": "pane"
+   },
+   {
+    "bbox": [
+     136,
+     205,
+     1819,
+     1512
+    ],
+    "class_name": "RichEditD2DPT",
+    "depth": 2,
+    "focused": true,
+    "id": "e2",
+    "name": "document 1",
+    "parent": "e1",
+    "patterns": [
+     "value",
+     "scroll"
+    ],
+    "region": "e1",
+    "role": "document"
+   },
+   {
+    "bbox": [
+     176,
+     140,
+     287,
+     32
+    ],
+    "class_name": "Microsoft.UI.Content.DesktopChildSiteBridge",
+    "depth": 1,
+    "id": "e3",
+    "parent": "e0",
+    "region": "e0",
+    "role": "pane"
+   },
+   {
+    "bbox": [
+     176,
+     140,
+     287,
+     32
+    ],
+    "class_name": "InputSiteWindowClass",
+    "depth": 2,
+    "focused": true,
+    "id": "e4",
+    "parent": "e3",
+    "region": "e3",
+    "role": "pane"
+   },
+   {
+    "automation_id": "Tabs",
+    "bbox": [
+     176,
+     140,
+     287,
+     32
+    ],
+    "class_name": "Microsoft.UI.Xaml.Controls.TabView",
+    "depth": 3,
+    "id": "e5",
+    "parent": "e4",
+    "region": "e4",
+    "role": "tab"
+   },
+   {
+    "automation_id": "TabListView",
+    "bbox": [
+     178,
+     140,
+     248,
+     32
+    ],
+    "class_name": "ListView",
+    "depth": 4,
+    "id": "e6",
+    "parent": "e5",
+    "patterns": [
+     "scroll"
+    ],
+    "region": "e5",
+    "role": "list"
+   },
+   {
+    "bbox": [
+     180,
+     140,
+     246,
+     32
+    ],
+    "class_name": "ListViewItem",
+    "depth": 5,
+    "id": "e7",
+    "name": "tabitem 1",
+    "parent": "e6",
+    "patterns": [
+     "select"
+    ],
+    "region": "e6",
+    "role": "tabitem"
+   },
+   {
+    "bbox": [
+     193,
+     148,
+     56,
+     15
+    ],
+    "class_name": "TextBlock",
+    "depth": 6,
+    "id": "e8",
+    "name": "text 1",
+    "parent": "e7",
+    "region": "e6",
+    "role": "text"
+   },
+   {
+    "automation_id": "CloseButton",
+    "bbox": [
+     385,
+     144,
+     32,
+     24
+    ],
+    "class_name": "Button",
+    "depth": 6,
+    "id": "e9",
+    "name": "Zamknij kart\u0119",
+    "parent": "e7",
+    "patterns": [
+     "invoke"
+    ],
+    "region": "e6",
+    "role": "button"
+   },
+   {
+    "automation_id": "AddButton",
+    "bbox": [
+     429,
+     146,
+     32,
+     24
+    ],
+    "class_name": "Button",
+    "depth": 4,
+    "id": "e10",
+    "name": "Dodaj now\u0105 kart\u0119",
+    "parent": "e5",
+    "patterns": [
+     "invoke"
+    ],
+    "region": "e5",
+    "role": "button"
+   },
+   {
+    "bbox": [
+     136,
+     172,
+     1819,
+     33
+    ],
+    "class_name": "Microsoft.UI.Content.DesktopChildSiteBridge",
+    "depth": 1,
+    "id": "e11",
+    "parent": "e0",
+    "region": "e0",
+    "role": "pane"
+   },
+   {
+    "bbox": [
+     136,
+     172,
+     1819,
+     33
+    ],
+    "class_name": "InputSiteWindowClass",
+    "depth": 2,
+    "focused": true,
+    "id": "e12",
+    "parent": "e11",
+    "region": "e11",
+    "role": "pane"
+   },
+   {
+    "automation_id": "MenuBar",
+    "bbox": [
+     136,
+     172,
+     200,
+     32
+    ],
+    "depth": 3,
+    "id": "e13",
+    "parent": "e12",
+    "region": "e12",
+    "role": "menubar"
+   },
+   {
+    "bbox": [
+     882,
+     172,
+     56,
+     32
+    ],
+    "class_name": "Microsoft.UI.Xaml.Controls.DropDownButton",
+    "depth": 3,
+    "id": "e14",
+    "name": "Nag\u0142\u00f3wki",
+    "parent": "e12",
+    "patterns": [
+     "invoke",
+     "expand"
+    ],
+    "region": "e12",
+    "role": "button"
+   },
+   {
+    "bbox": [
+     938,
+     172,
+     56,
+     32
+    ],
+    "class_name": "Microsoft.UI.Xaml.Controls.DropDownButton",
+    "depth": 3,
+    "id": "e15",
+    "name": "Listy",
+    "parent": "e12",
+    "patterns": [
+     "invoke",
+     "expand"
+    ],
+    "region": "e12",
+    "role": "button"
+   },
+   {
+    "bbox": [
+     994,
+     172,
+     32,
+     32
+    ],
+    "class_name": "ToggleButton",
+    "depth": 3,
+    "id": "e16",
+    "name": "Pogrubienie (Ctrl+B)",
+    "parent": "e12",
+    "patterns": [
+     "toggle"
+    ],
+    "region": "e12",
+    "role": "button"
+   },
+   {
+    "bbox": [
+     1026,
+     172,
+     32,
+     32
+    ],
+    "class_name": "ToggleButton",
+    "depth": 3,
+    "id": "e17",
+    "name": "Kursywa (Ctrl+I)",
+    "parent": "e12",
+    "patterns": [
+     "toggle"
+    ],
+    "region": "e12",
+    "role": "button"
+   },
+   {
+    "bbox": [
+     1058,
+     172,
+     32,
+     32
+    ],
+    "class_name": "ToggleButton",
+    "depth": 3,
+    "id": "e18",
+    "name": "Przekre\u015blenie (Ctrl+Shift+X)",
+    "parent": "e12",
+    "patterns": [
+     "toggle"
+    ],
+    "region": "e12",
+    "role": "button"
+   },
+   {
+    "bbox": [
+     1090,
+     172,
+     32,
+     32
+    ],
+    "class_name": "ToggleButton",
+    "depth": 3,
+    "id": "e19",
+    "name": "\u0141\u0105cze (Ctrl+K)",
+    "parent": "e12",
+    "patterns": [
+     "toggle"
+    ],
+    "region": "e12",
+    "role": "button"
+   },
+   {
+    "bbox": [
+     1122,
+     172,
+     56,
+     32
+    ],
+    "class_name": "Microsoft.UI.Xaml.Controls.DropDownButton",
+    "depth": 3,
+    "id": "e20",
+    "name": "Tabela",
+    "parent": "e12",
+    "patterns": [
+     "invoke",
+     "expand"
+    ],
+    "region": "e12",
+    "role": "button"
+   },
+   {
+    "bbox": [
+     1178,
+     172,
+     32,
+     32
+    ],
+    "class_name": "ToggleButton",
+    "depth": 3,
+    "id": "e21",
+    "name": "Wyczy\u015b\u0107 formatowanie (Ctrl+spacja)",
+    "parent": "e12",
+    "patterns": [
+     "toggle"
+    ],
+    "region": "e12",
+    "role": "button"
+   },
+   {
+    "automation_id": "RewriteDropDownButton",
+    "bbox": [
+     1789,
+     172,
+     56,
+     32
+    ],
+    "class_name": "Microsoft.UI.Xaml.Controls.DropDownButton",
+    "depth": 3,
+    "id": "e22",
+    "name": "Narz\u0119dzia do pisania",
+    "parent": "e12",
+    "patterns": [
+     "invoke",
+     "expand"
+    ],
+    "region": "e12",
+    "role": "button"
+   },
+   {
+    "automation_id": "FREButton",
+    "bbox": [
+     1849,
+     173,
+     30,
+     30
+    ],
+    "class_name": "Button",
+    "depth": 3,
+    "id": "e23",
+    "name": "Co nowego",
+    "parent": "e12",
+    "patterns": [
+     "invoke"
+    ],
+    "region": "e12",
+    "role": "button"
+   },
+   {
+    "automation_id": "AvatarButton",
+    "bbox": [
+     1883,
+     172,
+     30,
+     32
+    ],
+    "class_name": "Button",
+    "depth": 3,
+    "id": "e24",
+    "name": "Awatar u\u017cytkownika",
+    "parent": "e12",
+    "patterns": [
+     "invoke"
+    ],
+    "region": "e12",
+    "role": "button"
+   },
+   {
+    "automation_id": "SettingsButton",
+    "bbox": [
+     1917,
+     172,
+     30,
+     32
+    ],
+    "class_name": "Button",
+    "depth": 3,
+    "id": "e25",
+    "name": "Ustawienia",
+    "parent": "e12",
+    "patterns": [
+     "invoke"
+    ],
+    "region": "e12",
+    "role": "button"
+   },
+   {
+    "bbox": [
+     136,
+     1717,
+     1819,
+     32
+    ],
+    "class_name": "Microsoft.UI.Content.DesktopChildSiteBridge",
+    "depth": 1,
+    "enabled": false,
+    "id": "e26",
+    "parent": "e0",
+    "region": "e0",
+    "role": "pane"
+   },
+   {
+    "bbox": [
+     136,
+     1717,
+     1819,
+     32
+    ],
+    "class_name": "InputSiteWindowClass",
+    "depth": 2,
+    "enabled": false,
+    "focused": true,
+    "id": "e27",
+    "parent": "e26",
+    "region": "e26",
+    "role": "pane"
+   },
+   {
+    "automation_id": "ContentTextBlock",
+    "bbox": [
+     152,
+     1725,
+     112,
+     16
+    ],
+    "class_name": "TextBlock",
+    "depth": 3,
+    "id": "e28",
+    "name": "text 2",
+    "parent": "e27",
+    "region": "e27",
+    "role": "text"
+   },
+   {
+    "automation_id": "ContentTextBlock",
+    "bbox": [
+     281,
+     1725,
+     51,
+     16
+    ],
+    "class_name": "TextBlock",
+    "depth": 3,
+    "id": "e29",
+    "name": "text 3",
+    "parent": "e27",
+    "region": "e27",
+    "role": "text"
+   },
+   {
+    "automation_id": "ContentTextBlock",
+    "bbox": [
+     483,
+     1717,
+     79,
+     32
+    ],
+    "class_name": "TextBlock",
+    "depth": 3,
+    "id": "e30",
+    "name": "text 4",
+    "parent": "e27",
+    "region": "e27",
+    "role": "text"
+   },
+   {
+    "automation_id": "ContentTextBlock",
+    "bbox": [
+     1584,
+     1725,
+     32,
+     16
+    ],
+    "class_name": "TextBlock",
+    "depth": 3,
+    "id": "e31",
+    "name": "text 5",
+    "parent": "e27",
+    "region": "e27",
+    "role": "text"
+   },
+   {
+    "automation_id": "ContentTextBlock",
+    "bbox": [
+     1652,
+     1725,
+     91,
+     16
+    ],
+    "class_name": "TextBlock",
+    "depth": 3,
+    "id": "e32",
+    "name": "text 6",
+    "parent": "e27",
+    "region": "e27",
+    "role": "text"
+   },
+   {
+    "automation_id": "ContentTextBlock",
+    "bbox": [
+     1820,
+     1725,
+     36,
+     16
+    ],
+    "class_name": "TextBlock",
+    "depth": 3,
+    "id": "e33",
+    "name": "text 7",
+    "parent": "e27",
+    "region": "e27",
+    "role": "text"
+   }
+  ],
+  "hwnd": 10948182,
+  "pid": 14508,
+  "taken_at": 1789933319.5398078,
+  "truncated": false,
+  "window_title": "notepad"
+ },
+ "source": "bench/cu_observe_bench.py --save-fixtures",
+ "state": {
+  "app": "Notepad.exe",
+  "elements": {
+   "e10": {
+    "bbox": "r0c1",
+    "name": "Dodaj now\u0105 kart\u0119",
+    "role": "button"
+   },
+   "e14": {
+    "bbox": "r0c3",
+    "name": "Nag\u0142\u00f3wki",
+    "role": "button"
+   },
+   "e15": {
+    "bbox": "r0c3",
+    "name": "Listy",
+    "role": "button"
+   },
+   "e16": {
+    "bbox": "r0c3",
+    "name": "Pogrubienie (Ctrl+B)",
+    "role": "button"
+   },
+   "e17": {
+    "bbox": "r0c3",
+    "name": "Kursywa (Ctrl+I)",
+    "role": "button"
+   },
+   "e18": {
+    "bbox": "r0c4",
+    "name": "Przekre\u015blenie (Ctrl+Shift+X)",
+    "role": "button"
+   },
+   "e19": {
+    "bbox": "r0c4",
+    "name": "\u0141\u0105cze (Ctrl+K)",
+    "role": "button"
+   },
+   "e2": {
+    "bbox": "r4c3",
+    "focused": true,
+    "name": "document 1",
+    "role": "document"
+   },
+   "e20": {
+    "bbox": "r0c4",
+    "name": "Tabela",
+    "role": "button"
+   },
+   "e21": {
+    "bbox": "r0c4",
+    "name": "Wyczy\u015b\u0107 formatowanie (Ctrl+spacja)",
+    "role": "button"
+   },
+   "e22": {
+    "bbox": "r0c7",
+    "name": "Narz\u0119dzia do pisania",
+    "role": "button"
+   },
+   "e23": {
+    "bbox": "r0c7",
+    "name": "Co nowego",
+    "role": "button"
+   },
+   "e24": {
+    "bbox": "r0c7",
+    "name": "Awatar u\u017cytkownika",
+    "role": "button"
+   },
+   "e25": {
+    "bbox": "r0c7",
+    "name": "Ustawienia",
+    "role": "button"
+   },
+   "e7": {
+    "bbox": "r0c0",
+    "name": "tabitem 1",
+    "role": "tabitem"
+   },
+   "e9": {
+    "bbox": "r0c1",
+    "name": "Zamknij kart\u0119",
+    "role": "button"
+   }
+  },
+  "window_title": "notepad"
+ }
+}
