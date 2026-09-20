@@ -206,18 +206,35 @@ def warm_bench(provider: str | None, *, repeats: int = 3, n: int = 12) -> list[d
     once per connection pool — the second one is warming an already-warm socket
     and measures nothing. ``none`` is the control: no warm-up at all, so the
     first decision pays whatever the warm-up would have paid.
+
+    ``warm_tokens_in_median`` / ``warm_cost_usd_median`` come from the warm-up
+    decision itself (``JevClient.last_warm_decision``), so the price of
+    ``mode="decision"`` is a measurement in this file rather than a number
+    quoted from memory in the docs. ``head`` and ``none`` record zero because
+    they really do cost nothing.
+
+    Rows are keyed by the provider actually used, not by whatever was asked for:
+    a run without ``--provider`` used to file itself under ``"resolved"``, which
+    names no endpoint and silently shadowed nothing.
     """
     out: list[dict] = []
     state = make_state(n)
     qs = questions(list(state["elements"]))
+    resolved = provider or ""
     for mode in ("none", "head", "decision"):
         warms: list[float] = []
         firsts: list[float] = []
         seconds: list[float] = []
+        warm_tokens: list[int] = []
+        warm_costs: list[float] = []
         for _ in range(repeats):
             jev = JevClient(Config.from_env(provider))
+            resolved = jev.config.provider
             try:
                 warm_ms = 0.0 if mode == "none" else jev.warm(mode=mode)
+                if jev.last_warm_decision is not None:
+                    warm_tokens.append(jev.last_warm_decision.input_tokens)
+                    warm_costs.append(jev.last_warm_decision.cost_usd)
                 first = jev.decide(state, qs, session_id="cu-warm")
                 second = jev.decide(state, qs, session_id="cu-warm")
                 warms.append(warm_ms)
@@ -226,11 +243,14 @@ def warm_bench(provider: str | None, *, repeats: int = 3, n: int = 12) -> list[d
             finally:
                 jev.close()
         record = {
-            "provider": provider or "resolved",
+            "provider": resolved,
             "mode": mode,
             "repeats": repeats,
             "n": n,
             "warm_ms_median": round(statistics.median(warms), 1) if warms else 0.0,
+            "warm_tokens_in_median": int(statistics.median(warm_tokens)) if warm_tokens else 0,
+            "warm_cost_usd_median": round(statistics.median(warm_costs), 8) if warm_costs else 0.0,
+            "warm_cost_usd_total": round(sum(warm_costs), 8),
             "first_decision_ms_median": round(statistics.median(firsts), 1),
             "first_decision_ms": [round(v, 1) for v in firsts],
             "second_decision_ms_median": round(statistics.median(seconds), 1),
@@ -242,7 +262,9 @@ def warm_bench(provider: str | None, *, repeats: int = 3, n: int = 12) -> list[d
         print(f"warm mode={mode:8s} warm={record['warm_ms_median']:7.1f} ms  "
               f"first decision={record['first_decision_ms_median']:7.1f} ms  "
               f"(next {record['second_decision_ms_median']:7.1f} ms)  "
-              f"warm+first={record['warm_plus_first_ms']:7.1f} ms")
+              f"warm+first={record['warm_plus_first_ms']:7.1f} ms  "
+              f"warm cost=${record['warm_cost_usd_median']:.6f} "
+              f"({record['warm_tokens_in_median']} tok)")
     return out
 
 
