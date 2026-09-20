@@ -657,18 +657,50 @@ leverage is better questions and less state. So the Skill teaches both.
 
 ---
 
+## 🖱️ The hot path — one decision per step
+
+The default client is tuned for a *burst* of decisions inside one harness turn.
+An agent loop is the other shape — one decision per step, every few hundred
+milliseconds — and `JevClient(hot=True)` is the same client with that shape's
+priorities: 1.5 s read timeout, 0 retries, one warm connection.
+
+```python
+from jevskill import JevClient
+
+with JevClient(hot=True) as jev:
+    jev.warm()                                   # HEAD /v1/models — free, and enough
+    step = jev.decide(ui_tree, questions)        # target · op · goal_reached · needs_text
+```
+
+Three things here were **measured before being believed**, and one of them lost:
+
+* **Warm-up.** The vendor's cold first decision is 682 ms; a free `HEAD` beforehand
+  makes it 284 ms. A paid warm-up decision buys 24 ms more. `HEAD` is the default.
+* **Hedging** (a duplicate request after 400 ms) was implemented, then measured on
+  both providers: **66 duplicates fired, 0 won**, and the calls that fired one got
+  slower. It ships off. `hedge=True` turns it on and always costs the loser.
+* **State size.** Latency is flat to ~30 UI elements, then climbs: +125 ms on the
+  vendor and +205 ms on OpenRouter by 240 elements. The answer did not degrade —
+  `target` stayed at 0.97–0.99 with 241 options — so reduce for latency, not accuracy.
+
+`stuck` ("did the last action do nothing?") returned **0.45–0.60 on a screen that
+had obviously changed**, so change detection is a hash diff in code, not a question.
+Every number: [`hotloop.md`](skills/jev/references/hotloop.md) and
+[`bench/cu_results.json`](bench/cu_results.json). The loop itself — what code owns
+and what Jev is asked — is [`act.md`](skills/jev/references/act.md).
+
 ## 📁 What's inside
 
 ```
 skills/jev/            the Agent Skill — works with NOTHING installed
   SKILL.md             what your harness loads
-  references/          api · patterns · prompting · benchmarks · commands
+  references/          api · patterns · prompting · benchmarks · commands · hotloop · act
   scripts/
     jev_query.py       stdlib-only caller: decisions + reversible REDUCE
     jev_recovery.py    read back everything REDUCE rejected
     jev.py             delegates to the full CLI when the package is installed
 jevskill/              the Python package — the measurement half
-  client.py            Decisions API — warm HTTP/2, retries, per-stage timings
+  client.py            Decisions API — warm HTTP/2, retries, per-stage timings; hot mode, async
   primitives.py        noul / choice / score, with validation that prevents 400s
   orchestrate.py       pattern selection, profiling, chunking, iteration rules
   redact.py            scrub credential-shaped strings before state is sent
@@ -679,6 +711,9 @@ jevskill/              the Python package — the measurement half
 bench/
   run.py               E1–E7 microbenchmarks (latency, fan-out, REDUCE, guards)
   ab.py                the A/B evaluation vs the model doing it alone
+  cu_bench.py          per-step decision bench: providers, N=12…240, warm-up, hedging → cu_results.json
+  act_validate.py      the three live calls behind references/act.md §9
+  cu_tasks.json        10 Windows computer-use tasks with oracles (+ cu_tasks.md)
 tests/                 622 tests, offline, green
 docs/install.md        install guide an agent reads and executes
 docs/DESIGN.md         architecture + the mistakes that shaped it
@@ -730,9 +765,14 @@ complete, and there are now two benchmark suites. What is **not** proven:
 | [`skills/jev/SKILL.md`](skills/jev/SKILL.md) | the Skill your agent loads |
 | [`skills/jev/references/api.md`](skills/jev/references/api.md) | exact API shapes, both providers, every field, error codes |
 | [`skills/jev/references/patterns.md`](skills/jev/references/patterns.md) | all 9 patterns, worked questions |
-| [`skills/jev/references/prompting.md`](skills/jev/references/prompting.md) | 10 rules, each backed by a measurement |
+| [`skills/jev/references/prompting.md`](skills/jev/references/prompting.md) | the vendor's 11 failure modes, then 11 rules, each backed by a measurement |
 | [`skills/jev/references/commands.md`](skills/jev/references/commands.md) | every command, flag and script invocation |
 | [`skills/jev/references/benchmarks.md`](skills/jev/references/benchmarks.md) | every number + threats to validity |
+| [`skills/jev/references/hotloop.md`](skills/jev/references/hotloop.md) | `JevClient(hot=True)`, warm-up and hedging **measured** (hedging lost), latency vs state size on both providers |
+| [`skills/jev/references/act.md`](skills/jev/references/act.md) | the `act` pattern: Jev as the per-step decision core of a GUI loop, validated live |
+| [`bench/cu_tasks.md`](bench/cu_tasks.md) | the 10-task Windows computer-use benchmark: method, oracles, threats to validity |
+| [`docs/research-2026-09-20-jev-cu.md`](docs/research-2026-09-20-jev-cu.md) | research + critique of this skill against the vendor's docs; competitor table |
+| [`docs/plan-2026-09-20.md`](docs/plan-2026-09-20.md) | the phased plan behind 0.12.0 (`TASKS.md` tracks it) |
 | [`CHANGELOG.md`](CHANGELOG.md) | versioned history |
 | [`docs/install.md`](docs/install.md) | install guide written for an **agent** to read and execute |
 | [`docs/DESIGN.md`](docs/DESIGN.md) | why it's built this way |
