@@ -19,16 +19,21 @@ import pytest
 from jevskill.client import (
     HAS_HTTPX,
     HOT_HEDGE_DEFAULT,
+    MAX_ABANDONED_HEDGE_LEGS,
     WARM_QUESTIONS,
     AsyncJevClient,
     JevClient,
     _apply_hot_defaults,
+    _timeouts,
 )
 from jevskill.config import (
+    DEFAULT_RETRIES,
+    DEFAULT_TIMEOUT_READ_S,
     HOT_RETRIES,
     HOT_TIMEOUT_CONNECT_S,
     HOT_TIMEOUT_READ_S,
     INPUT_PRICE_PER_MTOK,
+    MIN_HEDGE_AFTER_MS,
     Config,
 )
 from jevskill.errors import JevApiError, JevConfigError
@@ -71,7 +76,11 @@ class SlowTransport:
         with self._lock:
             self.bodies.append(content)
             leg = self._legs.pop(0) if self._legs else Leg(0.0)
-        time.sleep(leg.delay_s)
+        # `Event().wait` rather than `time.sleep`, because a test that skips the
+        # retry backoff does it by patching `jevskill.client.time.sleep` — which
+        # is the `time` module itself, so the scripted latency disappeared too
+        # and a hedge that should have fired never did.
+        threading.Event().wait(leg.delay_s)
         return FakeResponse(leg.status, leg.payload)
 
     def head(self, url, **kwargs):
@@ -98,8 +107,8 @@ class TestHotDefaults:
 
     def test_default_client_is_untouched(self):
         client, _ = make_client([Leg(0.0)])
-        assert client.config.timeout_read_s == Config.__dataclass_fields__["timeout_read_s"].default
-        assert client.config.retries == Config.__dataclass_fields__["retries"].default
+        assert client.config.timeout_read_s == DEFAULT_TIMEOUT_READ_S
+        assert client.config.retries == DEFAULT_RETRIES
         assert client.config.hedge is False
         assert client.hot is False
 
@@ -114,8 +123,8 @@ class TestHotDefaults:
     def test_the_callers_config_object_is_never_mutated(self):
         config = Config(api_key="k")
         JevClient(config, client=SlowTransport([Leg(0.0)]), hot=True)
-        assert config.timeout_read_s == 60.0
-        assert config.retries == 2
+        assert config.timeout_read_s == DEFAULT_TIMEOUT_READ_S
+        assert config.retries == DEFAULT_RETRIES
         assert config.hedge is False
 
     def test_hot_follows_the_measured_hedging_default(self):
@@ -162,7 +171,7 @@ class TestHedging:
 
     def test_a_slow_answer_fires_the_duplicate_and_the_faster_leg_wins(self):
         client, transport = make_client(
-            [Leg(0.30), Leg(0.02)], hot=True, hedge=True, hedge_after_ms=40
+            [Leg(0.30), Leg(0.02)], hot=True, hedge=True, hedge_after_ms=60
         )
         result = client.decide({}, QUESTIONS)
         assert result.timing_ms["hedged"] is True
@@ -171,7 +180,7 @@ class TestHedging:
         assert transport.bodies[0] == transport.bodies[1], "the hedge must be identical"
 
     def test_the_abandoned_leg_is_costed_rather_than_ignored(self):
-        client, _ = make_client([Leg(0.30), Leg(0.02)], hot=True, hedge=True, hedge_after_ms=40)
+        client, _ = make_client([Leg(0.30), Leg(0.02)], hot=True, hedge=True, hedge_after_ms=60)
         result = client.decide({}, QUESTIONS)
         expected = FIXTURE["usage"]["input_tokens"] / 1_000_000 * INPUT_PRICE_PER_MTOK
         assert result.usage["hedge_cost_usd_est"] == pytest.approx(expected)
@@ -181,7 +190,7 @@ class TestHedging:
 
     def test_a_primary_that_answers_first_still_wins_after_a_hedge_fired(self):
         client, transport = make_client(
-            [Leg(0.10), Leg(0.50)], hot=True, hedge=True, hedge_after_ms=40
+            [Leg(0.10), Leg(0.50)], hot=True, hedge=True, hedge_after_ms=60
         )
         result = client.decide({}, QUESTIONS)
         assert result.timing_ms["hedged"] is True
@@ -192,10 +201,10 @@ class TestHedging:
         # The primary comes back first with a retryable 429; the hedge is still
         # running and its 200 is worth more than the error.
         client, _ = make_client(
-            [Leg(0.06, 429, {"error": {"message": "slow down"}}), Leg(0.25)],
+            [Leg(0.12, 429, {"error": {"message": "slow down"}}), Leg(0.25)],
             hot=True,
             hedge=True,
-            hedge_after_ms=40,
+            hedge_after_ms=60,
         )
         result = client.decide({}, QUESTIONS)
         assert result.timing_ms["winner"] == "hedge"
@@ -203,11 +212,11 @@ class TestHedging:
 
     def test_two_failures_still_raise_the_api_error(self):
         client, _ = make_client(
-            [Leg(0.05, 401, {"error": {"message": "no key"}}),
-             Leg(0.05, 401, {"error": {"message": "no key"}})],
+            [Leg(0.20, 401, {"error": {"message": "no key"}}),
+             Leg(0.20, 401, {"error": {"message": "no key"}})],
             hot=True,
             hedge=True,
-            hedge_after_ms=20,
+            hedge_after_ms=60,
         )
         with pytest.raises(JevApiError) as info:
             client.decide({}, QUESTIONS)
@@ -219,7 +228,7 @@ class TestHedging:
                 raise ConnectionError("network down")
 
         client = JevClient(Config(api_key="k", retries=0), client=Boom([]),
-                           hedge=True, hedge_after_ms=20)
+                           hedge=True, hedge_after_ms=60)
         with pytest.raises(JevApiError) as info:
             client.decide({}, QUESTIONS)
         assert info.value.status == 0
@@ -228,7 +237,7 @@ class TestHedging:
         client, _ = make_client([Leg(0.0)], hedge=True, hedge_after_ms=50)
         result = client.decide({}, QUESTIONS)
         assert result.timing_ms["hedged"] is False  # reported, but never fired
-        assert client.config.timeout_read_s == 60.0  # still not a hot client
+        assert client.config.timeout_read_s == DEFAULT_TIMEOUT_READ_S  # not hot
 
 
 class TestWarmModes:
@@ -328,7 +337,7 @@ class TestAsyncClient:
     def test_hedging_cancels_the_loser_but_still_costs_it(self):
         async def go():
             client, transport = make_async([Leg(0.30), Leg(0.01)],
-                                           hot=True, hedge=True, hedge_after_ms=40)
+                                           hot=True, hedge=True, hedge_after_ms=60)
             result = await client.decide({}, QUESTIONS)
             await client.aclose()
             return result, transport
@@ -378,3 +387,273 @@ class TestAsyncClient:
             await client.aclose()
 
         asyncio.run(go())
+
+
+class TestStatedValuesBeatHotDefaults:
+    """`hot=True` retunes *silence*, never a number the caller said out loud.
+
+    The regression: hot mode compared each field to the dataclass default, so a
+    caller who stated the documented value — `Config(timeout_read_s=60.0,
+    retries=2)` — was indistinguishable from one who said nothing, and was
+    silently given 1.5 s and 0 retries. The fix is that an unstated field
+    arrives as `None` and is resolved in `__post_init__`, which records what it
+    resolved; value equality cannot express "stated" and a sentinel can.
+    """
+
+    def test_stating_the_documented_default_is_still_stating_it(self):
+        config = Config(
+            api_key="k", timeout_read_s=DEFAULT_TIMEOUT_READ_S, retries=DEFAULT_RETRIES
+        )
+        hot = _apply_hot_defaults(config, hot=True, hedge=None, hedge_after_ms=None)
+        assert hot.timeout_read_s == DEFAULT_TIMEOUT_READ_S, "a stated 60 s was retuned"
+        assert hot.retries == DEFAULT_RETRIES, "stated retries were retuned"
+        # The one field nobody mentioned is still hot mode's business.
+        assert hot.timeout_connect_s == HOT_TIMEOUT_CONNECT_S
+
+    def test_the_same_through_the_client_constructor(self):
+        config = Config(api_key="sk-or-v1-test", timeout_read_s=DEFAULT_TIMEOUT_READ_S)
+        client = JevClient(config, client=SlowTransport([Leg(0.0)]), hot=True)
+        assert client.config.timeout_read_s == DEFAULT_TIMEOUT_READ_S
+        assert client.config.retries == HOT_RETRIES  # unstated, so retuned
+
+    def test_silence_is_still_retuned(self):
+        hot = _apply_hot_defaults(
+            Config(api_key="k"), hot=True, hedge=None, hedge_after_ms=None
+        )
+        assert hot.timeout_read_s == HOT_TIMEOUT_READ_S
+        assert hot.retries == HOT_RETRIES
+
+    def test_from_env_treats_an_override_as_stated(self, monkeypatch):
+        monkeypatch.setenv("JEVSKILL_API_KEY", "sk-or-v1-test")
+        monkeypatch.delenv("JEVSKILL_PROVIDER", raising=False)
+        config = Config.from_env(timeout_read_s=DEFAULT_TIMEOUT_READ_S)
+        assert config.is_defaulted("timeout_read_s") is False
+        hot = _apply_hot_defaults(config, hot=True, hedge=None, hedge_after_ms=None)
+        assert hot.timeout_read_s == DEFAULT_TIMEOUT_READ_S
+
+    def test_a_replaced_config_reports_nothing_as_defaulted(self):
+        """`replace` re-runs `__init__` with concrete values, so a copy cannot
+        claim a field is unstated. That is the safe direction: a copy is never
+        re-tuned behind whoever made it."""
+        from dataclasses import replace
+
+        copy = replace(Config(api_key="k"), warm_mode="head")
+        assert copy.timeout_read_s == DEFAULT_TIMEOUT_READ_S
+        assert copy.is_defaulted("timeout_read_s") is False
+
+
+class TestHedgeDelayFloor:
+    """`hedge_after_ms=0` duplicated *every* call. It is now a ValueError."""
+
+    def test_zero_is_refused_by_the_config(self):
+        with pytest.raises(ValueError, match="floor"):
+            Config(api_key="k", hedge=True, hedge_after_ms=0)
+
+    def test_zero_is_refused_by_the_client(self):
+        with pytest.raises(ValueError, match="floor"):
+            make_client([Leg(0.0)], hot=True, hedge=True, hedge_after_ms=0)
+
+    def test_the_floor_itself_is_accepted(self):
+        client, _ = make_client([Leg(0.0)], hedge=True, hedge_after_ms=MIN_HEDGE_AFTER_MS)
+        assert client.config.hedge_after_ms == MIN_HEDGE_AFTER_MS
+
+    def test_from_env_validates_its_overrides_too(self, monkeypatch):
+        monkeypatch.setenv("JEVSKILL_API_KEY", "sk-or-v1-test")
+        with pytest.raises(ValueError, match="floor"):
+            Config.from_env(hedge_after_ms=1.0)
+
+
+class TestHedgingAndRetriesDoNotMultiply:
+    """Two tail strategies that compose by multiplication is a bug, not a plan.
+
+    Measured before the fix: `retries=2, hedge=True` put **six** requests on the
+    wire for one decision — two legs on each of three attempts. Hedging now
+    applies to attempt 0 only, so one decision costs at most `retries + 2`
+    requests instead of `2 * (retries + 1)`.
+    """
+
+    def test_a_hedged_first_attempt_plus_one_retry_is_three_requests(self, monkeypatch):
+        monkeypatch.setattr("jevskill.client.time.sleep", lambda _s: None)
+        client, transport = make_client(
+            [Leg(0.30, 503, b"overloaded"), Leg(0.02, 503, b"overloaded"), Leg(0.0)],
+            hedge=True,
+            hedge_after_ms=60,
+        )
+        result = client.decide({}, QUESTIONS)
+        assert result.noul("is_bug") == pytest.approx(0.9)
+        assert len(transport.bodies) == 3, "the retry hedged as well"
+        assert client.requests_sent == 3
+
+    def test_every_attempt_failing_is_four_requests_not_six(self, monkeypatch):
+        monkeypatch.setattr("jevskill.client.time.sleep", lambda _s: None)
+        legs = [Leg(0.30, 503, b"overloaded"), Leg(0.02, 503, b"overloaded")] + [
+            Leg(0.0, 503, b"overloaded") for _ in range(6)
+        ]
+        client, transport = make_client(legs, hedge=True, hedge_after_ms=60)
+        with pytest.raises(JevApiError):
+            client.decide({}, QUESTIONS)
+        # 2 (hedged first attempt) + 1 + 1. It used to be 2 + 2 + 2.
+        assert len(transport.bodies) == 4
+
+
+class TestAbandonedLegsCannotStarveThePool:
+    """An abandoned leg holds a pool connection until it answers.
+
+    With `max_connections=8` a loop that hedges faster than the losers retire
+    ends up waiting for a connection and then failing on the pool timeout — a
+    failure invented by the mechanism that was meant to remove failures. Past
+    `MAX_ABANDONED_HEDGE_LEGS` the client stops hedging and says so.
+    """
+
+    def test_a_saturated_client_declines_to_hedge_and_records_why(self):
+        client, transport = make_client(
+            [Leg(0.30), Leg(0.0)], hot=True, hedge=True, hedge_after_ms=60
+        )
+        for _ in range(MAX_ABANDONED_HEDGE_LEGS):
+            assert client._hedge_slots.acquire(blocking=False)
+        result = client.decide({}, QUESTIONS)
+        assert result.timing_ms["hedged"] is False
+        assert result.timing_ms["note"] == "hedge_skipped_saturated"
+        assert len(transport.bodies) == 1, "it hedged with no slot free"
+
+    def test_the_slot_comes_back_once_both_legs_have_finished(self):
+        client, _ = make_client(
+            [Leg(0.30), Leg(0.02)], hot=True, hedge=True, hedge_after_ms=60
+        )
+        client.decide({}, QUESTIONS)
+        deadline = time.time() + 5.0
+        held: list[int] = []
+        while time.time() < deadline:
+            held = [
+                i for i in range(MAX_ABANDONED_HEDGE_LEGS)
+                if client._hedge_slots.acquire(blocking=False)
+            ]
+            if len(held) == MAX_ABANDONED_HEDGE_LEGS:
+                break
+            for _ in held:
+                client._hedge_slots.release()
+            time.sleep(0.02)
+        assert len(held) == MAX_ABANDONED_HEDGE_LEGS, "the abandoned leg kept its slot"
+
+    @pytest.mark.skipif(not HAS_HTTPX, reason="httpx not installed")
+    def test_the_pool_timeout_is_stated_not_inherited(self):
+        """`httpx.Timeout(1.5, connect=2.0)` silently sets pool=1.5, which is
+        shorter than the read timeout of the request already holding the
+        connection. Waiting for a connection is cheaper than failing."""
+        timeout = _timeouts(HOT_TIMEOUT_READ_S, HOT_TIMEOUT_CONNECT_S)
+        assert timeout.pool == pytest.approx(
+            max(HOT_TIMEOUT_READ_S, HOT_TIMEOUT_CONNECT_S) + 1.0
+        )
+        assert timeout.pool > timeout.read
+
+
+class TestRequestsAreCountedWhenSent:
+    """`requests_sent` is what the provider bills for, so it counts departures.
+
+    Counting on return undercounted exactly the interesting case: a hedge whose
+    loser never answers was never counted, so a client that put two bodies on
+    the wire reported one.
+    """
+
+    def test_a_leg_that_never_returns_is_still_counted(self):
+        client, transport = make_client(
+            [Leg(5.0), Leg(0.02)], hot=True, hedge=True, hedge_after_ms=60
+        )
+        result = client.decide({}, QUESTIONS)
+        assert result.timing_ms["winner"] == "hedge"
+        assert len(transport.bodies) == 2
+        assert client.requests_sent == 2, "the abandoned leg was not counted"
+
+    def test_the_plain_path_still_counts_one_per_call(self):
+        client, _ = make_client([Leg(0.0), Leg(0.0)])
+        client.decide({}, QUESTIONS)
+        client.decide({}, QUESTIONS)
+        assert client.requests_sent == 2
+
+
+class TestConfigCopiesAreIndependent:
+    def test_a_hot_client_does_not_share_the_callers_extra_dict(self):
+        config = Config(api_key="sk-or-v1-test")
+        config.extra["key_name"] = "JEV_API_KEY"
+        client = JevClient(config, client=SlowTransport([Leg(0.0)]), hot=True)
+        client.config.extra["marker"] = "written by the client"
+        assert "marker" not in config.extra, "the two configs share one dict"
+        assert client.config.extra["key_name"] == "JEV_API_KEY"
+
+
+class TestWarmUpIsOneAttempt:
+    def test_a_failing_warm_up_decision_does_not_retry(self, monkeypatch):
+        """A warm-up inherited `retries`, so warming against a dead endpoint
+        spent three attempts and a backoff sleep (751 ms measured) before
+        returning the shrug its docstring promises."""
+        monkeypatch.setattr("jevskill.client.time.sleep", lambda _s: None)
+        client, transport = make_client([Leg(0.0, 503, b"down")] * 5)
+        client.warm(mode="decision")
+        assert len(transport.bodies) == 1, "the warm-up retried"
+        assert client.config.retries == DEFAULT_RETRIES, "retries stayed pinned"
+        assert client.last_warm_decision is None
+
+    def test_a_successful_warm_up_decision_is_kept_for_its_cost(self):
+        client, _ = make_client([Leg(0.0)])
+        client.warm(mode="decision")
+        assert client.last_warm_decision is not None
+        assert client.last_warm_decision.input_tokens == 1000
+
+    def test_head_mode_makes_no_decision_at_all(self):
+        client, transport = make_client([Leg(0.0)])
+        client.warm(mode="head")
+        assert transport.heads == 1 and transport.bodies == []
+        assert client.last_warm_decision is None
+
+
+class TestAsyncFailureContract:
+    """`decide_many` must not orphan the tasks it started.
+
+    A plain `gather` returns the moment one task raises, leaving the other N-1
+    running against a client the caller is about to close: their answers are
+    discarded, their cost is not, and closing the client underneath them turns
+    one error into several.
+    """
+
+    def test_one_failure_waits_for_the_others_then_raises(self):
+        async def go():
+            client, transport = make_async(
+                [Leg(0.01, 401, {"error": {"message": "no key"}}),
+                 Leg(0.15), Leg(0.15)]
+            )
+            try:
+                with pytest.raises(JevApiError) as info:
+                    await client.decide_many([({"i": i}, QUESTIONS) for i in range(3)])
+                assert info.value.status == 401
+                # Every leg finished before the raise: nothing is still in
+                # flight when the caller closes the client.
+                assert len(transport.bodies) == 3
+                assert client.requests_sent == 3
+            finally:
+                await client.aclose()
+
+        asyncio.run(go())
+
+    def test_the_hedge_budget_starts_where_the_sync_one_does(self):
+        """The async budget used to start *after* the `hedge_after_ms` wait, so
+        two clients with the same config gave up `hedge_after_ms` apart."""
+        async def go():
+            transport = AsyncTransport([Leg(5.0), Leg(5.0)])
+            client = AsyncJevClient(
+                Config(api_key="k", timeout_read_s=0.2, timeout_connect_s=0.1,
+                       retries=0),
+                client=transport,
+                hedge=True,
+                hedge_after_ms=300,
+            )
+            started = time.perf_counter()
+            with pytest.raises(JevApiError):
+                await client.decide({}, QUESTIONS)
+            elapsed = time.perf_counter() - started
+            await client.aclose()
+            return elapsed
+
+        elapsed = asyncio.run(go())
+        # budget = read (0.2) + connect (0.1) + 0.5 = 0.8 s from the *start*.
+        # With the clock started after the 300 ms wait it was ~1.1 s.
+        assert 0.6 < elapsed < 1.0, f"gave up after {elapsed:.2f}s"
