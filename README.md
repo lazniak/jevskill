@@ -1,5 +1,19 @@
 <div align="center">
 
+[![▶ Jev vs ASTRA6 — building the fastest ComputerUse, live in Claude Code](https://img.youtube.com/vi/xk1ltPDrKGw/maxresdefault.jpg)](https://youtube.com/live/xk1ltPDrKGw)
+
+### ▶ Live today at 20:00 — *Jev vs ASTRA6: building the fastest ComputerUse, live in Claude Code*
+
+**Main language: Polish** · **English subtitles**
+
+**The Skill is just the beginning. Next: ComputerUse.**
+
+</div>
+
+---
+
+<div align="center">
+
 # jevskill
 
 **Your agent's context window is full of logs it didn't need to read.**
@@ -9,7 +23,7 @@ tokens on decisions — and start making them for **$0.000013** in **325 ms**.
 
 **A/B tested: 99.3% fewer input tokens, and accuracy up, not down (18/18 vs 15/18).**
 
-[![tests](https://img.shields.io/badge/tests-509%20passing-brightgreen)](#-does-it-actually-help-ab-tested)
+[![tests](https://img.shields.io/badge/tests-516%20passing-brightgreen)](#-does-it-actually-help-ab-tested)
 [![A/B](https://img.shields.io/badge/A%2FB-99.3%25%20fewer%20tokens-blue)](#-does-it-actually-help-ab-tested)
 [![cost](https://img.shields.io/badge/decision-%240.000013-success)](#-cost-per-decision)
 [![license](https://img.shields.io/badge/license-MIT-informational)](LICENSE)
@@ -651,15 +665,15 @@ jevskill/              the Python package — the measurement half
 bench/
   run.py               E1–E7 microbenchmarks (latency, fan-out, REDUCE, guards)
   ab.py                the A/B evaluation vs the model doing it alone
-tests/                 509 tests, offline, green
+tests/                 516 tests, offline, green
 docs/install.md        install guide an agent reads and executes
 docs/DESIGN.md         architecture + the mistakes that shaped it
 AGENTS.md              conventions for agents working on this repo
 ```
 
-## 🧭 Status & known limits — `v0.7.0`
+## 🧭 Status & known limits — `v0.10.1`
 
-CLI, skill, bundled scripts, ledger and reference docs (509 offline tests) are
+CLI, skill, bundled scripts, ledger and reference docs (516 offline tests) are
 complete, and there are now two benchmark suites. What is **not** proven:
 
 * **Redaction is not a PII policy.** It catches credential-shaped strings, not
@@ -738,6 +752,20 @@ especially welcome — this repo publishes its own.
 
 MIT. Jev and TypeSafe are products of TypeSafe AI. This is an independent client,
 not affiliated with them.
+
+---
+
+## 👤 About me
+
+I build things that have to work when nobody is watching.
+
+| | |
+|---|---|
+| **[lazniak.com](https://lazniak.com)** | **MyWorks** — a catalogue of what I've built. It answers questions about the work through a model on OpenRouter, which is the same route this skill uses. |
+| **[pablogfx.com/timeif](https://pablogfx.com/timeif)** | **TimeIF** — a cinematic, retro-style game. Atmosphere first, and the rendering budget was never the point. |
+
+This repo is the same instinct with a different subject: a decision model is cheap,
+but only if you ask it well and measure whether the answer was worth the round trip.
 
 <div align="center">
 

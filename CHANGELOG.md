@@ -8,10 +8,43 @@ Because this project's value is its *measurements*, entries that change publishe
 numbers say so explicitly, and superseded figures are named rather than quietly
 replaced.
 
+## [0.10.1] — 2026-09-20
+
+### Fixed — four published figures were wrong, and are now checked by a test
+
+- The README's status heading said **`v0.7.0`** while the package had shipped
+  **`v0.10.0`** — three releases of drift, invisible because nothing compared them.
+- `0.10.0` claimed `test_blocks.py` had **24** tests. It had **28**.
+- `0.8.0` claimed `test_cache.py` had **24** tests. It had **26**.
+- Six release headings were dated **2026-09-21**. Every release from `0.6.1` to
+  `0.10.0` shipped on **2026-09-20**, which GitHub's own release timestamps show.
+  The dates came from reading `dd.MM.yyyy` output as `MM/dd`.
+
+The superseded figures are named rather than silently replaced. `tests/test_published_metadata.py`
+now asserts that the README heading, the `SKILL.md` frontmatter, `pyproject.toml` and the
+marketplace manifest all agree with `jevskill.__version__`, and that the README badge, the
+README file tree, the README status line and `AGENTS.md` all quote the real collected
+count. Both classes of drift had happened before — the badge was wrong for five
+releases — and remembering is not a mechanism.
+
+### Added — a live-session banner at the top of the README
+
+[`youtube.com/live/xk1ltPDrKGw`](https://youtube.com/live/xk1ltPDrKGw) — *Jev vs ASTRA6:
+building the fastest ComputerUse, live in Claude Code*. Spoken in **Polish** with
+**English subtitles**. Shown as a linked thumbnail rather than an `<iframe>`, because
+GitHub sanitises embedded frames out of READMEs.
+
+### Added — an "About me" section at the foot of the README
+
+[`lazniak.com`](https://lazniak.com) for the works catalogue — which answers questions
+about the work through a model on OpenRouter, the same route this skill uses — and
+[`pablogfx.com/timeif`](https://pablogfx.com/timeif), a cinematic retro-style game.
+Both links were fetched before being published; a dead link in a README is a claim
+that was not checked.
+
 ## [Unreleased]
 
-### Planned
-- A genuinely ambiguous case for the `shortlist` pattern, so narrowing can be
+### Planned- A genuinely ambiguous case for the `shortlist` pattern, so narrowing can be
   demonstrated rather than only unit-tested.
 - Per-repository ledger merging (`jevskill stats --merge`).
 - Live verification of the vendor endpoint. It is verified by 51 unit tests plus
@@ -23,7 +56,7 @@ replaced.
   indentation (minified JSON, unformatted XML). One workload proves the fix, not the
   generality.
 
-## [0.10.0] — 2026-09-21
+## [0.10.0] — 2026-09-20
 
 The one published loss this repo had left open, fixed — and a second defect found
 while proving it.
@@ -102,7 +135,7 @@ to prevent.
 
 ### Verified
 
-- 509 tests green, from 474. New: `test_blocks.py` (24) and `test_ab_arm.py` (7).
+- 509 tests green, from 474. New: `test_blocks.py` (28) and `test_ab_arm.py` (7).
   Five of the seven arm tests fail against the old line-gating arm, checked by
   stashing `bench/ab.py` — the fix cannot be silently reverted.
 - Live A/B re-run: `python bench/ab.py --runs 3`, all six workloads, results in
@@ -110,7 +143,7 @@ to prevent.
 - The bundled script verified live on a real YAML file: the drifting flag is kept
   **with its header**, which is precisely what was missing before.
 
-## [0.9.0] — 2026-09-21
+## [0.9.0] — 2026-09-20
 
 One more measurable token saving, and the distribution work this repo was worst at.
 
@@ -188,7 +221,7 @@ written against a guess.
 
 No published number changes other than the corrected badge.
 
-## [0.8.0] — 2026-09-21
+## [0.8.0] — 2026-09-20
 
 Two things that actually save tokens, and one that stops a reduction from lying.
 The token work was deliberately done first: a cache and a prefilter are the only
@@ -276,7 +309,7 @@ no empirical demonstration.
 
 ### Verified
 
-- 467 tests green, from 424. New: `test_cache.py` (24), `test_reduce_failsafe.py`
+- 467 tests green, from 424. New: `test_cache.py` (26), `test_reduce_failsafe.py`
   (7), plus CLI tests for `--cache` and `--skip-regex`.
 - The seven fail-safe tests **all fail on 0.7.0**, checked by stashing the script.
 - Live: cache hit costs $0.00 with an identical answer; prefilter cut 990 → 626
@@ -286,7 +319,7 @@ no empirical demonstration.
 
 No published number changes.
 
-## [0.7.0] — 2026-09-21
+## [0.7.0] — 2026-09-20
 
 Safety and contract work, prompted by reading three competing Jev skills
 (`oomol-lab/skills`, `wuyoscar/jev-skill`, `reachjalil/jevlogs`). Two of them were
@@ -373,7 +406,7 @@ is corrected.
 - No published number changes.
 
 
-## [0.6.2] — 2026-09-21
+## [0.6.2] — 2026-09-20
 
 Auditing the recovery handle end to end — the one feature whose entire promise is
 that a reduction is reversible — found that it had **no tests at all**, and one
@@ -407,7 +440,7 @@ issued a handle; the rejected 7 came back with indices `[0,1,3,4,6,7,9]`, leavin
 `{2,5,8}` kept — 10 of 10 accounted for. `--list`, `--summary`, `--grep`, `--index`,
 `--all`, `--out` and `--json` all round-tripped. No published number changes.
 
-## [0.6.1] — 2026-09-21
+## [0.6.1] — 2026-09-20
 
 A measurement bug in `jevskill doctor`, found by running the released 0.6.0
 build rather than by any test. No published number changes: the stage breakdown
