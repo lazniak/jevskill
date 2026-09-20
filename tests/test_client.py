@@ -319,6 +319,44 @@ class TestWarm:
         assert client.warm() >= 0.0
 
 
+class TestDefaultPathIsUnchangedByHotMode:
+    """The hot path exists next to the default one, not instead of it.
+
+    A loop-shaped client was added for computer use; every existing caller —
+    the CLI, the benchmarks, the orchestration — still constructs `JevClient()`
+    and must get exactly what it got before: one request, no extra thread, and a
+    result with the same four timing keys and the same cost.
+    """
+
+    def test_one_request_and_the_original_timing_keys(self):
+        client, transport = make_client([FakeResponse(200, FIXTURE)])
+        result = client.decide({}, QUESTIONS)
+        assert set(result.timing_ms) == {"serialize_ms", "http_ms", "parse_ms", "total_ms"}
+        assert len(transport.bodies) == 1
+        assert client.requests_sent == 1
+
+    def test_cost_is_the_billed_cost_when_nothing_was_hedged(self):
+        client, _ = make_client([FakeResponse(200, FIXTURE)])
+        result = client.decide({}, QUESTIONS)
+        assert result.cost_usd == pytest.approx(FIXTURE["usage"]["cost"])
+        assert "hedge_cost_usd_est" not in result.usage
+
+    def test_the_default_config_has_hedging_off(self):
+        from jevskill.config import DEFAULT_HEDGE_AFTER_MS
+
+        config = Config()
+        assert config.hedge is False
+        assert config.hedge_after_ms == DEFAULT_HEDGE_AFTER_MS
+
+    def test_the_request_body_is_still_built_the_same_way(self):
+        # The body construction moved into `_compose_body` so the async client
+        # could share it; the bytes must not have moved with it.
+        client, transport = make_client([FakeResponse(200, FIXTURE)])
+        client.decide({"a": 1}, QUESTIONS, session_id="s")
+        expected = client._compose_body({"a": 1}, QUESTIONS, "s")
+        assert transport.bodies[0] == expected
+
+
 class TestHelpers:
     def test_estimate_tokens_grows_with_size(self):
         from jevskill.config import CHARS_PER_TOKEN

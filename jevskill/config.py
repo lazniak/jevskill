@@ -104,6 +104,54 @@ OPENROUTER_KEY_PREFIX = "sk-or-"
 
 CONFIG_PATH = Path.home() / ".jevskill" / "config.json"
 
+# --------------------------------------------------------------------------- #
+# Hot-loop defaults
+# --------------------------------------------------------------------------- #
+# A per-step agent loop has the opposite failure mode from a burst of decisions.
+# In a burst, a retry that eventually succeeds is a win; in a loop that must act
+# every ~400 ms, a request still waiting after a second is already useless —
+# the screen it was asked about has moved on. So the hot path trades
+# completeness for a bounded step: short read timeout, no retries, and an
+# optional duplicate request that covers the tail instead of a retry.
+#
+#: Read timeout on the hot path. Measured p50 is ~300-370 ms end to end and the
+#: vendor documents 70-500 ms, so 1.5 s is roughly 4x the p50: long enough that a
+#: merely slow response still lands, short enough that a dead one does not own
+#: the step.
+HOT_TIMEOUT_READ_S = 1.5
+#: Connect timeout on the hot path. Only pays on the first call of a pool; a
+#: loop that cannot connect in 2 s has a network problem, not a slow model.
+HOT_TIMEOUT_CONNECT_S = 2.0
+#: Retries on the hot path. Zero: a retry costs a full extra round trip *after*
+#: a failure is known, which is strictly worse than the hedge below, which
+#: overlaps the second attempt with the first.
+HOT_RETRIES = 0
+#: How long to wait for the first response before sending an identical second
+#: POST. 400 ms sits above the measured p95 of a healthy small call (~340-490 ms
+#: depending on provider) so the duplicate fires on the tail rather than on the
+#: body of the distribution. Lowering it makes things worse rather than better:
+#: at 320 ms the duplicate fired on 43 of 60 calls and took the N=12 p50 from
+#: ~298 ms to 642 ms (``bench/cu_results.json``, ``hedge_probes``).
+DEFAULT_HEDGE_AFTER_MS = 400.0
+#: How ``warm()`` opens the connection. ``"head"`` sends ``HEAD /v1/models``;
+#: ``"decision"`` sends one minimal real decision (~300 tokens, ~$0.000013).
+#:
+#: The default is measured, not assumed — ``python bench/cu_bench.py
+#: --warm-bench``, 5 fresh clients per mode, 2026-09-20, recorded in
+#: ``bench/cu_results.json``:
+#:
+#:   vendor:     no warm-up -> first decision 682 ms; HEAD (594 ms) -> 284 ms;
+#:               decision (658 ms) -> 260 ms; steady state ~270-300 ms
+#:   OpenRouter: no warm-up -> first decision 375 ms; HEAD (89 ms) -> 305 ms;
+#:               decision (353 ms) -> 307 ms; steady state ~315-340 ms
+#:
+#: HEAD removes the cold penalty on both providers, costs nothing, and finishes
+#: sooner than a warm-up decision does — so it is the default despite the
+#: research note that expected the opposite. ``"decision"`` is kept because it
+#: exercises what HEAD cannot: the key, the decisions endpoint and the parser.
+#: A 401 then surfaces during warm-up instead of on the loop's first step.
+DEFAULT_WARM_MODE = "head"
+
 #: The API ceiling is 32K tokens on OpenRouter. We cap by default well below it:
 #: documented accuracy degrades before the limit, because irrelevant state acts
 #: as a distractor. 8K keeps a decision comfortably inside one call.
@@ -314,6 +362,16 @@ class Config:
     retries: int = 2
     max_state_tokens: int = DEFAULT_MAX_STATE_TOKENS
     ledger_dir: Path | None = None
+    #: Send an identical second request when the first has not answered within
+    #: :attr:`hedge_after_ms`. Off by default on every path, including the hot
+    #: one: measured on both providers it fired 66 times and won none, while
+    #: making the calls that fired it slower. See
+    #: :data:`jevskill.client.HOT_HEDGE_DEFAULT` for the mechanism and
+    #: ``bench/cu_results.json`` for the numbers.
+    hedge: bool = False
+    hedge_after_ms: float = DEFAULT_HEDGE_AFTER_MS
+    #: ``"decision"`` or ``"head"`` — see :data:`DEFAULT_WARM_MODE`.
+    warm_mode: str = DEFAULT_WARM_MODE
     extra: dict = field(default_factory=dict)
 
     @classmethod
