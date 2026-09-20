@@ -16,7 +16,8 @@ Two halves, deliberately separate:
 |---|---|
 | `skills/jev/` | the Skill: `SKILL.md`, `references/`, and stdlib-only `scripts/` |
 | `jevskill/` | the Python package: client, primitives, orchestration, ledger, CLI |
-| `jevskill/cu/` | the computer-use half: `observe` (Windows UIA through `comtypes`, the `cu` extra), `reduce`, `hashing` — everything but `snapshot()` is pure Python and runs on Linux CI |
+| `jevskill/cu/` | the computer-use half: `observe` (Windows UIA through `comtypes`, the `cu` extra), `reduce`, `hashing`, `decide`, `act`, `loop` — everything but `snapshot()` and the live backend is pure Python and runs on Linux CI |
+| `jevskill/cu/runner.py` | the operator the console's *computer use* view and `jevskill cu` drive: command → sub-goals, the planning model (`cu/llm.py`, OpenRouter) between Jev steps, the confirm handshake, `dry_run` simulation. The kill switch (`cu/killswitch.py`) is checked in the `observe` **and** `execute` hooks — never add an action path that skips `_execute_hook` |
 | `jevskill/web/` | the local console: a stdlib `ThreadingHTTPServer` and the three static files it serves (`web/static/`, shipped as package data) |
 
 The Skill must work with **no install** (stdlib only). The package adds the
@@ -88,7 +89,7 @@ one honestly:
 ## Running things
 
 ```bash
-python -m pytest -q                       # 1367 tests, offline, must stay green
+python -m pytest -q                       # 1391 tests, offline, must stay green
 python bench/run.py --legacy-reduce       # live API: E1-E7, writes bench/results.json
 python bench/ab.py --runs 3               # live API: the A/B evaluation, writes bench/ab_results.json
 

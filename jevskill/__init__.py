@@ -44,7 +44,7 @@ from .errors import JevApiError, JevConfigError, JevError, JevQuestionError
 from .orchestrate import Round, combine_weighted, next_round, plan_for, should_use_jev
 from .primitives import Q, choice, noul, score
 
-__version__ = "0.13.0"
+__version__ = "0.14.0"
 
 #: Names served from :mod:`jevskill.client`, which is the expensive import.
 _LAZY = {"Answer": "client", "Decisions": "client", "JevClient": "client"}

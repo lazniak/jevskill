@@ -26,7 +26,7 @@ tokens on decisions — and start making them for **$0.000013** in **325 ms**.
 **Jev** is TypeSafe's *System One* decision model, and it is the whole engine here.
 Official model page: **[typesafe.ai](https://typesafe.ai/)** · [API docs](https://docs.typesafe.ai/)
 
-[![tests](https://img.shields.io/badge/tests-1367%20passing-brightgreen)](#-does-it-actually-help-ab-tested)
+[![tests](https://img.shields.io/badge/tests-1391%20passing-brightgreen)](#-does-it-actually-help-ab-tested)
 [![A/B](https://img.shields.io/badge/A%2FB-99.3%25%20fewer%20tokens-blue)](#-does-it-actually-help-ab-tested)
 [![cost](https://img.shields.io/badge/decision-%240.000013-success)](#-cost-per-decision)
 [![license](https://img.shields.io/badge/license-MIT-informational)](LICENSE)
@@ -722,6 +722,53 @@ Design: pure black, hairlines, one gold accent spent only on the winner, the
 primary button and the focus ring — no framework, no build step, and it renders
 correctly with web fonts blocked.
 
+## 🖱️ Computer use from the console
+
+The console's second view, **computer use**, takes a command for *this* desktop
+and runs it through the loop from the previous section:
+
+> Otwórz Notatnik, wpisz „hello world" i zapisz jako hello.txt na pulpicie
+
+Jev still decides every step in ~300 ms. What Jev cannot do — understand the
+sentence, write the text, judge whether a sub-goal is finished — goes to a
+**planning model you pick** from a list (any OpenRouter id; the newest of each
+family is recommended with its price per Mtok), and it is consulted only
+*between* steps: to split the command into 1–8 sub-goals, to compose text a
+field needs, to verify a sub-goal's end state, to answer an escalation when Jev
+is unsure, to re-plan when a sub-goal stalls. Choose **none** and the command is
+one goal, quoted text still types, and nothing else is generated. Every model
+call is a ledger row (`which=cu_llm`) with its tokens and cost, so a run's spend
+is Jev *plus* the model and `jevskill stats` shows both.
+
+**How to stop it** — four ways, all of which work while the agent is typing,
+and the panel prints them next to the STOP button:
+
+| | |
+|---|---|
+| **STOP** button | in the panel |
+| **Ctrl+Alt+Esc** | anywhere — polled, never registered, so it works over a full-screen app |
+| **mouse to the top-left corner** | the `pyautogui` convention |
+| `jevskill cu stop` | from any terminal, over SSH, from a scheduled task |
+
+The switch is checked before every decision *and* again before every action
+reaches the desktop. A destructive step (`Delete`, `Send`, `Pay`, …) waits for
+**allow** / **deny** in the panel; STOP denies. A run that starts with the
+console in the foreground waits for you to click the target window rather than
+clicking the browser.
+
+**Dry run** plans for real and simulates the steps — nothing on the desktop is
+touched, no Jev spend — so you can watch the whole flow, the confirm box and
+every stop path before the first live command. The same operator is available
+without the page:
+
+```bash
+jevskill cu run "Open Notepad and type \"hello\"" --model anthropic/claude-sonnet-5
+jevskill cu run "Open Notepad and type \"hello\"" --dry-run      # simulate
+jevskill cu stop                                                  # from another terminal
+```
+
+No live command has been issued from the panel yet — see the status section.
+
 ## 📁 What's inside
 
 ```
@@ -741,8 +788,9 @@ jevskill/              the Python package — the measurement half
   stats.py             the effectiveness ledger
   cli.py               doctor · plan · patterns · ask · batch · outcome · stats · advice · web
   jevtask.py           batching: N items, one question set, measured saving
-  web/                 the local console: stdlib server (127.0.0.1 only) + static/ page, no build step
+  web/                 the local console, two views (decide · computer use): stdlib server (127.0.0.1 only) + static/ page, no build step
   cu/                  computer use: observe (Windows UIA, `[cu]` extra) · reduce · hashing · decide · act · loop · macros · contract · speculate · consistency · beam
+                       runner (the operator: command → sub-goals, an LLM between Jev steps) · killswitch (STOP · Ctrl+Alt+Esc · corner · stop file) · llm (OpenRouter, any model)
 bench/
   run.py               E1–E7 microbenchmarks (latency, fan-out, REDUCE, guards)
   ab.py                the A/B evaluation vs the model doing it alone
@@ -754,13 +802,13 @@ bench/
   cu_tasks.json        10 Windows computer-use tasks with oracles (+ cu_tasks.md)
   cu_run.py            the task harness: --dry-run (default, synthetic) · --live; cu_report.py renders it
   web_live.json        the one live decision behind CHANGELOG 0.13.0 "Measured live": a ledger row, which=web
-tests/                 1367 tests, offline, green
+tests/                 1391 tests, offline, green
 docs/install.md        install guide an agent reads and executes
 docs/DESIGN.md         architecture + the mistakes that shaped it
 AGENTS.md              conventions for agents working on this repo
 ```
 
-## 🧭 Status & known limits — `v0.13.0`
+## 🧭 Status & known limits — `v0.14.0`
 
 CLI, skill, bundled scripts, ledger, reference docs and the computer-use half
 (`jevskill.cu`: observe · reduce · hashing · decide · act · loop · macros) are
@@ -771,6 +819,10 @@ complete and offline-tested. What is **not** proven, stated plainly:
   machine available was live-streaming on 2026-09-20. The first live run is the
   next task (`bench/cu_run.py --live --i-am-not-streaming`), and until it happens
   the loop is a measured design, not a measured agent.
+* **No live command has been issued from the computer-use panel.** The operator,
+  the confirm handshake and all four stop paths are exercised offline and in dry
+  run only (`tests/test_cu_runner.py`); the first live command, its escalation
+  rate and its cost are still to be measured, by the user, off-stream.
 * **No computer-use benchmark result exists yet.** `bench/cu_tasks.json` has the
   ten tasks and their oracles; `bench/cu_run.py --dry-run` proves the harness,
   and every dry-run number is marked synthetic.

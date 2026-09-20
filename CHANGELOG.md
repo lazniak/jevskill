@@ -22,6 +22,63 @@ replaced.
   indentation (minified JSON, unformatted XML). One workload proves the fix, not the
   generality.
 
+## [0.14.0] — 2026-09-21
+
+### Added — a computer-use panel: one command, Jev per step, an LLM between
+
+The console gained a second view. `computer use` takes a natural-language
+command for *this* desktop — *"Otwórz Notatnik, wpisz „hello world" i zapisz
+jako hello.txt na pulpicie"* — and runs it through the loop that `0.12.0`
+shipped, with the missing half supplied by a model the user picks from a list:
+
+- **`jevskill.cu.runner.Operator`** turns the command into 1-8 sub-goals, each
+  one window or dialog, and drives each with `jevskill.cu.loop.run`. The
+  planning model is consulted only **between** Jev steps — to plan, to compose
+  the text a field needs, to judge a sub-goal's `done_when`, to answer an
+  escalation, to re-plan when a sub-goal ends without `done` (at most twice).
+  With `none` chosen the command is one goal, quoted text still types, and
+  nothing else is generated: a step that needs language ends the run with a
+  reason rather than a guess.
+- **`jevskill.cu.llm.OpenRouterLLM`** — one stdlib client for any OpenRouter
+  model. The picker is OpenRouter's live list (the newest plain model of each
+  family recommended, prices per Mtok shown), with a built-in fallback marked
+  as such when the list cannot be fetched. Every model call is a ledger row,
+  `which="cu_llm"`, with its tokens and cost — a run's spend is Jev **plus**
+  the model, and `jevskill stats` sees both.
+- **`jevskill.cu.killswitch.KillSwitch`** — four ways to stop, all of which work
+  while the agent is typing: the STOP button, **Ctrl+Alt+Esc** anywhere (polled
+  with `GetAsyncKeyState`, so no hotkey registration and no collision with a
+  full-screen application), the mouse in the top-left corner, and
+  `jevskill cu stop` from any terminal (a stop file). The switch is checked in
+  the loop's `observe` and `execute` hooks — before deciding and again before
+  touching the desktop — so `loop.py` is unchanged: a tripped switch raises
+  `Stopped` inside a hook and the run is reported as *stopped*, not *failed*.
+- **A destructive step waits.** The loop's confirm gate becomes a question the
+  page shows — *allow* / *deny*, 120 s, STOP denies. A launch outside the
+  allow-list (`notepad`, `calc`, `mspaint`, `explorer`, `ms-settings:`) asks the
+  same way. A run started with the console in the foreground waits 10 s for
+  the user to click the target window, then refuses rather than clicking the
+  browser.
+- **Dry run** plans for real and simulates the steps — synthetic records, no
+  desktop, no Jev spend — so the whole panel, the confirm handshake and every
+  stop path can be exercised on a machine that must not be touched. Every
+  simulated event says so.
+- Routes: `GET /api/cu/status`, `GET /api/cu/models`, `POST /api/cu/start`
+  (`202`, `400` empty, `409` busy, `501` not a Windows desktop, `503` no key),
+  `POST /api/cu/plan`, `POST /api/cu/stop`, `POST /api/cu/confirm`. The key
+  appears in no response; the models payload carries a boolean.
+- CLI: `jevskill cu run "<command>" [--model ID] [--dry-run] [--max-steps]
+  [--budget-s] [--usd-cap]` prints the events as they happen and asks `y/N` on
+  stdin at a destructive step; `jevskill cu stop` stops whichever front end
+  started the run.
+
+**What is not claimed.** No live run has been made from the panel; the machine
+this was built on was streaming. The panel, the operator's state machine, the
+confirm handshake and all four stop paths are covered offline
+(`tests/test_cu_runner.py`, dry run only). The first live command, its
+escalation rate and its cost are the user's measurement, and the README's
+status section says so.
+
 ## [0.13.0] — 2026-09-21
 
 ### Added — a local web console
