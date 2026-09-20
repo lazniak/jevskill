@@ -10,34 +10,6 @@ replaced.
 
 ## [Unreleased]
 
-### Added
-- **Confidence semantics, sharpened against the vendor's own guidance.** Three
-  clarifications that change how answers should be read, now in `api.md`:
-  `confidence` measures *distribution concentration*, not correctness and not
-  permission to act; a `noul` near 0.5 means "as likely yes as no", **not** medium
-  intensity; and a `Choice` cannot select a value you never offered, so **check
-  candidate coverage** before relying on it — the model will confidently pick the
-  nearest option it was given.
-- **External corroboration section** in `benchmarks.md`. TypeSafe's own
-  parallel-questions cookbook reports batching 13 questions into one call as
-  **12.2× cheaper and 10.0× faster with no change in answers**; this repo measured
-  **12.4× faster and 4.03× fewer tokens** on 8 questions. Different workloads and
-  providers, same effect and near-identical latency multiple. The token multiple
-  differs because their state is large and shared. Also linked: the vendor's own
-  [Jev 1.13 jaggedness](https://docs.typesafe.ai/model-jaggedness/jev-1.13) page,
-  which documents this model version's known weaknesses.
-- **The vendor's own agent skill** is documented and linked as *complementary*, not
-  competing: theirs teaches an agent to **build applications with** Jev (docs and
-  cookbook routing); this one **uses** Jev during a session (running CLI, reversible
-  REDUCE, measured ledger). Install both.
-
-### Notes
-- Vendor research confirmed both the 64K/32K context split and the absent `cost`
-  field independently of the third-party guide, so the provider delta table in
-  `api.md` now rests on the vendor's primary documentation.
-- Named the measurements that have **no** external replication: the REDUCE recall
-  figures (`8/14` in the A/B suite, `3/14` pre-filter) and the guard accuracy run.
-
 ### Planned
 - A genuinely ambiguous case for the `shortlist` pattern, so narrowing can be
   demonstrated rather than only unit-tested.
@@ -46,6 +18,8 @@ replaced.
 - Block-level REDUCE, so a gate can keep a parent key together with its values.
   The `yaml_drift` loss in the A/B suite is exactly this gap.
 - Per-repository ledger merging (`jevskill stats --merge`).
+- Live verification of the vendor endpoint. It is verified by 51 unit tests plus
+  endpoint existence, but not by a real call — no TypeSafe key was available.
 
 ## [0.4.0] — 2026-09-20
 
@@ -74,6 +48,35 @@ Provider choice resolves in this order: `--provider`, then `JEVSKILL_PROVIDER`,
 then a `"provider"` field in `~/.jevskill/config.json`, then the key shape, else
 OpenRouter.
 
+**Confidence semantics, sharpened against the vendor's own guidance.** Three
+clarifications that change how answers should be read, now in `api.md`:
+
+- `confidence` measures **distribution concentration**, not correctness, and is not
+  permission to act. Several acceptable alternatives also spread probability, so low
+  confidence on a harmless preference choice is expected.
+- A `noul` near 0.5 means "as likely yes as no", **not** medium intensity. Reading a
+  0.5 gate as a middling severity is wrong; it is a coin flip, and the response is
+  to escalate or supply more state.
+- A `Choice` **cannot select a value you never offered**, so check *candidate
+  coverage* first. An omitted value is unreachable and the model will confidently
+  pick the nearest option it was given — the same failure as a missing `unclear`
+  option, one level up.
+
+**External corroboration** (`benchmarks.md`). The vendor's parallel-questions
+cookbook reports 13 questions in one call as **12.2× cheaper and 10.0× faster with
+no change in answers**; this repo measured **12.4× faster and 4.03× fewer tokens**
+on 8 questions. Different workloads and providers, same effect, near-identical
+latency multiple; the token multiple differs because their state is large and
+shared. The vendor's own [Jev 1.13 jaggedness][jagged] page — documenting this model
+version's known weaknesses — is also linked.
+
+[jagged]: https://docs.typesafe.ai/model-jaggedness/jev-1.13
+
+**The vendor's own agent skill**, documented as *complementary* rather than
+competing: theirs teaches an agent to build applications with Jev via docs and
+cookbook routing; this one uses Jev during a session with a running CLI, reversible
+REDUCE and a measured ledger. README and `api.md` both recommend installing both.
+
 ### Fixed
 - **A missing `cost` field would have silently zeroed the ledger.** TypeSafe
   returns `input_tokens` and `output_tokens` and no `cost`. Recording that as `0`
@@ -94,6 +97,10 @@ OpenRouter.
   other's key; a machine holding both is the normal case, and picking the wrong one
   sends traffic to the wrong endpoint.
 - Unknown provider names are rejected loudly rather than falling back silently.
+- **A documented invocation that argparse rejects.** The docs showed
+  `jevskill --provider typesafe doctor`; the flag must follow the subcommand
+  (`jevskill doctor --provider typesafe`). Corrected in README, `SKILL.md` and
+  `api.md`.
 
 ### Changed
 - `scripts/jev_query.py` (the bundled zero-install caller) gained the same
@@ -110,6 +117,9 @@ OpenRouter.
   was available, so the vendor path is verified by unit tests (51 of them) plus
   endpoint existence, **not** by a live end-to-end call. The OpenRouter path remains
   the one exercised live.
+- Measurements with **no external replication** are named as such: the REDUCE recall
+  figures (`8/14` in the A/B suite, `3/14` pre-filter) and the guard accuracy run.
+
 
 ## [0.3.0] — 2026-09-20
 
