@@ -1,0 +1,264 @@
+{
+  "call1": {
+    "id": "",
+    "model": "jev-1.13.0",
+    "provider": "typesafe",
+    "answers": {
+      "target": {
+        "kind": "choice",
+        "name": "target",
+        "type": "choice",
+        "choice": "e11",
+        "confidence": 0.98,
+        "probabilities": {
+          "e19": 0.0,
+          "e21": 0.0,
+          "e7": 0.0,
+          "e14": 0.0,
+          "e27": 0.0,
+          "e1": 0.0,
+          "e5": 0.0,
+          "e28": 0.0,
+          "e13": 0.0,
+          "none": 0.0,
+          "e24": 0.0,
+          "e6": 0.0,
+          "e23": 0.0,
+          "e3": 0.0,
+          "e0": 0.0,
+          "e4": 0.0,
+          "e11": 1.0,
+          "e22": 0.0,
+          "e15": 0.0,
+          "e2": 0.0,
+          "e16": 0.0,
+          "e26": 0.0,
+          "e17": 0.0,
+          "e18": 0.0,
+          "e25": 0.0,
+          "e10": 0.0,
+          "e12": 0.0,
+          "e8": 0.0,
+          "e29": 0.0,
+          "e20": 0.0,
+          "e9": 0.0
+        }
+      },
+      "op": {
+        "kind": "choice",
+        "name": "op",
+        "type": "choice",
+        "choice": "click",
+        "confidence": 0.91,
+        "probabilities": {
+          "scroll_down": 0.0,
+          "key": 0.08,
+          "scroll_up": 0.0,
+          "select": 0.0,
+          "wait": 0.0,
+          "click": 0.92,
+          "type": 0.0,
+          "blocked": 0.0,
+          "done": 0.0
+        }
+      },
+      "goal_reached": {
+        "kind": "noul",
+        "name": "goal_reached",
+        "type": "noul",
+        "noul": 0.03
+      },
+      "needs_text": {
+        "kind": "noul",
+        "name": "needs_text",
+        "type": "noul",
+        "noul": 0.24
+      },
+      "is_destructive": {
+        "kind": "noul",
+        "name": "is_destructive",
+        "type": "noul",
+        "noul": 0.93
+      },
+      "stuck": {
+        "kind": "noul",
+        "name": "stuck",
+        "type": "noul",
+        "noul": 0.31
+      },
+      "destructive_e28": {
+        "kind": "noul",
+        "name": "destructive_e28",
+        "type": "noul",
+        "noul": 0.79
+      }
+    },
+    "usage": {
+      "input_tokens": 5800.0,
+      "output_tokens": 458.0,
+      "cost": 0.00024359999999999999,
+      "cost_source": "computed"
+    },
+    "cost_usd": 0.00024359999999999999,
+    "timing_ms": {
+      "serialize_ms": 0.109,
+      "http_ms": 511.146,
+      "parse_ms": 0.037,
+      "total_ms": 511.314
+    },
+    "attempts": 1,
+    "session_id": null
+  },
+  "call2": {
+    "id": "",
+    "model": "jev-1.13.0",
+    "provider": "typesafe",
+    "answers": {
+      "target": {
+        "kind": "choice",
+        "name": "target",
+        "type": "choice",
+        "choice": "e11",
+        "confidence": 0.99,
+        "probabilities": {
+          "e28": 0.0,
+          "e16": 0.0,
+          "e1": 0.0,
+          "e8": 0.0,
+          "e21": 0.0,
+          "e7": 0.0,
+          "e4": 0.0,
+          "e14": 0.0,
+          "e19": 0.0,
+          "e18": 0.0,
+          "e13": 0.0,
+          "e15": 0.0,
+          "e5": 0.0,
+          "e20": 0.0,
+          "e24": 0.0,
+          "e25": 0.0,
+          "e17": 0.0,
+          "e27": 0.0,
+          "e2": 0.0,
+          "e23": 0.0,
+          "e22": 0.0,
+          "e29": 0.0,
+          "e12": 0.01,
+          "e11": 0.99,
+          "e10": 0.0,
+          "e26": 0.0,
+          "e6": 0.0,
+          "e9": 0.0,
+          "e3": 0.0,
+          "none": 0.0,
+          "e0": 0.0
+        }
+      },
+      "op": {
+        "kind": "choice",
+        "name": "op",
+        "type": "choice",
+        "choice": "click",
+        "confidence": 0.92,
+        "probabilities": {
+          "wait": 0.0,
+          "scroll_up": 0.0,
+          "blocked": 0.0,
+          "key": 0.07,
+          "select": 0.0,
+          "click": 0.93,
+          "done": 0.0,
+          "type": 0.0,
+          "scroll_down": 0.0
+        }
+      },
+      "goal_reached": {
+        "kind": "noul",
+        "name": "goal_reached",
+        "type": "noul",
+        "noul": 0.03
+      },
+      "needs_text": {
+        "kind": "noul",
+        "name": "needs_text",
+        "type": "noul",
+        "noul": 0.25
+      },
+      "is_destructive": {
+        "kind": "noul",
+        "name": "is_destructive",
+        "type": "noul",
+        "noul": 0.93
+      },
+      "stuck": {
+        "kind": "noul",
+        "name": "stuck",
+        "type": "noul",
+        "noul": 0.29
+      },
+      "destructive_e28": {
+        "kind": "noul",
+        "name": "destructive_e28",
+        "type": "noul",
+        "noul": 0.76
+      }
+    },
+    "usage": {
+      "input_tokens": 5785.0,
+      "output_tokens": 458.0,
+      "cost": 0.00024297,
+      "cost_source": "computed"
+    },
+    "cost_usd": 0.00024297,
+    "timing_ms": {
+      "serialize_ms": 0.043,
+      "http_ms": 304.275,
+      "parse_ms": 0.025,
+      "total_ms": 304.369
+    },
+    "attempts": 1,
+    "session_id": null
+  },
+  "call3": {
+    "id": "",
+    "model": "jev-1.13.0",
+    "provider": "typesafe",
+    "answers": {
+      "region": {
+        "kind": "choice",
+        "name": "region",
+        "type": "choice",
+        "choice": "save_dialog",
+        "confidence": 0.99,
+        "probabilities": {
+          "none": 0.0,
+          "menu_bar": 0.0,
+          "save_dialog": 1.0,
+          "status_bar": 0.0,
+          "toolbar": 0.0
+        }
+      },
+      "any_region_applies": {
+        "kind": "noul",
+        "name": "any_region_applies",
+        "type": "noul",
+        "noul": 0.96
+      }
+    },
+    "usage": {
+      "input_tokens": 992.0,
+      "output_tokens": 77.0,
+      "cost": 4.1664000000000006e-05,
+      "cost_source": "computed"
+    },
+    "cost_usd": 4.1664000000000006e-05,
+    "timing_ms": {
+      "serialize_ms": 0.038,
+      "http_ms": 314.416,
+      "parse_ms": 0.013,
+      "total_ms": 314.479
+    },
+    "attempts": 1,
+    "session_id": null
+  }
+}
