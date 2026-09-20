@@ -9,7 +9,7 @@ tokens on decisions — and start making them for **$0.000013** in **325 ms**.
 
 **A/B tested: 99.3% fewer input tokens, and accuracy went *up* (12/18 → 15/18).**
 
-[![tests](https://img.shields.io/badge/tests-215%20passing-brightgreen)](#-does-it-actually-help-ab-tested)
+[![tests](https://img.shields.io/badge/tests-266%20passing-brightgreen)](#-does-it-actually-help-ab-tested)
 [![A/B](https://img.shields.io/badge/A%2FB-99.3%25%20fewer%20tokens-blue)](#-does-it-actually-help-ab-tested)
 [![cost](https://img.shields.io/badge/decision-%240.000013-success)](#-cost-per-decision)
 [![license](https://img.shields.io/badge/license-MIT-informational)](LICENSE)
@@ -155,6 +155,43 @@ export OPENROUTER_API_KEY=sk-or-v1-...      # Windows: setx OPENROUTER_API_KEY "
 
 jevskill doctor          # verifies key, endpoint, latency, live cost
 ```
+
+### Both official endpoints — use whichever key you have
+
+The model is served through OpenRouter **and** through TypeSafe's own API. Same
+price. The skill detects which one your key belongs to, or you can say:
+
+```bash
+jevskill doctor                        # auto-detect from the key shape
+jevskill doctor --provider typesafe    # POST api.typesafe.ai/v1/systemone
+jevskill doctor --provider openrouter  # POST openrouter.ai/api/alpha/decisions
+```
+
+| | OpenRouter | TypeSafe (vendor) |
+|---|---|---|
+| Model field | `typesafe/jev-1.13` | `jev-latest` |
+| Key variable | `OPENROUTER_API_KEY` | `TYPESAFE_API_KEY` |
+| Context | 32,000 tokens | **64,000** (32,000 for state + longest question) |
+| Choice options | — | documented max 255 |
+| Score levels | — | documented 2–10 |
+| `usage.cost` | ✅ reported | ❌ absent |
+| Price | $0.042 / Mtok | **identical** |
+| Access | immediate with credits | waitlist, keys in batches |
+
+Model names are **translated automatically** in both directions, because passing
+`typesafe/jev-1.13` to the vendor endpoint is a 404 and passing `jev-latest` to
+OpenRouter is a 422.
+
+Two things worth knowing about the vendor endpoint:
+
+- **It returns no `cost` field.** Recording that as zero would make every decision
+  look free and inflate the savings, so the client computes it from the published
+  rate and marks the provenance (`cost_source: "computed"`).
+- **`jev-latest` is a moving alias.** The response's `model` field reports the
+  versioned id that answered — log it, and pin a version if you have tuned a
+  confidence threshold against it.
+
+Full delta table, including error codes: [`api.md`](skills/jev/references/api.md).
 
 ### Ask a decision immediately (zero install)
 
@@ -419,14 +456,14 @@ jevskill/              the Python package — the measurement half
 bench/
   run.py               E1–E7 microbenchmarks (latency, fan-out, REDUCE, guards)
   ab.py                the A/B evaluation vs the model doing it alone
-tests/                 215 tests, offline, green
+tests/                 266 tests, offline, green
 docs/DESIGN.md         architecture + the mistakes that shaped it
 AGENTS.md              conventions for agents working on this repo
 ```
 
 ## 🧭 Status & known limits — `v0.3.0`
 
-CLI, skill, bundled scripts, ledger and reference docs (215 offline tests) are
+CLI, skill, bundled scripts, ledger and reference docs (266 offline tests) are
 complete, and there are now two benchmark suites. What is **not** proven:
 
 * **Latency is one location.** Measured from Poland. TypeSafe quotes 70–500 ms

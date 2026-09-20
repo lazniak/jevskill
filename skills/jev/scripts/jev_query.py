@@ -53,6 +53,32 @@ KEY_ENV_VARS = (
 )
 RETRYABLE = {0, 429, 500, 502, 503, 504, 520, 522, 524, 529}
 
+#: Two endpoints serve the same model. They differ in URL, model name, key
+#: variable, and whether the response carries a billed cost. Keep this in step
+#: with jevskill/config.py PROVIDERS — this script is the dependency-free copy.
+PROVIDERS = {
+    "openrouter": {
+        "base_url": "https://openrouter.ai",
+        "endpoint": "/api/alpha/decisions",
+        # OpenRouter namespaces the vendor model.
+        "model": "typesafe/jev-1.13",
+        "key_env": ("OPENROUTER_API_KEY", "OPEN_ROUTER_API_KEY", "JEVUSE_API_KEY"),
+        "reports_cost": True,
+    },
+    "typesafe": {
+        "base_url": "https://api.typesafe.ai",
+        "endpoint": "/v1/systemone",
+        "model": "jev-latest",
+        "key_env": ("TYPESAFE_API_KEY", "JEV_API_KEY"),
+        # The vendor returns input/output tokens but no cost, so spend is
+        # computed from the documented $0.042/Mtok rate instead of recorded as 0.
+        "reports_cost": False,
+    },
+}
+DEFAULT_PROVIDER = "openrouter"
+INPUT_PRICE_PER_MTOK = 0.042
+OPENROUTER_KEY_PREFIX = "sk-or-"
+
 # Calibrated against the live API: a prose rule of thumb (3.6 chars/token)
 # under-counted log lines and code by 2.15x. See jevskill/config.py.
 CHARS_PER_TOKEN = 1.68
@@ -72,20 +98,66 @@ def _registry_env(name: str) -> str:
         return ""
 
 
-def find_api_key() -> str:
-    for name in KEY_ENV_VARS:
-        value = (os.environ.get(name) or "").strip()
-        if value:
-            return value
-    for name in KEY_ENV_VARS:
-        value = _registry_env(name)
-        if value:
-            return value
-    try:
-        data = json.loads((Path.home() / ".jevskill" / "config.json").read_text("utf-8"))
-        return str(data.get("api_key", "")).strip()
-    except Exception:
-        return ""
+def find_api_key(provider: str | None = None) -> tuple[str, str]:
+    """Resolve ``(provider, key)`` from the environment, registry, or config file.
+
+    Key *shape* picks the provider when nothing is stated: ``sk-or-...`` is
+    OpenRouter, anything else is assumed to be the vendor's own key. With
+    ``provider`` given, only that provider's variables are consulted, so a machine
+    holding both keys does not send traffic to the wrong endpoint.
+    """
+    names = (
+        ("JEVSKILL_API_KEY",) + PROVIDERS[provider]["key_env"]
+        if provider in PROVIDERS
+        else tuple(dict.fromkeys(
+            ("JEVSKILL_API_KEY",)
+            + PROVIDERS["openrouter"]["key_env"]
+            + PROVIDERS["typesafe"]["key_env"]
+        ))
+    )
+    key = ""
+    for name in names:
+        key = (os.environ.get(name) or "").strip()
+        if key:
+            break
+    if not key:
+        for name in names:
+            key = _registry_env(name)
+            if key:
+                break
+    if not key:
+        try:
+            data = json.loads((Path.home() / ".jevskill" / "config.json").read_text("utf-8"))
+            key = str(data.get("api_key", "")).strip()
+        except Exception:
+            key = ""
+
+    chosen = provider
+    if chosen not in PROVIDERS:
+        chosen = DEFAULT_PROVIDER
+        if key and not key.startswith(OPENROUTER_KEY_PREFIX):
+            chosen = "typesafe"
+    return chosen, key
+
+
+def model_for(provider: str, model: str | None) -> str:
+    """Translate a model name to the one this endpoint expects."""
+    name = (model or "").strip()
+    if provider == "typesafe":
+        if not name:
+            return PROVIDERS["typesafe"]["model"]
+        return name.split("/", 1)[1] if name.startswith("typesafe/") else name
+    if not name:
+        return PROVIDERS["openrouter"]["model"]
+    return name if "/" in name else f"typesafe/{name}"
+
+
+def cost_of(provider: str, usage: dict) -> float:
+    """Cost in USD, computed when the provider does not report one."""
+    reported = usage.get("cost")
+    if reported is not None:
+        return float(reported)
+    return int(usage.get("input_tokens", 0) or 0) / 1_000_000 * INPUT_PRICE_PER_MTOK
 
 
 def count_tokens(text) -> int:
@@ -136,12 +208,15 @@ def build_questions(args) -> dict:
     return questions
 
 
-def post(body: bytes, key: str, base: str, retries: int, timeout: float):
+def post(body: bytes, key: str, base_url: str, endpoint: str, retries: int, timeout: float,
+         provider: str = DEFAULT_PROVIDER):
     """One POST with bounded retries on the transient status family."""
-    url = base.rstrip("/") + DECISIONS_PATH
-    headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json",
-               "HTTP-Referer": "https://github.com/lazniak/jevskill",
-               "X-Title": "jevskill"}
+    url = base_url.rstrip("/") + endpoint
+    headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+    if provider == "openrouter":
+        # Attribution headers; meaningless to the vendor endpoint.
+        headers["HTTP-Referer"] = "https://github.com/lazniak/jevskill"
+        headers["X-Title"] = "jevskill"
     last = None
     for attempt in range(retries + 1):
         if attempt:
@@ -153,7 +228,19 @@ def post(body: bytes, key: str, base: str, retries: int, timeout: float):
         except urllib.error.HTTPError as exc:
             payload = exc.read()
             status = exc.code
-            last = f"HTTP {status}: {payload[:300].decode('utf-8', 'replace')}"
+            detail = payload[:300].decode("utf-8", "replace")
+            last = f"HTTP {status}: {detail}"
+            if status == 422:
+                raise SystemExit(
+                    f"error: {last}\n  The request body failed validation at "
+                    f"{url} — a missing field or a malformed question."
+                )
+            if status == 404:
+                raise SystemExit(
+                    f"error: {last}\n  Wrong endpoint for provider {provider!r}. "
+                    "OpenRouter uses /api/alpha/decisions; TypeSafe uses /v1/systemone. "
+                    "Pass --provider explicitly."
+                )
             if status not in RETRYABLE:
                 raise SystemExit(f"error: {last}")
         except Exception as exc:  # transport
@@ -162,7 +249,9 @@ def post(body: bytes, key: str, base: str, retries: int, timeout: float):
 
 
 def render(result: dict) -> list[str]:
-    lines = [f"JEV decided ({result.get('model')}) in {result['_ms']:.0f} ms"]
+    provider = result.get("_provider", DEFAULT_PROVIDER)
+    lines = [f"JEV decided ({result.get('model')} via {provider}) "
+             f"in {result['_ms']:.0f} ms"]
     for name, answer in result.get("answers", {}).items():
         kind = answer.get("type")
         if kind == "noul":
@@ -178,13 +267,18 @@ def render(result: dict) -> list[str]:
         else:
             lines.append(f"  {name}: {json.dumps(answer)[:120]}")
     usage = result.get("usage") or {}
+    # The vendor endpoint reports no cost, so it is computed from the published
+    # rate. Say so, rather than presenting a derived number as a billed one.
+    cost = result.get("_cost_usd", 0.0)
+    how = "" if usage.get("cost") is not None else "  (computed from $0.042/Mtok)"
     lines.append("")
-    lines.append(f"  tokens {usage.get('input_tokens')}  cost ${float(usage.get('cost', 0)):.8f}")
+    lines.append(f"  tokens {usage.get('input_tokens')}  cost ${cost:.8f}{how}")
     return lines
 
 
-def reduce_state(data, args, key: str, base: str) -> dict:
+def reduce_state(data, args, key: str, provider: str, model: str) -> dict:
     """REDUCE: gate each item, keep the hits, store the rest for retrieval."""
+    spec = PROVIDERS[provider]
     if isinstance(data, dict):
         items = list(data.values())[0] if len(data) == 1 else None
     else:
@@ -212,11 +306,12 @@ def reduce_state(data, args, key: str, base: str) -> dict:
             }
             for i in range(len(chunk))
         }
-        body = json.dumps({"model": args.model, "state": {f"L{i}": t for i, t in enumerate(chunk)},
+        body = json.dumps({"model": model, "state": {f"L{i}": t for i, t in enumerate(chunk)},
                            "questions": questions}).encode()
-        result = post(body, key, base, args.retries, args.timeout)
+        result = post(body, key, spec["base_url"], spec["endpoint"],
+                      args.retries, args.timeout, provider)
         calls += 1
-        cost += float((result.get("usage") or {}).get("cost", 0) or 0)
+        cost += cost_of(provider, result.get("usage") or {})
         for i, text in enumerate(chunk):
             probability = ((result.get("answers") or {}).get(f"keep_L{i}") or {}).get("noul") or 0.0
             if probability >= 0.5:
@@ -255,6 +350,8 @@ def reduce_state(data, args, key: str, base: str) -> dict:
     return {
         "ok": True,
         "mode": "reduce",
+        "provider": provider,
+        "model": model,
         "handle": handle,
         "calls": calls,
         "items": len(items),
@@ -304,19 +401,30 @@ def main(argv=None) -> int:
     parser.add_argument("--no-recovery", action="store_true")
     parser.add_argument("--recovery-dir")
     parser.add_argument("--session-id")
-    parser.add_argument("--model", default=os.environ.get("JEVSKILL_MODEL", DEFAULT_MODEL))
-    parser.add_argument("--base-url", default=os.environ.get("JEVSKILL_BASE_URL", DEFAULT_BASE))
+    parser.add_argument(
+        "--provider", choices=sorted(PROVIDERS), default=None,
+        help=("which endpoint serves the model: 'openrouter' "
+              "(/api/alpha/decisions, model typesafe/jev-1.13) or 'typesafe' "
+              "(the vendor's /v1/systemone, model jev-latest, cost computed from "
+              "the published rate). Default: detected from the key shape."))
+    parser.add_argument("--model", default=os.environ.get("JEVSKILL_MODEL", ""))
+    parser.add_argument("--base-url", default=os.environ.get("JEVSKILL_BASE_URL", ""))
     parser.add_argument("--retries", type=int, default=2)
     parser.add_argument("--timeout", type=float, default=60.0)
     parser.add_argument("--max-state-tokens", type=int, default=8000)
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
 
-    key = find_api_key()
+    provider, key = find_api_key(args.provider)
     if not key:
-        print("error: no OpenRouter API key. Set OPENROUTER_API_KEY, or write "
-              "{'api_key': '...'} to ~/.jevskill/config.json", file=sys.stderr)
+        spec = PROVIDERS[provider]
+        names = " or ".join(spec["key_env"])
+        print(f"error: no API key for provider {provider!r}. Set {names}, or write "
+              "{'api_key': '...'} to ~/.jevskill/config.json. Use --provider to "
+              "choose an endpoint explicitly.", file=sys.stderr)
         return 2
+    model = model_for(provider, args.model)
+    base_url = args.base_url or PROVIDERS[provider]["base_url"]
 
     if args.state_file:
         text = Path(args.state_file).read_text(encoding="utf-8")
@@ -330,11 +438,11 @@ def main(argv=None) -> int:
         data = sys.stdin.read()
 
     if args.reduce:
-        out = reduce_state(data, args, key, args.base_url)
+        out = reduce_state(data, args, key, provider, model)
         if args.json:
             print(json.dumps(out, ensure_ascii=False, indent=2))
         else:
-            print(f"REDUCE: {out['items']} items -> {out['kept']} kept "
+            print(f"REDUCE [{provider}] {out['items']} items -> {out['kept']} kept "
                   f"({out['reduction_pct']}% fewer tokens: "
                   f"{out['raw_tokens']} -> {out['kept_tokens']})")
             for line in out["lines"]:
@@ -358,13 +466,17 @@ def main(argv=None) -> int:
               "that matters).", file=sys.stderr)
         return 3
 
-    body = json.dumps({"model": args.model, "state": data, "questions": questions}).encode()
+    body = json.dumps({"model": model, "state": data, "questions": questions}).encode()
     started = time.perf_counter()
-    result = post(body, key, args.base_url, args.retries, args.timeout)
+    result = post(body, key, base_url, PROVIDERS[provider]["endpoint"],
+                  args.retries, args.timeout, provider)
     result["_ms"] = (time.perf_counter() - started) * 1000
+    result["_provider"] = provider
+    result["_cost_usd"] = cost_of(provider, result.get("usage") or {})
 
     if args.json:
-        print(json.dumps({k: v for k, v in result.items() if k != "_ms"},
+        print(json.dumps({k: v for k, v in result.items()
+                          if k not in ("_ms", "_provider", "_cost_usd")},
                          ensure_ascii=False, indent=2))
     else:
         print("\n".join(render(result)))

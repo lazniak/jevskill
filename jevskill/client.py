@@ -116,6 +116,7 @@ class Decisions:
     timing_ms: dict[str, float] = field(default_factory=dict)
     attempts: int = 1
     session_id: str | None = None
+    provider: str = "openrouter"
 
     # ---- typed accessors -------------------------------------------------
     def noul(self, name: str) -> float | None:
@@ -159,6 +160,7 @@ class Decisions:
         return {
             "id": self.request_id,
             "model": self.model,
+            "provider": self.provider,
             "answers": {k: v.to_dict() for k, v in self.answers.items()},
             "usage": self.usage,
             "timing_ms": self.timing_ms,
@@ -225,6 +227,25 @@ class JevClient:
                 ),
                 limits=httpx.Limits(max_keepalive_connections=4, max_connections=8),
             )
+
+    # ------------------------------------------------------------------ normalise
+
+    def _normalise_usage(self, usage: dict) -> dict:
+        """Guarantee a ``cost`` on every provider.
+
+        OpenRouter returns ``usage.cost`` from its own accounting; the TypeSafe
+        endpoint returns only ``input_tokens`` and ``output_tokens``. Without this
+        the ledger would record every vendor-endpoint decision as free, which
+        would silently inflate the reported savings — the exact class of error
+        this project exists to avoid.
+        """
+        if usage.get("cost") is None:
+            input_tokens = int(usage.get("input_tokens", 0) or 0)
+            usage["cost"] = self.config.cost_for_tokens(input_tokens)
+            usage["cost_source"] = "computed"
+        else:
+            usage["cost_source"] = "provider"
+        return usage
 
     # ------------------------------------------------------------------ warm
     def warm(self) -> float:
@@ -295,6 +316,7 @@ class JevClient:
                     str(k): (float(v) if isinstance(v, (int, float)) else v)
                     for k, v in (payload.get("usage") or {}).items()
                 }
+                usage = self._normalise_usage(usage)
                 return Decisions(
                     answers=answers,
                     model=str(payload.get("model", self.config.model)),
@@ -308,15 +330,36 @@ class JevClient:
                     },
                     attempts=attempts,
                     session_id=session_id,
+                    provider=self.config.provider,
                 )
             last_error = JevApiError(status, _short(raw), raw.decode("utf-8", "replace"))
+            self._annotate(last_error)
             if not last_error.retryable:
                 raise last_error
             if attempt >= self.config.retries:
                 break
         if isinstance(last_error, JevApiError):
+            self._annotate(last_error)
             raise last_error
         raise JevApiError(0, f"transport failure after {attempts} attempt(s): {last_error}")
+
+    def _annotate(self, error: JevApiError) -> None:
+        """Add provider-specific detail to an error hint.
+
+        The documented limits differ per endpoint — 32K on OpenRouter, 64K per
+        request on the vendor's own API — so a payload-size error should say which
+        ceiling it hit rather than a generic number. Errors are the one place a
+        caller cannot look anything up, so they carry the specifics.
+        """
+        if error.status in (413, 422):
+            spec = self.config.spec
+            detail = f" This endpoint allows {spec['context_tokens']:,} tokens per request"
+            if spec.get("state_plus_question_tokens"):
+                detail += (
+                    f", of which {spec['state_plus_question_tokens']:,} for state plus "
+                    "the longest single question"
+                )
+            error.hint = error.hint.rstrip(".") + "." + detail + "."
 
     # ------------------------------------------------------------------ decide_many
     def decide_many(self, items: list[tuple[Any, Mapping[str, dict]]], **kwargs: Any) -> list[Decisions]:

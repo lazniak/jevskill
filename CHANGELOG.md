@@ -14,10 +14,74 @@ replaced.
 - A genuinely ambiguous case for the `shortlist` pattern, so narrowing can be
   demonstrated rather than only unit-tested.
 - `jevskill batch` — read a JSONL/CSV of items and run one pattern across them
-  with progress and a resumable ledger.
+  with progress and a resumable ledger. (Not to be confused with `--provider`.)
 - Block-level REDUCE, so a gate can keep a parent key together with its values.
   The `yaml_drift` loss in the A/B suite is exactly this gap.
 - Per-repository ledger merging (`jevskill stats --merge`).
+
+## [0.4.0] — 2026-09-20
+
+Support for the vendor's own endpoint, so the skill is not tied to one gateway.
+
+### Added
+
+**Both official endpoints.** The same model is served through OpenRouter and
+through TypeSafe's first-party API. `--provider {openrouter,typesafe}` selects one;
+unanchored, the provider is detected from the key shape (`sk-or-…` is OpenRouter).
+
+| | OpenRouter | TypeSafe |
+|---|---|---|
+| Endpoint | `/api/alpha/decisions` | `/v1/systemone` |
+| Model field | `typesafe/jev-1.13` | `jev-latest` |
+| Context | 32,000 | **64,000** (32,000 for state + longest question) |
+| Choice options | — | documented max 255 |
+| Score levels | — | documented 2–10 |
+| `usage.cost` | reported | **absent** |
+| Price | $0.042/Mtok | **identical** |
+
+Verified live: both `/v1/systemone` and `/v1/models` exist and return a structured
+`401` for an invalid key (`{"detail": {"error_type": "authentication_error", …}}`).
+
+Provider choice resolves in this order: `--provider`, then `JEVSKILL_PROVIDER`,
+then a `"provider"` field in `~/.jevskill/config.json`, then the key shape, else
+OpenRouter.
+
+### Fixed
+- **A missing `cost` field would have silently zeroed the ledger.** TypeSafe
+  returns `input_tokens` and `output_tokens` and no `cost`. Recording that as `0`
+  would make every vendor-endpoint decision look free and inflate the reported
+  savings — the exact class of error this project exists to prevent. The client
+  now computes it from the documented $0.042/Mtok rate and marks the provenance
+  with `usage.cost_source` = `"computed"` (or `"provider"` when reported).
+- **Model names are translated per provider**, both directions. Passing
+  `typesafe/jev-1.13` to the vendor endpoint is a 404 and `jev-latest` to
+  OpenRouter is a 422; that is the easiest mistake to make when switching, so it
+  is handled rather than documented-and-hoped.
+- **Payload-size errors now name the provider's actual ceiling** — 32,000 on
+  OpenRouter, 64,000 (and 32,000 for state plus the longest question) on TypeSafe.
+  A caller inside an error handler cannot look that up.
+- **422 is handled as TypeSafe's equivalent of a 400**: validation failure, not
+  retryable, and the hint says so. Previously only OpenRouter's 400 was covered.
+- **Provider-scoped key lookup.** Asking for one provider no longer returns the
+  other's key; a machine holding both is the normal case, and picking the wrong one
+  sends traffic to the wrong endpoint.
+- Unknown provider names are rejected loudly rather than falling back silently.
+
+### Changed
+- `scripts/jev_query.py` (the bundled zero-install caller) gained the same
+  `--provider` support, so the dependency-free path is not OpenRouter-only.
+- `SKILL.md` §0 documents both endpoints and when to prefer each.
+- `references/api.md` opens with a full provider delta table, including error-code
+  differences and the resolved 32K/64K context question.
+
+### Notes
+- Going direct to the vendor is **not** a cost saving: the rate is identical. It
+  buys double the context, documented rate limits and option ceilings, at the cost
+  of gatekept access.
+- The vendor endpoint was probed with an invalid key only. No valid TypeSafe key
+  was available, so the vendor path is verified by unit tests (51 of them) plus
+  endpoint existence, **not** by a live end-to-end call. The OpenRouter path remains
+  the one exercised live.
 
 ## [0.3.0] — 2026-09-20
 

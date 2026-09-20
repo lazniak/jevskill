@@ -208,7 +208,9 @@ class TestErrors:
         client, _ = make_client([FakeResponse(413, {"error": {"message": "too big"}})])
         with pytest.raises(JevApiError) as info:
             client.decide({}, QUESTIONS)
-        assert "32K" in info.value.hint
+        assert "context window" in info.value.hint
+        # The hint names the ceiling for the provider actually in use.
+        assert "32,000" in info.value.hint
 
     def test_402_points_at_credits(self):
         client, _ = make_client([FakeResponse(402, {"error": {"message": "no funds"}})])

@@ -1,9 +1,56 @@
 # The Decisions API — exact shapes
 
-Everything here is verified against the live API from this repository. Where a
+Everything here is verified against the live APIs from this repository. Where a
 number differs between sources, the discrepancy is called out rather than hidden.
 
-## Endpoint
+## Two providers, one model
+
+The same model is served through two endpoints, and this skill supports both.
+They differ in more than a URL, so a naive swap fails in ways that are easy to
+miss — most importantly, one reports a billed cost and the other does not.
+
+| | **OpenRouter** | **TypeSafe (vendor)** |
+|---|---|---|
+| Endpoint | `POST https://openrouter.ai/api/alpha/decisions` | `POST https://api.typesafe.ai/v1/systemone` |
+| Model field | `typesafe/jev-1.13` | `jev-latest` (→ `jev-1.13.0`) |
+| Aliases | — | `jev-latest`, `jev-preview` |
+| Key variable | `OPENROUTER_API_KEY` etc. | `TYPESAFE_API_KEY`, `JEV_API_KEY` |
+| Key shape | `sk-or-v1-…` | vendor-issued |
+| Context | 32,000 tokens | **64,000** per request; 32,000 for state + longest question |
+| Price | $0.042 / Mtok input, output free | **identical** — $0.042 / Mtok, output free |
+| Rate limits | not documented here | 250,000 tok/s, 1,200 req/min, **dynamic** |
+| `usage.cost` | ✅ reported | ❌ **absent** — computed from the rate |
+| Response `id` | ✅ | ❌ absent |
+| Response `provider` | ✅ | ❌ absent |
+| Choice options | (undocumented) | documented max **255** |
+| Score levels | (undocumented) | documented min 2, max **10** |
+| Error codes | 400, 401, 402, 403, 404, 413, 429, 502, 529 | **422** (validation), 401, 429, **529** |
+| Model listing | `GET /api/v1/models` | `GET /v1/models` |
+| Access | immediate with credits | waitlist, keys in batches |
+
+```bash
+jevskill doctor --provider typesafe     # probe the vendor endpoint
+jevskill doctor --provider openrouter   # probe OpenRouter
+jevskill doctor                         # auto-detect from the key
+```
+
+The skill picks a provider in this order: an explicit `--provider`, then
+`JEVSKILL_PROVIDER`, then a `"provider"` field in `~/.jevskill/config.json`, then
+the shape of the key (`sk-or-…` is OpenRouter), else OpenRouter.
+
+**Model names are translated automatically** in both directions, because passing
+`typesafe/jev-1.13` to the vendor endpoint or `jev-latest` to OpenRouter is a 404
+or a 422 and is the easiest mistake to make when switching.
+
+### Choosing between them
+
+* **OpenRouter** — a key you may already have, immediate access, and the provider
+  reports the actual billed `cost`, so the ledger needs no arithmetic.
+* **TypeSafe** — the vendor's own endpoint, double the context (64K), documented
+  rate limits and option ceilings. It is the **same price**, so going direct is a
+  dependency and features question, not a cost one.
+
+## Endpoint (OpenRouter)
 
 ```
 POST https://openrouter.ai/api/alpha/decisions
@@ -21,9 +68,55 @@ with the chat/completions endpoint. Use the /api/alpha/decisions endpoint instea
 "code": 400}}
 ```
 
-TypeSafe's own first-party endpoint is `POST https://api.typesafe.ai/v1/systemone`
-with model routes `jev-latest` / `jev-preview` / `jev-1.13.0`. This skill targets
-OpenRouter, because that is a key most developers already have.
+## Endpoint (TypeSafe, first-party)
+
+```
+POST https://api.typesafe.ai/v1/systemone
+Authorization: Bearer $TYPESAFE_API_KEY
+Content-Type: application/json
+```
+
+The vendor's own API is the reference implementation, not a compatibility shim:
+TypeSafe documents the same `state` + `questions` shape, so the request body this
+skill builds is **identical for both providers** — only the URL and the `model`
+name differ. Verified live: both `/v1/systemone` and `/v1/models` exist and return
+a structured `401` for an invalid key:
+
+```json
+{"detail": {"error_type": "authentication_error",
+            "message": "Cannot authenticate with the server. Please check your API key and try again."}}
+```
+
+Its documented limits are more generous than OpenRouter's page suggests, and two
+of them are worth knowing:
+
+* **Choice: up to 255 options** per question. This skill warns past 40 anyway — not
+  because the API refuses more, but because accuracy on adjacent options degrades
+  well before the ceiling.
+* **Score: 2 to 10 levels.** This skill caps at 7, again for calibration rather
+  than for the API.
+* **Rate limits are explicitly dynamic.** TypeSafe says the published numbers can
+  change without notice while they scale. Treat any limit as a hint and honour
+  `retry-after` when it is present.
+* **Aliases move.** `jev-latest` tracks the newest stable release, so answers can
+  change without a change on your side. The response's `model` field reports the
+  versioned id that actually answered — log it. If you have tuned a confidence
+  threshold against a version, pin that version's id instead of the alias.
+
+### The missing cost field
+
+TypeSafe returns `usage: {input_tokens, output_tokens}` and **no `cost`** — the one
+field that would silently corrupt a ledger. Recording it as `0` would make every
+vendor-endpoint decision look free and inflate the reported savings, which is
+exactly the class of error this project exists to prevent. So the client computes
+it from the documented rate and marks the provenance:
+
+```jsonc
+"usage": {"input_tokens": 1000, "output_tokens": 20,
+          "cost": 0.000042, "cost_source": "computed"}
+```
+
+`cost_source` is `"provider"` when the endpoint reported the number itself.
 
 ## Model facts (OpenRouter)
 
@@ -38,12 +131,13 @@ OpenRouter, because that is a key most developers already have.
 | Tool calls | no |
 | Streaming | no |
 
-> **Context discrepancy.** OpenRouter reports 32K; third-party guides and
-> TypeSafe's own marketing page say 64K, and the independent guide states the
-> hard limit is 64K with a tighter 32K ceiling on "state plus your longest single
-> question". This skill budgets **8,000 tokens** by default and treats 32K as the
-> ceiling, so the disagreement cannot bite. Raise `--max-state-tokens` only if you
-> have measured that accuracy holds for your data.
+> **Context discrepancy, resolved.** OpenRouter reports 32K. TypeSafe's own docs
+> say **64k per request**, of which **32k applies to `state` plus the longest
+> single question**. Third-party guides repeating "64K" were quoting the vendor
+> figure; both are right about their own endpoint. This skill budgets 8,000 tokens
+> by default and treats the provider's limit as the ceiling, so the difference
+> cannot bite either way. Raise `--max-state-tokens` only if you have measured
+> that accuracy holds for your data.
 
 ## Request
 
@@ -198,16 +292,34 @@ ergonomic. `model` in the response is the resolved snapshot id, not your alias.
 
 ## Errors
 
-| Code | Meaning | What to do |
-|---|---|---|
-| 400 | Malformed request (bad question type, empty criteria) | Fix the shape; do not retry |
-| 401 | Bad or missing key | Fix the key |
-| 402 | No credits | Top up, or fall back to the LLM path |
-| 403 | Key lacks access | Check model access |
-| 404 | Wrong endpoint | Use `/api/alpha/decisions` |
-| 413 | Payload too large | Chunk or prefilter with code |
-| 429 | Rate limited | Back off; batch questions instead of looping |
-| 502 / 529 | Provider error / overloaded | Retry with backoff |
+| Code | Provider | Meaning | What to do |
+|---|---|---|---|
+| 400 | OpenRouter | Malformed request (bad question type, empty criteria) | Fix the shape; do not retry |
+| **422** | **TypeSafe** | **Validation failed** — missing field or malformed question; body names the field | **Fix it; do not retry** |
+| 401 | both | Bad or missing key | Fix the key for *that* provider |
+| 402 | OpenRouter | No credits | Top up, or fall back to the LLM path |
+| 403 | OpenRouter | Key lacks access | Check model access |
+| 404 | both | Wrong endpoint **for the provider** | Check `--provider`: OpenRouter `/api/alpha/decisions`, TypeSafe `/v1/systemone` |
+| 413 | OpenRouter | Payload too large | Chunk or prefilter with code |
+| 429 | both | Rate limited | Back off; batch questions instead of looping |
+| 502 / 503 / 504 / 520 | transient | Provider-side failure | Retry with backoff |
+| 529 | both | Provider overloaded | Retry with backoff, or fall back to the LLM path |
+
+Error bodies differ in shape, and both are surfaced as-is:
+
+```jsonc
+// OpenRouter
+{"error": {"code": 400, "message": "..."}}
+
+// TypeSafe
+{"detail": {"error_type": "authentication_error", "message": "..."}}
+```
+
+The client raises `JevApiError` carrying a `hint` that says which action to take
+and a `retryable` flag. Payload-size errors additionally name the ceiling **for
+the provider in use** — 32,000 on OpenRouter, 64,000 (and 32,000 for state plus
+the longest question) on TypeSafe — because that number is the one thing a caller
+cannot look up from inside an error handler.
 
 Error body: `{"error": {"code": <int>, "message": "..."}}`.
 

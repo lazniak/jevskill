@@ -28,7 +28,7 @@ _T_IMPORT_NS = time.perf_counter_ns()
 
 from . import __version__
 from .client import JevClient
-from .config import Config
+from .config import PROVIDERS, Config
 from .errors import JevApiError, JevConfigError, JevError, JevQuestionError
 from .orchestrate import (
     PATTERNS,
@@ -144,23 +144,29 @@ def _baseline_tokens(state: object, questions: dict) -> int:
 
 def cmd_doctor(args: argparse.Namespace) -> int:
     stages = Stages.begin()
-    config = Config.from_env()
+    config = Config.from_env(provider=getattr(args, "provider", None))
     stages.mark("t_decision")
     report: dict = {
         "version": __version__,
         "ok": False,
+        "provider": config.provider,
+        "provider_options": sorted(PROVIDERS),
         "key_found": config.has_key(),
         "key_source_hint": config.api_key[:12] + "..." if config.api_key else None,
         "model": config.model,
         "endpoint": config.decisions_url,
+        "context_tokens": config.context_tokens,
+        "cost_reported_by_provider": config.reports_cost,
         "ledger": str(ledger_path()),
         "ledger_exists": ledger_path().exists(),
     }
     stages.mark("profile")
     if not config.has_key():
+        spec = PROVIDERS[config.provider]
         report["error"] = (
-            "No API key. Set OPENROUTER_API_KEY, or write {'api_key': '...'} to "
-            "~/.jevskill/config.json"
+            f"No API key for provider '{config.provider}'. Set one of "
+            f"{', '.join(spec['key_env'])}, or write {{\"api_key\": \"...\"}} to "
+            f"~/.jevskill/config.json. Use --provider to switch endpoints."
         )
         _emit(report, args.json, f"NOT OK: {report['error']}")
         stages.mark("report")
@@ -247,7 +253,10 @@ def cmd_ask(args: argparse.Namespace) -> int:
         _emit(payload, args.json, f"REFUSED: {shape.note}")
         return 3
 
-    config = Config.from_env(max_state_tokens=args.max_state_tokens)
+    config = Config.from_env(
+        provider=getattr(args, "provider", None),
+        max_state_tokens=args.max_state_tokens,
+    )
     baseline_tokens = _baseline_tokens(state, questions)
     stages.mark("build")
 
@@ -272,6 +281,7 @@ def cmd_ask(args: argparse.Namespace) -> int:
 
     payload = {
         "ok": True,
+        "provider": config.provider,
         "answers": {name: answer.to_dict() for name, answer in result.answers.items()},
         "values": {name: result.value(name) for name in result.answers},
         "model": result.model,
@@ -497,14 +507,28 @@ def build_parser() -> argparse.ArgumentParser:
                        help="refuse (with advice) if the state exceeds this (default 8000)")
         p.add_argument("--json", action="store_true", help="machine-readable output")
 
+    def add_provider_flag(p: argparse.ArgumentParser) -> None:
+        p.add_argument(
+            "--provider", choices=sorted(PROVIDERS), default=None,
+            help=(
+                "which endpoint serves the model: 'openrouter' "
+                "(POST /api/alpha/decisions, model typesafe/jev-1.13, reports cost) or "
+                "'typesafe' (the vendor's POST /v1/systemone, model jev-latest, 64k "
+                "context, cost computed from the $0.042/Mtok rate). Default: detected "
+                "from the key shape, else openrouter."
+            ),
+        )
+
     # doctor
     p = sub.add_parser("doctor", help="check key, connectivity, latency and cost")
+    add_provider_flag(p)
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_doctor)
 
     # ask
     p = sub.add_parser("ask", help="ask one decision (state + questions)")
     add_state_flags(p)
+    add_provider_flag(p)
     p.add_argument("--questions", help="full questions JSON: {name: {type, instructions, criteria}}")
     p.add_argument("--question-type", choices=["noul", "choice", "score"],
                    help="build a single question from flags instead of --questions")

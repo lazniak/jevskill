@@ -6,9 +6,9 @@ editing; the conventions here are load-bearing, not decoration.
 ## What this project is
 
 A portable **Agent Skill** that lets a coding harness use the Jev decision model
-(TypeSafe System One, via OpenRouter) for bounded decisions — routing, triage,
-gating, grading, ranking, reducing large data — plus an effectiveness ledger so
-the skill's own value is measured rather than asserted.
+(TypeSafe System One, via OpenRouter or TypeSafe's own API) for bounded decisions
+— routing, triage, gating, grading, ranking, reducing large data — plus an
+effectiveness ledger so the skill's own value is measured rather than asserted.
 
 Two halves, deliberately separate:
 
@@ -20,12 +20,28 @@ Two halves, deliberately separate:
 The Skill must work with **no install** (stdlib only). The package adds the
 measurement half (ledger, `stats`, `outcome`, `plan`). Keep that boundary: if you
 add a feature, decide which half it belongs to and do not make the Skill depend on
-the package.
+the package. A provider quirk belongs in **both**: `PROVIDERS` in
+`jevskill/config.py`, and its copy in `skills/jev/scripts/jev_query.py`.
+
+## Two providers
+
+`openrouter` and `typesafe` serve the same model, at the same price, and differ in
+more than a URL. Every delta lives in `PROVIDERS` in `jevskill/config.py`; do not
+scatter provider conditionals through the client.
+
+The one that bites: **TypeSafe returns no `cost` field.** Recording that as zero
+would make every vendor decision look free and inflate the reported savings. The
+client computes it from the documented rate and sets
+`usage.cost_source = "computed" | "provider"`. Any new provider needs the same
+treatment.
+
+Model names are translated per provider (`typesafe/jev-1.13` ↔ `jev-latest`)
+because passing the wrong one is a 404 or a 422.
 
 ## Running things
 
 ```bash
-python -m pytest -q                       # 215 tests, offline, must stay green
+python -m pytest -q                       # 266 tests, offline, must stay green
 python bench/run.py --legacy-reduce       # live API: E1-E7, writes bench/results.json
 python bench/ab.py --runs 3               # live API: the A/B evaluation, writes bench/ab_results.json
 

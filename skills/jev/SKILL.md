@@ -66,6 +66,32 @@ jevskill doctor                              # key, endpoint, warm latency, live
 jevskill plan "<what you are about to do>"   # free: is Jev even right here?
 ```
 
+### Two endpoints serve this model — pick one
+
+The same model is served through OpenRouter and through TypeSafe's own API. Both
+work identically from this skill; the provider is chosen for you, or explicitly:
+
+```bash
+jevskill doctor                        # auto-detect from the key shape
+jevskill doctor --provider typesafe    # the vendor's endpoint
+jevskill doctor --provider openrouter  # the aggregator
+```
+
+| | OpenRouter | TypeSafe (vendor) |
+|---|---|---|
+| Model field | `typesafe/jev-1.13` | `jev-latest` |
+| Key | `OPENROUTER_API_KEY` | `TYPESAFE_API_KEY` |
+| Context | 32,000 tokens | **64,000** (32,000 for state + longest question) |
+| Price | $0.042/Mtok | **identical** |
+| Response `cost` | ✅ reported | ❌ absent — computed from the rate |
+
+Prefer **OpenRouter** if you already have a key; it also reports the billed cost,
+so the ledger needs no arithmetic. Prefer **TypeSafe** for double the context — it
+is the same price, so going direct is a dependency question, not a cost one.
+
+Model names are translated automatically: `typesafe/jev-1.13` ↔ `jev-latest`.
+Passing the wrong one to the wrong endpoint is a 404 or a 422.
+
 `setx` does not affect shells that are already open. On Windows the client also
 reads the user registry, so a key set yesterday works in a terminal opened before
 it.
