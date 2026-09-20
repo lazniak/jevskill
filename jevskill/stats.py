@@ -29,6 +29,7 @@ import statistics
 import threading
 import time
 import uuid
+import weakref
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Mapping
@@ -100,6 +101,15 @@ class Record:
     tokens_in: int = 0
     tokens_out: int = 0
     cost_usd: float = 0.0
+    #: What the abandoned leg of a hedged call cost, and how that number was
+    #: arrived at (``"estimated"``, or ``""`` when nothing was hedged). Without
+    #: them ``cost_usd`` silently mixed a billed figure with an estimated one,
+    #: and no reader of the ledger could tell which rows were which — in the
+    #: file this project uses to claim savings. Rows written before these fields
+    #: existed simply lack the keys; every reader goes through `load_records`,
+    #: which works on plain dicts and uses `.get`, so they still load.
+    hedge_cost_usd_est: float = 0.0
+    hedge_cost_source: str = ""
     questions: int = 0
     state_tokens: int = 0
     confidence: dict[str, float] = field(default_factory=dict)
@@ -193,6 +203,8 @@ def record_decision(
     tokens_in: int = 0,
     tokens_out: int = 0,
     cost_usd: float = 0.0,
+    hedge_cost_usd_est: float = 0.0,
+    hedge_cost_source: str = "",
     questions: int = 0,
     state_tokens: int = 0,
     confidence: dict[str, float] | None = None,
@@ -213,6 +225,8 @@ def record_decision(
             tokens_in=tokens_in,
             tokens_out=tokens_out,
             cost_usd=cost_usd,
+            hedge_cost_usd_est=hedge_cost_usd_est,
+            hedge_cost_source=hedge_cost_source,
             questions=questions,
             state_tokens=state_tokens,
             confidence=confidence,
@@ -235,6 +249,8 @@ def build_record(
     tokens_in: int = 0,
     tokens_out: int = 0,
     cost_usd: float = 0.0,
+    hedge_cost_usd_est: float = 0.0,
+    hedge_cost_source: str = "",
     questions: int = 0,
     state_tokens: int = 0,
     confidence: dict[str, float] | None = None,
@@ -249,6 +265,12 @@ def build_record(
     Split out of :func:`record_decision` so the buffered :class:`Ledger` can
     produce **the same row** rather than a second row format that would drift
     from this one the first time a field was added.
+
+    ``cost_usd`` is the total the caller actually spent, which on a hedged call
+    includes an estimate for the abandoned leg. Pass ``hedge_cost_usd_est`` and
+    ``hedge_cost_source`` from ``Decisions.usage`` alongside it so the estimated
+    part stays separable — a blended total with no marker is exactly how a
+    ledger starts lying about its own precision.
     """
     baseline_cost, baseline_data_cost, data_at_jev = _baseline_costs(baseline_tokens, baseline)
     return Record(
@@ -261,6 +283,8 @@ def build_record(
         tokens_in=int(tokens_in),
         tokens_out=int(tokens_out),
         cost_usd=float(cost_usd),
+        hedge_cost_usd_est=float(hedge_cost_usd_est),
+        hedge_cost_source=str(hedge_cost_source or ""),
         questions=int(questions),
         state_tokens=int(state_tokens),
         confidence=confidence or {},
@@ -310,6 +334,34 @@ DEFAULT_FLUSH_EVERY = 64
 #: disk promptly rather than at exit.
 DEFAULT_FLUSH_INTERVAL_S = 1.0
 
+#: Every open :class:`Ledger`, weakly. One module-level set and **one**
+#: :mod:`atexit` hook, instead of ``atexit.register(self.close)`` per instance:
+#: that registration held a bound method, so an un-closed ledger could never be
+#: collected and fifty of them left fifty callbacks plus fifty live objects for
+#: the interpreter to walk at exit. A ``WeakSet`` keeps the same guarantee
+#: (anything still alive and open is flushed) while letting a forgotten ledger
+#: be collected like any other object.
+_OPEN_LEDGERS: "weakref.WeakSet[Ledger]" = weakref.WeakSet()
+
+
+def _flush_open_ledgers() -> None:
+    """Flush every ledger still open at interpreter exit.
+
+    Iterates a snapshot because :meth:`Ledger.close` removes itself from the
+    set, and swallows errors because an exception here would be raised from
+    :mod:`atexit`, after the program's own last chance to react. A ledger whose
+    final flush fails stays in the set, having already reported the failure to
+    whoever called :meth:`Ledger.close`.
+    """
+    for ledger in list(_OPEN_LEDGERS):
+        try:
+            ledger.close()
+        except Exception:
+            pass
+
+
+atexit.register(_flush_open_ledgers)
+
 
 class Ledger:
     """An append-only ledger writer that keeps the file I/O off the hot path.
@@ -323,7 +375,8 @@ class Ledger:
     :meth:`write` serialises the row and appends the *text* to an in-memory
     buffer, then returns. A background thread drains the buffer every
     ``flush_every`` rows or ``flush_interval_s`` seconds, and :meth:`close` —
-    also registered with :mod:`atexit` — drains whatever is left.
+    reached at interpreter exit through :data:`_OPEN_LEDGERS` — drains whatever
+    is left.
 
     Three properties are preserved exactly as the unbuffered path has them:
 
@@ -332,7 +385,11 @@ class Ledger:
     * **order** — one lock, one list, written in hand-over order;
     * **no loss** — every accepted row reaches the file, including on a normal
       interpreter exit. A SIGKILL loses the buffer, which is the same guarantee
-      any buffered writer gives, and is why ``flush_every`` is not large.
+      any buffered writer gives, and is why ``flush_every`` is not large. A
+      *failed* write does not lose anything either: the batch goes back at the
+      front of the buffer and :attr:`flush_errors` counts the failure, so the
+      next flush retries it and :meth:`close` raises rather than letting a loop
+      finish believing its rows are on disk.
 
     The row text is built in :meth:`write`, not in the background thread, on
     purpose: a caller that mutates its ``Record`` after handing it over cannot
@@ -365,8 +422,14 @@ class Ledger:
         self._closed = False
         self.written = 0
         self.flushes = 0
+        #: How many flushes have failed over this ledger's life. A background
+        #: thread cannot raise at anyone, so the only alternative to a counter
+        #: is silence — and silence is what turned five accepted rows into zero
+        #: rows on disk with ``pending == 0``.
+        self.flush_errors = 0
+        self._last_error: Exception | None = None
         self._thread: threading.Thread | None = None
-        atexit.register(self.close)
+        _OPEN_LEDGERS.add(self)
         if start_thread and self.flush_interval_s > 0:
             self._thread = threading.Thread(
                 target=self._run, name="jevskill-ledger", daemon=True
@@ -419,19 +482,64 @@ class Ledger:
 
     # ---- draining ---------------------------------------------------------
     def flush(self) -> int:
-        """Write everything buffered so far. Returns the number of rows written."""
+        """Write everything buffered so far. Returns the number of rows written.
+
+        **The batch is written in one ``os.write`` to an ``O_APPEND`` file
+        descriptor.** The previous version handed a ~22 KB batch (64 rows) to a
+        buffered text writer with an 8 KiB buffer, which is three or more
+        ``write`` calls; another process appending between them landed its line
+        *inside* our batch. What the single write buys, precisely:
+
+        * POSIX: ``O_APPEND`` makes the seek-to-end and the write one operation,
+          so no other writer's bytes can appear inside this batch.
+        * Windows: ``O_APPEND`` is emulated as seek-then-write, so the window is
+          narrowed from "between the pieces of a batch" to "between one seek and
+          one write" — smaller, not closed. A reader must still tolerate a torn
+          final line, which :func:`read_ledger` does by skipping unparseable
+          ones.
+        * Neither: durability. Nothing is ``fsync``-ed, so a power cut can still
+          lose what the OS had not written out.
+
+        The bytes are UTF-8 with ``\\n`` line endings on every platform — the
+        text writer used to translate those to ``\\r\\n`` on Windows, so the same
+        ledger differed by platform for no reason anyone chose.
+
+        **A failed write does not discard the batch.** It used to: the buffer was
+        emptied before the write, so an ``open`` or ``write`` error dropped every
+        row in it, and the background thread's bare ``except`` made that silent —
+        five accepted rows, zero on disk, ``pending == 0``, against a docstring
+        promising no loss. The batch now goes back at the *front* of the buffer,
+        ahead of anything that arrived while the write was being attempted, so
+        order survives the failure too.
+        """
         with self._lock:
             batch, self._buffer = self._buffer, []
         if not batch:
             return 0
-        # One `open` per batch, and one lock so a manual flush cannot interleave
-        # its lines with the background thread's.
-        with self._file_lock:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            with self.path.open("a", encoding="utf-8") as handle:
-                handle.write("\n".join(batch) + "\n")
+        payload = ("\n".join(batch) + "\n").encode("utf-8")
+        try:
+            # One lock so a manual flush cannot interleave with the background
+            # thread's, and one `os.write` so another *process* cannot either.
+            with self._file_lock:
+                self.path.parent.mkdir(parents=True, exist_ok=True)
+                handle = os.open(
+                    self.path,
+                    os.O_APPEND | os.O_CREAT | os.O_WRONLY | getattr(os, "O_BINARY", 0),
+                    0o666,
+                )
+                try:
+                    os.write(handle, payload)
+                finally:
+                    os.close(handle)
+        except Exception as exc:
+            with self._lock:
+                self._buffer[:0] = batch
+            self.flush_errors += 1
+            self._last_error = exc
+            raise
         self.written += len(batch)
         self.flushes += 1
+        self._last_error = None
         return len(batch)
 
     def _run(self) -> None:
@@ -443,25 +551,30 @@ class Ledger:
             except Exception:
                 # A background writer that raises kills the thread and silently
                 # stops recording. Losing one batch is bad; losing every later
-                # batch without a word is worse, so keep the loop alive and let
-                # `close()` try again.
+                # batch without a word is worse, so keep the loop alive and try
+                # again next tick — `flush` has already put the rows back and
+                # counted the failure in `flush_errors`.
                 pass
 
     def close(self) -> None:
-        """Stop the thread and flush what is left. Safe to call twice."""
-        if self._closed:
-            self.flush()
-            return
-        self._closed = True
-        self._wake.set()
-        thread, self._thread = self._thread, None
-        if thread is not None and thread.is_alive():
-            thread.join(timeout=2.0)
+        """Stop the thread and flush what is left. Safe to call twice.
+
+        Raises if the final flush fails, and leaves the rows in the buffer. A
+        loop that ends with ``ledger.close()`` returning normally may take that
+        as "my rows are on disk"; the previous version made that claim even when
+        every write had failed, because the background thread had already
+        swallowed the error and the buffer had already been thrown away.
+        """
+        if not self._closed:
+            self._closed = True
+            self._wake.set()
+            thread, self._thread = self._thread, None
+            if thread is not None and thread.is_alive():
+                thread.join(timeout=2.0)
         self.flush()
-        try:
-            atexit.unregister(self.close)
-        except Exception:  # pragma: no cover - only on exotic interpreters
-            pass
+        # Only after a flush that worked: a ledger whose rows are still in
+        # memory stays in `_OPEN_LEDGERS`, so interpreter exit gets a last try.
+        _OPEN_LEDGERS.discard(self)
 
     def __enter__(self) -> "Ledger":
         return self

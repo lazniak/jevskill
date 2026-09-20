@@ -376,6 +376,26 @@ class TestHelpers:
         result = client.decide({}, QUESTIONS)
         assert json.loads(json.dumps(result.to_dict()))["answers"]["is_bug"]["noul"] == 0.96
 
+    def test_to_dict_carries_the_combined_cost_and_keeps_the_halves(self):
+        """The serialised form omitted the total, so every consumer recomputed
+        it — and a consumer that forgot silently under-reported hedged spend.
+        `usage["cost"]` still holds the winner alone."""
+        client, _ = make_client([FakeResponse(200, FIXTURE)])
+        result = client.decide({}, QUESTIONS)
+        payload = result.to_dict()
+        assert payload["cost_usd"] == pytest.approx(result.cost_usd)
+        assert payload["usage"]["cost"] == pytest.approx(FIXTURE["usage"]["cost"])
+
+    def test_the_combined_cost_includes_an_abandoned_hedge(self):
+        result = Decisions(
+            answers={}, model="m", request_id="r",
+            usage={"cost": 0.001, "hedge_cost_usd_est": 0.0004,
+                   "hedge_cost_source": "estimated"},
+        )
+        payload = result.to_dict()
+        assert payload["cost_usd"] == pytest.approx(0.0014)
+        assert payload["usage"]["cost"] == pytest.approx(0.001)
+
 
 class TestAnswerObject:
     def test_to_dict_merges_kind_and_name(self):

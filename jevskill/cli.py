@@ -471,6 +471,11 @@ def cmd_ask(args: argparse.Namespace) -> int:
             tokens_in=result.input_tokens,
             tokens_out=int(result.usage.get("output_tokens", 0) or 0),
             cost_usd=result.cost_usd,
+            # `cost_usd` already includes the abandoned hedge leg; these two say
+            # how much of it was estimated rather than billed, so a reader of
+            # the ledger is never guessing which rows blend the two.
+            hedge_cost_usd_est=float(result.usage.get("hedge_cost_usd_est", 0.0) or 0.0),
+            hedge_cost_source=str(result.usage.get("hedge_cost_source", "") or ""),
             questions=len(questions),
             state_tokens=shape.tokens,
             confidence=confidences,
@@ -732,6 +737,8 @@ def cmd_batch(args: argparse.Namespace) -> int:
             tokens_in=result.input_tokens,
             tokens_out=int(result.usage.get("output_tokens", 0) or 0),
             cost_usd=result.cost_usd,
+            hedge_cost_usd_est=float(result.usage.get("hedge_cost_usd_est", 0.0) or 0.0),
+            hedge_cost_source=str(result.usage.get("hedge_cost_source", "") or ""),
             questions=len(mapping),
             state_tokens=baseline,
             confidence=_confidences(result),

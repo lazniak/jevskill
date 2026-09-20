@@ -133,17 +133,31 @@ HOT_RETRIES = 0
 #: at 320 ms the duplicate fired on 43 of 60 calls and took the N=12 p50 from
 #: ~298 ms to 642 ms (``bench/cu_results.json``, ``hedge_probes``).
 DEFAULT_HEDGE_AFTER_MS = 400.0
+#: The lowest ``hedge_after_ms`` that still means "hedge". Below this the
+#: duplicate stops covering a tail and starts being a second copy of every call:
+#: at ``0`` the twin goes out before the primary can possibly have answered, so
+#: **every** decision is sent twice, doubling the provider's work and the bill
+#: while the measured win rate of a fired hedge is zero (66 fires, 0 wins —
+#: ``bench/cu_results.json``). 50 ms is below the fastest response either
+#: provider has produced (243 ms), so nothing legitimate is refused; it only
+#: rejects values that could not have been meant as a tail cover. A value below
+#: it is a ``ValueError`` at construction rather than a surprise on the bill.
+MIN_HEDGE_AFTER_MS = 50.0
 #: How ``warm()`` opens the connection. ``"head"`` sends ``HEAD /v1/models``;
-#: ``"decision"`` sends one minimal real decision (~300 tokens, ~$0.000013).
+#: ``"decision"`` sends one minimal real decision (310 tokens, $0.000013 —
+#: measured, ``warm_cost_usd_median`` in ``bench/cu_results.json``).
 #:
 #: The default is measured, not assumed — ``python bench/cu_bench.py
-#: --warm-bench``, 5 fresh clients per mode, 2026-09-20, recorded in
+#: --warm-bench``, 5 fresh clients per mode, re-run 2026-09-20 and recorded in
 #: ``bench/cu_results.json``:
 #:
-#:   vendor:     no warm-up -> first decision 682 ms; HEAD (594 ms) -> 284 ms;
-#:               decision (658 ms) -> 260 ms; steady state ~270-300 ms
-#:   OpenRouter: no warm-up -> first decision 375 ms; HEAD (89 ms) -> 305 ms;
-#:               decision (353 ms) -> 307 ms; steady state ~315-340 ms
+#:   vendor:     no warm-up -> first decision 693 ms; HEAD (583 ms) -> 293 ms;
+#:               decision (693 ms) -> 266 ms; steady state ~285-310 ms
+#:   OpenRouter: no warm-up -> first decision 342 ms; HEAD (136 ms) -> 314 ms;
+#:               decision (358 ms) -> 304 ms; steady state ~300-315 ms
+#:
+#: The warm-up decision's own price is recorded per row as well, and is 310
+#: input tokens / $0.000013 on both providers.
 #:
 #: HEAD removes the cold penalty on both providers, costs nothing, and finishes
 #: sooner than a warm-up decision does — so it is the default despite the
@@ -172,6 +186,35 @@ DEFAULT_MAX_STATE_TOKENS = 8000
 #: constant decides whether a state is refused or sent, and over-counting costs a
 #: chunking round trip while under-counting costs a 400.
 CHARS_PER_TOKEN = 1.68
+
+# --------------------------------------------------------------------------- #
+# Burst defaults, and how "the caller said nothing" is told from "the caller
+# said exactly this"
+# --------------------------------------------------------------------------- #
+#: Connect timeout for the default (burst) path.
+DEFAULT_TIMEOUT_CONNECT_S = 5.0
+#: Read timeout for the default (burst) path. Generous on purpose: inside one
+#: harness turn a slow answer that still lands beats a fast failure.
+DEFAULT_TIMEOUT_READ_S = 60.0
+#: Retries for the default (burst) path.
+DEFAULT_RETRIES = 2
+
+#: The three fields the hot path retunes, and the value each one means when the
+#: caller states nothing. They are declared on :class:`Config` as ``None``
+#: sentinels and resolved here in ``__post_init__``, which is the only way to
+#: tell ``Config()`` from ``Config(timeout_read_s=60.0)``.
+#:
+#: The previous design compared the field to its dataclass default, so a caller
+#: who *stated* the documented number — ``Config(timeout_read_s=60.0,
+#: retries=2)`` — was silently retuned to 1.5 s and 0 retries by ``hot=True``,
+#: exactly against the promise in :func:`jevskill.client._apply_hot_defaults`
+#: and in ``skills/jev/references/hotloop.md``. Value equality cannot express
+#: "stated"; a sentinel can.
+STATED_DEFAULTS: dict[str, float | int] = {
+    "timeout_connect_s": DEFAULT_TIMEOUT_CONNECT_S,
+    "timeout_read_s": DEFAULT_TIMEOUT_READ_S,
+    "retries": DEFAULT_RETRIES,
+}
 
 
 def _registry_env(name: str) -> str:
@@ -351,15 +394,32 @@ def model_for_provider(model: str, provider: str) -> str:
 
 @dataclass(slots=True)
 class Config:
-    """Everything a decision needs, resolved once."""
+    """Everything a decision needs, resolved once.
+
+    Three fields — ``timeout_connect_s``, ``timeout_read_s`` and ``retries`` —
+    are declared as ``None`` and filled in by ``__post_init__`` from
+    :data:`STATED_DEFAULTS`. Every read afterwards sees a plain number, so
+    nothing downstream changes; what the sentinel buys is the one thing value
+    equality cannot express, **whether the caller said anything at all**.
+    :meth:`is_defaulted` answers that, and ``hot=True`` uses it so that
+    ``Config(timeout_read_s=60.0)`` keeps 60 seconds instead of being retuned to
+    the hot path's 1.5 (which it was, silently, before).
+
+    ``dataclasses.replace`` re-runs ``__init__`` with concrete values, so a
+    replaced config reports **nothing** as defaulted — every field on it was
+    stated, by whoever called ``replace``. That is the safe direction: a copy is
+    never quietly re-tuned. Code that needs the original's answer must ask
+    before replacing, which is what :func:`jevskill.client._apply_hot_defaults`
+    does.
+    """
 
     api_key: str = ""
     model: str = DEFAULT_MODEL
     base_url: str = DEFAULT_BASE_URL
     provider: str = DEFAULT_PROVIDER
-    timeout_connect_s: float = 5.0
-    timeout_read_s: float = 60.0
-    retries: int = 2
+    timeout_connect_s: float | None = None
+    timeout_read_s: float | None = None
+    retries: int | None = None
     max_state_tokens: int = DEFAULT_MAX_STATE_TOKENS
     ledger_dir: Path | None = None
     #: Send an identical second request when the first has not answered within
@@ -373,6 +433,44 @@ class Config:
     #: ``"decision"`` or ``"head"`` — see :data:`DEFAULT_WARM_MODE`.
     warm_mode: str = DEFAULT_WARM_MODE
     extra: dict = field(default_factory=dict)
+    #: Which of :data:`STATED_DEFAULTS` arrived unset. Derived, never passed:
+    #: ``init=False`` so ``replace()`` cannot smuggle a stale answer into a copy
+    #: whose values are all concrete.
+    _defaulted: frozenset = field(
+        default=frozenset(), init=False, repr=False, compare=False
+    )
+
+    def __post_init__(self) -> None:
+        defaulted = set()
+        for name, value in STATED_DEFAULTS.items():
+            if getattr(self, name) is None:
+                setattr(self, name, value)
+                defaulted.add(name)
+        self._defaulted = frozenset(defaulted)
+        self._validate()
+
+    def _validate(self) -> None:
+        """Reject knob values that cannot mean what they say.
+
+        Called from ``__post_init__`` and again after :meth:`from_env` applies
+        its overrides, because assigning an attribute does not re-run
+        ``__post_init__``.
+        """
+        if float(self.hedge_after_ms) < MIN_HEDGE_AFTER_MS:
+            raise ValueError(
+                f"hedge_after_ms={self.hedge_after_ms!r} is below the "
+                f"{MIN_HEDGE_AFTER_MS:.0f} ms floor: a duplicate that early is "
+                "not a tail cover, it is a second copy of every call. See "
+                "jevskill.config.MIN_HEDGE_AFTER_MS."
+            )
+
+    def is_defaulted(self, name: str) -> bool:
+        """Whether *name* holds a library default because the caller said nothing.
+
+        ``False`` for a field the caller passed — **including** one passed with
+        the same value the default has.
+        """
+        return name in self._defaulted
 
     @classmethod
     def from_env(cls, provider: str | None = None, **overrides: object) -> "Config":
@@ -386,6 +484,10 @@ class Config:
         ``extra["key_name"]`` / ``extra["key_source"]`` record which variable
         answered and where it lived, so ``doctor`` can explain the choice
         without echoing the secret.
+
+        An override is a *statement*, so applying one clears that field from
+        :attr:`_defaulted`: ``Config.from_env(timeout_read_s=60.0)`` keeps 60
+        seconds even under ``hot=True``.
         """
         intent = resolve_provider_intent(provider)
         key_name, key_source, key = find_api_key_source(intent)
@@ -400,9 +502,14 @@ class Config:
             base_url=os.environ.get("JEVSKILL_BASE_URL", "") or spec["base_url"],
         )
         cfg.extra.update({"key_name": key_name, "key_source": key_source})
+        stated = set()
         for name, value in overrides.items():
             if value is not None and hasattr(cfg, name):
                 setattr(cfg, name, value)
+                stated.add(name)
+        if stated:
+            cfg._defaulted = cfg._defaulted - stated
+        cfg._validate()
         return cfg
 
     # ---- provider-derived facts -------------------------------------------

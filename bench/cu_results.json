@@ -1,6 +1,6 @@
 {
   "about": "Per-step decision benchmark for a computer-use loop. Written by bench/cu_bench.py; every number in skills/jev/references/hotloop.md comes from this file.",
-  "generated": "2026-09-20T21:23:54",
+  "generated": "2026-09-20T22:12:18",
   "host": {
     "python": "3.13.2",
     "platform": "Windows-11-10.0.26100-SP0",
@@ -45,34 +45,40 @@
       "mode": "decision",
       "repeats": 5,
       "n": 12,
-      "warm_ms_median": 352.5,
-      "first_decision_ms_median": 307.1,
+      "warm_ms_median": 357.9,
+      "warm_tokens_in_median": 310,
+      "warm_cost_usd_median": 1.302e-05,
+      "warm_cost_usd_total": 6.51e-05,
+      "first_decision_ms_median": 303.9,
       "first_decision_ms": [
-        307.1,
-        322.9,
-        298.6,
-        314.8,
-        272.4
+        380.4,
+        754.2,
+        289.5,
+        303.9,
+        289.0
       ],
-      "second_decision_ms_median": 315.1,
-      "warm_plus_first_ms": 659.5
+      "second_decision_ms_median": 298.9,
+      "warm_plus_first_ms": 661.8
     },
     {
       "provider": "openrouter",
       "mode": "head",
       "repeats": 5,
       "n": 12,
-      "warm_ms_median": 89.2,
-      "first_decision_ms_median": 304.6,
+      "warm_ms_median": 136.4,
+      "warm_tokens_in_median": 0,
+      "warm_cost_usd_median": 0.0,
+      "warm_cost_usd_total": 0,
+      "first_decision_ms_median": 313.7,
       "first_decision_ms": [
-        283.6,
-        304.6,
-        290.1,
-        349.2,
-        398.3
+        313.0,
+        315.9,
+        313.7,
+        412.7,
+        274.4
       ],
-      "second_decision_ms_median": 338.6,
-      "warm_plus_first_ms": 393.8
+      "second_decision_ms_median": 315.0,
+      "warm_plus_first_ms": 450.0
     },
     {
       "provider": "openrouter",
@@ -80,50 +86,59 @@
       "repeats": 5,
       "n": 12,
       "warm_ms_median": 0.0,
-      "first_decision_ms_median": 375.1,
+      "warm_tokens_in_median": 0,
+      "warm_cost_usd_median": 0.0,
+      "warm_cost_usd_total": 0,
+      "first_decision_ms_median": 341.7,
       "first_decision_ms": [
-        555.4,
-        328.7,
-        321.4,
-        375.1,
-        422.3
+        523.2,
+        341.7,
+        339.0,
+        361.9,
+        297.1
       ],
-      "second_decision_ms_median": 320.4,
-      "warm_plus_first_ms": 375.1
+      "second_decision_ms_median": 301.0,
+      "warm_plus_first_ms": 341.7
     },
     {
       "provider": "typesafe",
       "mode": "decision",
       "repeats": 5,
       "n": 12,
-      "warm_ms_median": 658.4,
-      "first_decision_ms_median": 260.2,
+      "warm_ms_median": 693.1,
+      "warm_tokens_in_median": 310,
+      "warm_cost_usd_median": 1.302e-05,
+      "warm_cost_usd_total": 6.51e-05,
+      "first_decision_ms_median": 266.4,
       "first_decision_ms": [
-        295.8,
-        254.6,
-        260.2,
-        273.4,
-        243.0
+        260.9,
+        266.4,
+        263.6,
+        267.8,
+        316.5
       ],
-      "second_decision_ms_median": 268.8,
-      "warm_plus_first_ms": 918.6
+      "second_decision_ms_median": 309.8,
+      "warm_plus_first_ms": 959.6
     },
     {
       "provider": "typesafe",
       "mode": "head",
       "repeats": 5,
       "n": 12,
-      "warm_ms_median": 594.4,
-      "first_decision_ms_median": 283.5,
+      "warm_ms_median": 583.3,
+      "warm_tokens_in_median": 0,
+      "warm_cost_usd_median": 0.0,
+      "warm_cost_usd_total": 0,
+      "first_decision_ms_median": 292.5,
       "first_decision_ms": [
-        261.5,
-        300.7,
-        272.1,
-        340.6,
-        283.5
+        295.9,
+        330.1,
+        292.5,
+        263.5,
+        279.1
       ],
-      "second_decision_ms_median": 282.2,
-      "warm_plus_first_ms": 877.9
+      "second_decision_ms_median": 284.5,
+      "warm_plus_first_ms": 875.8
     },
     {
       "provider": "typesafe",
@@ -131,16 +146,19 @@
       "repeats": 5,
       "n": 12,
       "warm_ms_median": 0.0,
-      "first_decision_ms_median": 682.1,
+      "warm_tokens_in_median": 0,
+      "warm_cost_usd_median": 0.0,
+      "warm_cost_usd_total": 0,
+      "first_decision_ms_median": 692.9,
       "first_decision_ms": [
-        657.0,
-        639.2,
-        682.1,
-        696.3,
-        706.4
+        714.5,
+        692.9,
+        650.0,
+        732.8,
+        677.8
       ],
-      "second_decision_ms_median": 299.7,
-      "warm_plus_first_ms": 682.1
+      "second_decision_ms_median": 304.3,
+      "warm_plus_first_ms": 692.9
     }
   ],
   "runs": [

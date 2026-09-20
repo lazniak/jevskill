@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import gc
 import json
+import os
 import time
+import weakref
 
 import pytest
 
+from jevskill import stats
 from jevskill.stats import (
     DEFAULT_BASELINE,
     Ledger,
@@ -397,3 +401,212 @@ class TestRecord:
     def test_record_defaults_are_safe(self):
         record = Record(decision_id="d_1", ts="t", which="gate")
         assert record.stages_ms == {} and record.confidence == {} and record.outcome == ""
+
+class TestAFailedFlushLosesNothing:
+    """The buffer must not be emptied before the write succeeds.
+
+    Measured on the old code: five accepted rows, a failing `open`, and the
+    ledger reported `pending == 0` with zero rows on disk — while its docstring
+    promised no loss and the background thread's bare `except` said nothing.
+    """
+
+    def test_five_rows_survive_a_failing_open_and_land_after_recovery(self, tmp_path, monkeypatch):
+        ledger = Ledger(root=tmp_path, flush_every=1000, flush_interval_s=30.0,
+                        start_thread=False)
+        for i in range(5):
+            ledger.record(which="act", intent=f"step-{i}")
+
+        real_open = os.open
+
+        def broken(path, *args, **kwargs):
+            raise OSError(13, "permission denied")
+
+        monkeypatch.setattr(os, "open", broken)
+        with pytest.raises(OSError):
+            ledger.flush()
+        assert ledger.pending == 5, "the batch was discarded by a failed write"
+        assert ledger.flush_errors == 1
+        assert ledger.written == 0
+
+        monkeypatch.setattr(os, "open", real_open)
+        assert ledger.flush() == 5
+        ledger.close()
+        decisions, _ = read_ledger(tmp_path / ".jevskill" / "ledger.jsonl")
+        assert [d["intent"] for d in decisions] == [f"step-{i}" for i in range(5)]
+
+    def test_the_failed_batch_goes_back_in_front_of_later_rows(self, tmp_path, monkeypatch):
+        ledger = Ledger(root=tmp_path, flush_every=1000, flush_interval_s=30.0,
+                        start_thread=False)
+        for i in range(3):
+            ledger.record(which="act", intent=f"early-{i}")
+        real_open = os.open
+        monkeypatch.setattr(os, "open", lambda *a, **k: (_ for _ in ()).throw(OSError("nope")))
+        with pytest.raises(OSError):
+            ledger.flush()
+        monkeypatch.setattr(os, "open", real_open)
+        ledger.record(which="act", intent="late")
+        ledger.close()
+        decisions, _ = read_ledger(tmp_path / ".jevskill" / "ledger.jsonl")
+        assert [d["intent"] for d in decisions] == ["early-0", "early-1", "early-2", "late"]
+
+    def test_close_raises_rather_than_implying_the_rows_are_safe(self, tmp_path, monkeypatch):
+        ledger = Ledger(root=tmp_path, flush_every=1000, flush_interval_s=30.0,
+                        start_thread=False)
+        ledger.record(which="act")
+        monkeypatch.setattr(os, "open", lambda *a, **k: (_ for _ in ()).throw(OSError("nope")))
+        with pytest.raises(OSError):
+            ledger.close()
+        assert ledger.pending == 1, "the row was thrown away on close"
+
+    def test_the_background_thread_retries_instead_of_dying(self, tmp_path, monkeypatch):
+        real_open = os.open
+        state = {"fail": True}
+
+        def flaky(path, *args, **kwargs):
+            if state["fail"]:
+                raise OSError("not yet")
+            return real_open(path, *args, **kwargs)
+
+        monkeypatch.setattr(os, "open", flaky)
+        ledger = Ledger(root=tmp_path, flush_every=1, flush_interval_s=0.01)
+        try:
+            ledger.record(which="act", intent="written eventually")
+            deadline = time.time() + 5.0
+            while ledger.flush_errors == 0 and time.time() < deadline:
+                time.sleep(0.01)
+            assert ledger.flush_errors >= 1, "the failure was not counted"
+            state["fail"] = False
+            deadline = time.time() + 5.0
+            while ledger.written == 0 and time.time() < deadline:
+                time.sleep(0.01)
+            assert ledger.written == 1, "the thread died on the first failure"
+        finally:
+            monkeypatch.setattr(os, "open", real_open)
+            ledger.close()
+
+
+class TestOneAppendPerBatch:
+    """A batch is one `os.write` to an `O_APPEND` descriptor.
+
+    64 rows is ~22 KB through an 8 KiB buffered writer, so three or more
+    `write` calls — and a second process appending between them landed its line
+    inside our batch.
+    """
+
+    def test_a_batch_is_a_single_write_call(self, tmp_path, monkeypatch):
+        ledger = Ledger(root=tmp_path, flush_every=1000, flush_interval_s=30.0,
+                        start_thread=False)
+        for i in range(64):
+            ledger.record(which="act", intent=f"step-{i}")
+        real_write = os.write
+        calls: list[int] = []
+
+        def counting(fd, data):
+            calls.append(len(data))
+            return real_write(fd, data)
+
+        monkeypatch.setattr(os, "write", counting)
+        assert ledger.flush() == 64
+        monkeypatch.setattr(os, "write", real_write)
+        ledger.close()
+        assert len(calls) == 1, f"{len(calls)} writes for one batch"
+        assert calls[0] > 8192, "the batch was smaller than the buffer it must beat"
+
+    def test_line_endings_are_lf_on_every_platform(self, tmp_path):
+        with Ledger(root=tmp_path, start_thread=False) as ledger:
+            ledger.record(which="act")
+            ledger.record(which="gate")
+        raw = (tmp_path / ".jevskill" / "ledger.jsonl").read_bytes()
+        assert b"\r\n" not in raw, "the text writer translated the newlines"
+        assert raw.count(b"\n") == 2
+
+    def test_an_existing_ledger_is_appended_to_not_truncated(self, tmp_path):
+        record_decision(which="gate", root=tmp_path)
+        with Ledger(root=tmp_path, start_thread=False) as ledger:
+            ledger.record(which="act")
+        decisions, _ = read_ledger(tmp_path / ".jevskill" / "ledger.jsonl")
+        assert [d["which"] for d in decisions] == ["gate", "act"]
+
+
+class TestOneAtexitHookForEveryLedger:
+    """`atexit.register(self.close)` per instance held a bound method, so an
+    un-closed ledger could never be collected: fifty of them meant fifty live
+    objects and fifty callbacks. One `WeakSet` and one hook keep the guarantee
+    without the leak."""
+
+    def test_fifty_ledgers_add_fifty_entries_and_no_hooks(self, tmp_path):
+        before = len(stats._OPEN_LEDGERS)
+        ledgers = [
+            Ledger(root=tmp_path / str(i), start_thread=False) for i in range(50)
+        ]
+        assert len(stats._OPEN_LEDGERS) == before + 50
+        for ledger in ledgers:
+            ledger.close()
+        assert len(stats._OPEN_LEDGERS) == before, "closed ledgers stayed registered"
+
+    def test_a_forgotten_ledger_can_be_collected(self, tmp_path):
+        ledger = Ledger(root=tmp_path, start_thread=False)
+        ref = weakref.ref(ledger)
+        assert ref() is not None
+        del ledger
+        gc.collect()
+        assert ref() is None, "something still holds the ledger — atexit, probably"
+
+    def test_the_exit_hook_flushes_what_is_still_open(self, tmp_path):
+        ledger = Ledger(root=tmp_path, flush_every=1000, flush_interval_s=30.0,
+                        start_thread=False)
+        ledger.record(which="act", intent="never closed")
+        assert ledger.pending == 1
+        stats._flush_open_ledgers()
+        decisions, _ = read_ledger(tmp_path / ".jevskill" / "ledger.jsonl")
+        assert [d["intent"] for d in decisions] == ["never closed"]
+
+    def test_the_hook_is_registered_once_for_the_module(self, tmp_path):
+        """Not a count of `atexit` internals — those are private — but the
+        property that matters: the hook is a module-level function, not a bound
+        method captured per instance."""
+        assert callable(stats._flush_open_ledgers)
+        assert stats._flush_open_ledgers.__module__ == "jevskill.stats"
+
+
+class TestHedgeCostIsMarked:
+    """A ledger that blends billed and estimated money with no marker is a
+    ledger that lies about its own precision."""
+
+    def test_the_fields_exist_and_default_to_nothing_hedged(self):
+        row = build_record(which="act", cost_usd=0.001)
+        assert row.hedge_cost_usd_est == 0.0
+        assert row.hedge_cost_source == ""
+
+    def test_build_record_carries_them_through(self, tmp_path):
+        row = build_record(which="act", cost_usd=0.0012,
+                           hedge_cost_usd_est=0.0002, hedge_cost_source="estimated")
+        assert json.loads(row.to_json())["hedge_cost_source"] == "estimated"
+        with Ledger(root=tmp_path, start_thread=False) as ledger:
+            ledger.write(row)
+        decisions, _ = read_ledger(tmp_path / ".jevskill" / "ledger.jsonl")
+        assert decisions[0]["hedge_cost_usd_est"] == pytest.approx(0.0002)
+
+    def test_record_decision_accepts_them(self, tmp_path):
+        record_decision(which="act", cost_usd=0.0012, hedge_cost_usd_est=0.0002,
+                        hedge_cost_source="estimated", root=tmp_path)
+        decisions, _ = read_ledger(tmp_path / ".jevskill" / "ledger.jsonl")
+        assert decisions[0]["hedge_cost_source"] == "estimated"
+
+    def test_rows_written_before_the_fields_existed_still_load(self, tmp_path):
+        """Old rows simply lack the keys. Every reader works on plain dicts, so
+        a ledger written by an earlier version must still summarise."""
+        target = tmp_path / ".jevskill" / "ledger.jsonl"
+        target.parent.mkdir(parents=True)
+        old = {
+            "decision_id": "d_old", "ts": "2026-09-01T10:00:00", "which": "gate",
+            "intent": "legacy", "latency_ms": 310.0, "tokens_in": 500,
+            "cost_usd": 0.000021, "questions": 1, "baseline_tokens": 500,
+            "baseline_cost_usd": 0.002, "outcome": "", "outcome_detail": "",
+        }
+        target.write_text(json.dumps(old) + "\n", encoding="utf-8")
+        records = load_records([target])
+        assert len(records) == 1
+        assert records[0].get("hedge_cost_usd_est", 0.0) == 0.0
+        summary = summarize(records)
+        assert summary["decisions"] == 1

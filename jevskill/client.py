@@ -33,6 +33,7 @@ from .config import (
     HOT_RETRIES,
     HOT_TIMEOUT_CONNECT_S,
     HOT_TIMEOUT_READ_S,
+    MIN_HEDGE_AFTER_MS,
     Config,
 )
 from .errors import RETRYABLE_STATUS as _RETRYABLE_STATUS
@@ -206,6 +207,12 @@ class Decisions:
             "provider": self.provider,
             "answers": {k: v.to_dict() for k, v in self.answers.items()},
             "usage": self.usage,
+            # The winner *plus* an abandoned hedge, which is what was actually
+            # spent. `usage["cost"]` still holds the winner alone, so a reader
+            # of this dict can still separate measured from estimated money —
+            # leaving the total out meant every consumer recomputed it, and a
+            # consumer that forgot silently under-reported hedged spend.
+            "cost_usd": self.cost_usd,
             "timing_ms": self.timing_ms,
             "attempts": self.attempts,
             "session_id": self.session_id,
@@ -230,14 +237,33 @@ def estimate_tokens(text: str | bytes | Any) -> int:
     return max(1, int(len(text) / CHARS_PER_TOKEN))
 
 
-#: Config fields the hot path retunes, and what it retunes them to. The default
-#: each field still has to hold is read from the dataclass rather than repeated
-#: here, so re-tuning a default never leaves this table quietly disagreeing.
+#: Config fields the hot path retunes, and what it retunes them to. Whether a
+#: field is *still* a default is asked of the config (``Config.is_defaulted``)
+#: rather than answered by comparing values here — a caller who states the
+#: documented number means it, and comparing values cannot tell that apart from
+#: silence. See :data:`jevskill.config.STATED_DEFAULTS`.
 _HOT_TUNING: dict[str, Any] = {
     "timeout_read_s": HOT_TIMEOUT_READ_S,
     "timeout_connect_s": HOT_TIMEOUT_CONNECT_S,
     "retries": HOT_RETRIES,
 }
+
+#: How many abandoned hedge legs may be in flight at once, across the client.
+#:
+#: The loser of a hedged call is abandoned, not cancelled: a sync HTTP request
+#: cannot be recalled, so its connection stays checked out of the pool until it
+#: answers or hits ``timeout_read_s``. The pool is ``max_connections=8``, so a
+#: loop that hedges faster than the losers retire can hold every connection and
+#: then block new calls on the pool timeout — which surfaces as ``PoolTimeout``,
+#: a failure the hedge was supposed to prevent. Capping the abandoned legs at 2
+#: leaves 6 connections for work that is actually being waited on; past the cap
+#: the client simply does not hedge and says so in
+#: ``timing_ms["note"] = "hedge_skipped_saturated"``, which is a measurable
+#: event rather than a silent degradation.
+#:
+#: The async client needs no such cap: ``asyncio`` really does cancel the loser,
+#: and cancelling an ``httpx`` request returns its connection to the pool.
+MAX_ABANDONED_HEDGE_LEGS = 2
 
 #: Whether ``hot=True`` also turns hedging on. **It does not** — and that is a
 #: measurement overruling the design, not a preference.
@@ -254,7 +280,7 @@ _HOT_TUNING: dict[str, Any] = {
 #: it cannot escape a slow connection, and it makes the server do the work
 #: twice, so the leg we are waiting on finishes later. On top of that the
 #: primary starts ``hedge_after_ms`` earlier, so the twin can only win when the
-#: primary is effectively stuck — which never happened in 65 fires.
+#: primary is effectively stuck — which never happened in 66 fires.
 #:
 #: Hedging is kept, off, because the one case it is built for (a leg that is
 #: stuck rather than slow) is real and not represented in this sample, and
@@ -265,8 +291,9 @@ HOT_HEDGE_DEFAULT = False
 
 #: The warm-up decision: the smallest well-formed call that exercises the whole
 #: path (TLS, H2, auth, the decisions endpoint, the parser) rather than only the
-#: socket. Costs one decision — ~300 input tokens, ~$0.000013 — which is the
-#: price of not paying the cold penalty on the first *real* step.
+#: socket. Costs one decision — measured at 310 input tokens and $0.000013 on
+#: both providers (``warm_cost_usd_median`` in ``bench/cu_results.json``) —
+#: which is the price of not paying the cold penalty on the first *real* step.
 WARM_STATE = "warm-up ping"
 WARM_QUESTIONS: dict[str, dict] = {
     "ready": {
@@ -275,6 +302,37 @@ WARM_QUESTIONS: dict[str, dict] = {
         "criteria": {"true": "It is a warm-up ping.", "false": "It is real work."},
     }
 }
+
+
+def _timeouts(read_s: float, connect_s: float) -> Any:
+    """``httpx`` timeouts with the **pool** timeout stated rather than inherited.
+
+    ``httpx.Timeout(1.5, connect=2.0)`` sets read, write *and pool* to 1.5 s.
+    The pool timeout is how long a request waits for a free connection, and on
+    the hot path it was therefore shorter than the read timeout of the request
+    already holding one: with ``max_connections=8`` and abandoned hedge legs
+    each holding a connection for up to ``timeout_read_s``, a loop could queue
+    behind them and raise ``PoolTimeout`` — a failure invented by the hedging
+    that was meant to remove failures.
+
+    Waiting for a connection is strictly cheaper than failing, so the pool gets
+    the longest single wait either leg can impose, plus a second of slack. It is
+    a ceiling, not a target: on a healthy pool nothing ever reaches it.
+    """
+    return httpx.Timeout(read_s, connect=connect_s, pool=max(read_s, connect_s) + 1.0)
+
+
+def _copy_config(config: Config, **changes: Any) -> Config:
+    """``dataclasses.replace``, with the mutable fields actually copied.
+
+    ``replace`` re-runs ``__init__`` with the *same objects*, so a copy's
+    ``extra`` was the caller's dict rather than a copy of it: a hot client and
+    the config the caller still held shared one dictionary, and a write through
+    either was visible in the other (verified). Every copy made in this module
+    goes through here so that cannot come back.
+    """
+    changes.setdefault("extra", dict(config.extra))
+    return replace(config, **changes)
 
 
 def _apply_hot_defaults(
@@ -287,10 +345,15 @@ def _apply_hot_defaults(
     """Return the config the client will actually use.
 
     Hot mode changes *defaults*, never a caller's explicit choice: a field is
-    retuned only while it still holds the value the dataclass gave it. Passing
-    ``Config(timeout_read_s=8)`` with ``hot=True`` therefore keeps 8 seconds,
-    because the caller said so and a convenience flag has no business overruling
-    a stated number.
+    retuned only while the caller has said nothing about it, which the config
+    knows (:meth:`jevskill.config.Config.is_defaulted`) because an unset field
+    arrives as a sentinel rather than as the number itself. Passing
+    ``Config(timeout_read_s=8)`` with ``hot=True`` therefore keeps 8 seconds —
+    and so does ``Config(timeout_read_s=60.0)``, the documented default stated
+    out loud, which the previous value comparison silently retuned to 1.5 s.
+
+    ``replace`` reports nothing as defaulted on the copy, so the question is
+    asked of the *original*, before any copy is made.
 
     The caller's own object is never mutated — a ``Config`` is resolved once and
     may be shared by several clients, and a hot client silently shortening a
@@ -299,15 +362,25 @@ def _apply_hot_defaults(
     changes: dict[str, Any] = {}
     if hot:
         for name, hot_value in _HOT_TUNING.items():
-            if getattr(config, name) == Config.__dataclass_fields__[name].default:
+            if config.is_defaulted(name):
                 changes[name] = hot_value
         if hedge is None and HOT_HEDGE_DEFAULT:
             changes["hedge"] = True
     if hedge is not None:
         changes["hedge"] = bool(hedge)
     if hedge_after_ms is not None:
+        # Checked here as well as in ``Config.__post_init__`` so a caller who
+        # passes the knob to the *client* is told at the place the mistake was
+        # made, not by a copy made three frames deeper.
+        if float(hedge_after_ms) < MIN_HEDGE_AFTER_MS:
+            raise ValueError(
+                f"hedge_after_ms={hedge_after_ms!r} is below the "
+                f"{MIN_HEDGE_AFTER_MS:.0f} ms floor: a duplicate that early is "
+                "not a tail cover, it is a second copy of every call — see "
+                "jevskill.config.MIN_HEDGE_AFTER_MS."
+            )
         changes["hedge_after_ms"] = float(hedge_after_ms)
-    return replace(config, **changes) if changes else config
+    return _copy_config(config, **changes) if changes else config
 
 
 class _DecisionCore:
@@ -435,6 +508,10 @@ class _DecisionCore:
             # hedges cannot compute it.
             timing["hedged"] = bool(hedge.get("hedged", False))
             timing["winner"] = str(hedge.get("winner", "primary"))
+            if hedge.get("note"):
+                # Why a willing hedge did not fire. Only present when there is
+                # something to say, so the common row keeps its shape.
+                timing["note"] = str(hedge["note"])
             if timing["hedged"] and not cached:
                 usage["hedge_cost_usd_est"] = self._hedge_cost_estimate(usage, body)
                 usage["hedge_cost_source"] = "estimated"
@@ -520,9 +597,17 @@ class JevClient(_DecisionCore):
                 "{'api_key': '...'} to ~/.jevskill/config.json."
             )
         self.requests_sent = 0
+        #: The last warm-up decision, when ``warm(mode="decision")`` made one
+        #: and it succeeded. ``warm()`` returns milliseconds, which says nothing
+        #: about what the warm-up *cost*; a bench that wants to publish that
+        #: number should not have to re-implement the warm-up to get it.
+        self.last_warm_decision: "Decisions | None" = None
         # Hedging sends from two threads, and ``+= 1`` is not atomic. The lock
         # costs ~100 ns on a path that spends ~300 ms in the network.
         self._counter_lock = threading.Lock()
+        # Abandoned hedge legs hold a pool connection until they answer; this
+        # caps how many may do so at once. See MAX_ABANDONED_HEDGE_LEGS.
+        self._hedge_slots = threading.Semaphore(MAX_ABANDONED_HEDGE_LEGS)
         self._client = client
         self._owns_client = client is None
         self._body_prefix = (
@@ -539,8 +624,8 @@ class JevClient(_DecisionCore):
                     "HTTP-Referer": "https://github.com/lazniak/jevskill",
                     "X-Title": "jevskill",
                 },
-                timeout=httpx.Timeout(
-                    self.config.timeout_read_s, connect=self.config.timeout_connect_s
+                timeout=_timeouts(
+                    self.config.timeout_read_s, self.config.timeout_connect_s
                 ),
                 limits=httpx.Limits(max_keepalive_connections=4, max_connections=8),
             )
@@ -551,22 +636,39 @@ class JevClient(_DecisionCore):
 
         ``mode="head"`` sends ``HEAD /v1/models``: free, but it only proves the
         socket. ``mode="decision"`` sends one minimal real decision
-        (:data:`WARM_STATE` / :data:`WARM_QUESTIONS`): ~300 input tokens,
-        ~$0.000013, and it exercises the path the next call will actually take.
+        (:data:`WARM_STATE` / :data:`WARM_QUESTIONS`): 310 input tokens,
+        $0.000013 measured, and it exercises the path the next call will
+        actually take.
 
         The default comes from measurement, not from taste — see
         :data:`jevskill.config.DEFAULT_WARM_MODE`,
         ``skills/jev/references/hotloop.md`` and ``bench/cu_results.json``.
         Failures are swallowed on both paths: a warm-up that did not work is not
         a reason to fail the work.
+
+        The warm-up decision is **one attempt**, whatever ``retries`` says. It
+        inherited the config's retries, so a warm-up against a dead endpoint
+        spent 751 ms on three attempts and a backoff sleep before returning the
+        "failure does not matter" that the docstring promises — the opposite of
+        paying the cold cost *now*. A warm-up either works on the first try or
+        has nothing to tell us. ``retries`` is pinned by swapping the config for
+        the duration, which is safe because ``warm()`` is a start-up call made
+        before the loop that shares this client begins.
+
+        On success the result is kept on :attr:`last_warm_decision`, so a caller
+        that needs to publish what the warm-up cost does not have to rebuild it.
         """
         mode = (mode or self.config.warm_mode or "head").strip().lower()
         started = time.perf_counter()
         if mode == "decision":
+            self.last_warm_decision = None
+            config, self.config = self.config, _copy_config(self.config, retries=0)
             try:
-                self.decide(WARM_STATE, WARM_QUESTIONS)
+                self.last_warm_decision = self.decide(WARM_STATE, WARM_QUESTIONS)
             except Exception:
                 pass
+            finally:
+                self.config = config
             return (time.perf_counter() - started) * 1000.0
         try:
             if self._client is not None:
@@ -627,7 +729,9 @@ class JevClient(_DecisionCore):
             if attempt:
                 time.sleep(min(0.25 * (2 ** (attempt - 1)), 2.0))
             try:
-                raw, status, hedge_info = self._send(body, timeout_s=timeout_s)
+                raw, status, hedge_info = self._send(
+                    body, timeout_s=timeout_s, allow_hedge=attempt == 0
+                )
             except Exception as exc:  # transport-level
                 last_error = exc
                 if attempt >= self.config.retries:
@@ -673,15 +777,23 @@ class JevClient(_DecisionCore):
 
     # ------------------------------------------------------------------ transport
     def _send(
-        self, body: bytes, *, timeout_s: float | None = None
+        self, body: bytes, *, timeout_s: float | None = None, allow_hedge: bool = True
     ) -> tuple[bytes, int, dict | None]:
-        """One attempt — hedged when the config says so.
+        """One attempt — hedged when the config says so, and only the first one.
 
         Returns ``(raw, status, hedge_info)``; ``hedge_info`` is ``None`` unless
         hedging is enabled, which is what keeps the default path byte-identical
         to what it was: no extra thread, no extra field on the result.
+
+        ``allow_hedge=False`` on every attempt after the first, because the two
+        strategies multiply instead of adding: ``retries=2, hedge=True`` put six
+        requests on the wire for one decision (measured), paying twice for each
+        of three attempts. A hedge covers the *tail* of a healthy call; once an
+        attempt has already failed, the situation is no longer a tail and the
+        retry is the answer. Retries therefore go single-leg, which bounds one
+        decision at ``retries + 2`` requests instead of ``2 * (retries + 1)``.
         """
-        if not self.config.hedge:
+        if not self.config.hedge or not allow_hedge:
             raw, status = self._post(body, timeout_s=timeout_s)
             return raw, status, None
         return self._post_hedged(body, timeout_s=timeout_s)
@@ -709,8 +821,15 @@ class JevClient(_DecisionCore):
         The loser is *abandoned*, not cancelled: a sync HTTP request in flight
         cannot be recalled, the provider has already done the work, and we are
         billed for it. That is why
-        :meth:`_DecisionCore._hedge_cost_estimate` exists.
-
+        :meth:`_DecisionCore._hedge_cost_estimate` exists — and it is also why
+        the duplicate needs a slot from :attr:`_hedge_slots` before it may go
+        out. An abandoned leg keeps a pool connection for up to
+        ``timeout_read_s``; with ``max_connections=8`` a loop that hedges faster
+        than the losers retire starves itself and then fails on the pool
+        timeout. Past :data:`MAX_ABANDONED_HEDGE_LEGS` outstanding legs the call
+        therefore does **not** hedge and reports
+        ``timing_ms["note"] = "hedge_skipped_saturated"`` — visible in the
+        ledger, so "the hedge stopped firing" is a number rather than a mystery.
         """
         delay = max(0.0, float(self.config.hedge_after_ms) / 1000.0)
         read_s = self.config.timeout_read_s if timeout_s is None else timeout_s
@@ -719,6 +838,13 @@ class JevClient(_DecisionCore):
         budget = read_s + self.config.timeout_connect_s + 0.5
         inbox: "queue.Queue[tuple[str, bytes, int, Exception | None]]" = queue.Queue()
 
+        # The slot is released by whichever leg finishes *last*, because that is
+        # the moment the abandoned one stops holding a connection. Counting in
+        # the threads rather than at the return keeps it honest even when the
+        # caller has long since taken the winner's answer and moved on.
+        legs = {"outstanding": 1, "slot": False}
+        legs_lock = threading.Lock()
+
         def attempt(label: str) -> None:
             try:
                 raw, status = self._post(body, timeout_s=timeout_s)
@@ -726,18 +852,46 @@ class JevClient(_DecisionCore):
                 inbox.put((label, b"", 0, exc))
             else:
                 inbox.put((label, raw, status, None))
+            finally:
+                with legs_lock:
+                    legs["outstanding"] -= 1
+                    release = legs["outstanding"] == 0 and legs["slot"]
+                    if release:
+                        legs["slot"] = False
+                if release:
+                    self._hedge_slots.release()
 
         started = time.perf_counter()
         threading.Thread(target=attempt, args=("primary",), daemon=True).start()
         hedged = False
+        note = ""
         try:
             first = inbox.get(timeout=delay)
         except queue.Empty:
-            hedged = True
-            threading.Thread(target=attempt, args=("hedge",), daemon=True).start()
+            if self._hedge_slots.acquire(blocking=False):
+                with legs_lock:
+                    legs["slot"] = True
+                    legs["outstanding"] += 1
+                try:
+                    threading.Thread(
+                        target=attempt, args=("hedge",), daemon=True
+                    ).start()
+                except Exception:  # pragma: no cover - thread exhaustion
+                    # The slot is released by the leg that takes it; a leg that
+                    # never started cannot, and a leaked slot would disable
+                    # hedging for the rest of the client's life.
+                    with legs_lock:
+                        legs["outstanding"] -= 1
+                        legs["slot"] = False
+                    self._hedge_slots.release()
+                    note = "hedge_thread_unavailable"
+                else:
+                    hedged = True
+            else:
+                note = "hedge_skipped_saturated"
             first = self._await_leg(inbox, started, budget)
         if not hedged or first[2] == 200:
-            return _unwrap_leg(first, hedged=hedged)
+            return _unwrap_leg(first, hedged=hedged, note=note)
         # The first answer back was an error or a retryable status. The twin is
         # still running, and a 200 from it is worth more than a 429 from this
         # one, so give it the rest of the budget before reporting a failure.
@@ -765,11 +919,9 @@ class JevClient(_DecisionCore):
         if self._client is not None:
             kwargs = {}
             if timeout_s is not None and httpx is not None:
-                kwargs["timeout"] = httpx.Timeout(
-                    timeout_s, connect=self.config.timeout_connect_s
-                )
-            response = self._client.post(self.config.decisions_url, content=body, **kwargs)
+                kwargs["timeout"] = _timeouts(timeout_s, self.config.timeout_connect_s)
             self._count_request()
+            response = self._client.post(self.config.decisions_url, content=body, **kwargs)
             return response.content, response.status_code
         request = urllib.request.Request(
             self.config.decisions_url,
@@ -780,17 +932,25 @@ class JevClient(_DecisionCore):
             },
             method="POST",
         )
+        self._count_request()
         try:
             with urllib.request.urlopen(
                 request, timeout=timeout_s or self.config.timeout_read_s
             ) as response:
-                self._count_request()
                 return response.read(), response.status
         except urllib.error.HTTPError as exc:
-            self._count_request()
             return exc.read(), exc.code
 
     def _count_request(self) -> None:
+        """Count a request as *sent*, before it is issued — not when it returns.
+
+        Counting on return undercounts exactly the requests that matter: a hedge
+        whose loser times out was never counted at all, so a client that put two
+        bodies on the wire reported ``requests_sent == 1`` (measured). The
+        provider bills for what was sent, so that is what this counts. It can
+        therefore over-count a request that failed before leaving the socket,
+        which is the harmless direction: it never claims money was not spent.
+        """
         with self._counter_lock:
             self.requests_sent += 1
 
@@ -807,18 +967,24 @@ class JevClient(_DecisionCore):
 
 
 def _unwrap_leg(
-    leg: tuple[str, bytes, int, Exception | None], *, hedged: bool
+    leg: tuple[str, bytes, int, Exception | None], *, hedged: bool, note: str = ""
 ) -> tuple[bytes, int, dict]:
     """Turn one finished leg into the ``(raw, status, hedge_info)`` triple.
 
     A leg that failed at the transport level re-raises here, so hedging changes
     nothing about how a network failure is reported — the retry loop above sees
     exactly the exception it would have seen without a twin.
+
+    ``note`` records why a willing hedge did not fire, and is left out of the
+    timing dict entirely when there is nothing to say.
     """
     label, raw, status, exc = leg
     if exc is not None:
         raise exc
-    return raw, status, {"hedged": hedged, "winner": label}
+    info: dict[str, Any] = {"hedged": hedged, "winner": label}
+    if note:
+        info["note"] = note
+    return raw, status, info
 
 
 def _short(raw: bytes, limit: int = 300) -> str:
@@ -888,6 +1054,8 @@ class AsyncJevClient(_DecisionCore):
                 "{'api_key': '...'} to ~/.jevskill/config.json."
             )
         self.requests_sent = 0
+        #: See :attr:`JevClient.last_warm_decision`.
+        self.last_warm_decision: "Decisions | None" = None
         self._body_prefix = (
             b'{"model":"' + self.config.model.encode("utf-8") + b'","state":'
         )
@@ -902,22 +1070,33 @@ class AsyncJevClient(_DecisionCore):
                     "HTTP-Referer": "https://github.com/lazniak/jevskill",
                     "X-Title": "jevskill",
                 },
-                timeout=httpx.Timeout(
-                    self.config.timeout_read_s, connect=self.config.timeout_connect_s
+                timeout=_timeouts(
+                    self.config.timeout_read_s, self.config.timeout_connect_s
                 ),
                 limits=httpx.Limits(max_keepalive_connections=4, max_connections=8),
             )
 
     # ------------------------------------------------------------------ warm
     async def warm(self, mode: str | None = None) -> float:
-        """See :meth:`JevClient.warm` — same modes, same measured default."""
+        """See :meth:`JevClient.warm` — same modes, same measured default.
+
+        Single-attempt for the same reason, and the result is kept on
+        :attr:`last_warm_decision`.
+        """
         mode = (mode or self.config.warm_mode or "head").strip().lower()
         started = time.perf_counter()
+        if mode == "decision":
+            self.last_warm_decision = None
+            config, self.config = self.config, _copy_config(self.config, retries=0)
+            try:
+                self.last_warm_decision = await self.decide(WARM_STATE, WARM_QUESTIONS)
+            except Exception:
+                pass
+            finally:
+                self.config = config
+            return (time.perf_counter() - started) * 1000.0
         try:
-            if mode == "decision":
-                await self.decide(WARM_STATE, WARM_QUESTIONS)
-            else:
-                await self._client.head(self.config.warm_url)
+            await self._client.head(self.config.warm_url)
         except Exception:
             pass
         return (time.perf_counter() - started) * 1000.0
@@ -960,7 +1139,9 @@ class AsyncJevClient(_DecisionCore):
             if attempt:
                 await asyncio.sleep(min(0.25 * (2 ** (attempt - 1)), 2.0))
             try:
-                raw, status, hedge_info = await self._send(body, timeout_s=timeout_s)
+                raw, status, hedge_info = await self._send(
+                    body, timeout_s=timeout_s, allow_hedge=attempt == 0
+                )
             except Exception as exc:
                 last_error = exc
                 if attempt >= self.config.retries:
@@ -1001,20 +1182,34 @@ class AsyncJevClient(_DecisionCore):
         client cannot do. Same caveat as :meth:`JevClient.decide_many`: when the
         state is shared and only the questions differ, one ``decide`` with all
         the questions is cheaper and faster than N calls, concurrent or not.
+
+        **On failure this raises the first exception, after every task has
+        finished** — the same contract the sync version has, where a raise
+        happens with nothing else in flight. A plain ``gather`` returns as soon
+        as one task raises, so the other N-1 were left running against a client
+        the caller was about to close: their answers were discarded, their cost
+        was not, and closing the client underneath them turned one error into
+        several. ``return_exceptions=True`` waits for all of them first; the
+        results of a partly successful batch are still dropped, because a caller
+        that asked for N answers cannot use a list that silently holds fewer.
         """
         import asyncio
 
-        return list(
-            await asyncio.gather(
-                *(self.decide(state, questions, **kwargs) for state, questions in items)
-            )
+        results = await asyncio.gather(
+            *(self.decide(state, questions, **kwargs) for state, questions in items),
+            return_exceptions=True,
         )
+        for result in results:
+            if isinstance(result, BaseException):
+                raise result
+        return list(results)
 
     # ------------------------------------------------------------------ transport
     async def _send(
-        self, body: bytes, *, timeout_s: float | None = None
+        self, body: bytes, *, timeout_s: float | None = None, allow_hedge: bool = True
     ) -> tuple[bytes, int, dict | None]:
-        if not self.config.hedge:
+        """See :meth:`JevClient._send` — including why only attempt 0 hedges."""
+        if not self.config.hedge or not allow_hedge:
             raw, status = await self._post(body, timeout_s=timeout_s)
             return raw, status, None
         return await self._post_hedged(body, timeout_s=timeout_s)
@@ -1034,6 +1229,11 @@ class AsyncJevClient(_DecisionCore):
         budget = read_s + self.config.timeout_connect_s + 0.5
 
         labels: dict[Any, str] = {}
+        # The clock starts before the primary is launched, exactly as in the
+        # sync client. Starting it after the `hedge_after_ms` wait gave the
+        # async path a budget of `delay + budget`, so two clients with the same
+        # config gave up at different times — a difference nobody chose.
+        started = time.perf_counter()
         primary = asyncio.ensure_future(self._post(body, timeout_s=timeout_s))
         labels[primary] = "primary"
         done, pending = await asyncio.wait({primary}, timeout=delay)
@@ -1046,7 +1246,6 @@ class AsyncJevClient(_DecisionCore):
 
         fallback: tuple[str, bytes, int] | None = None
         first_error: Exception | None = None
-        started = time.perf_counter()
         while True:
             for task in done:
                 if task.cancelled():
@@ -1082,14 +1281,15 @@ class AsyncJevClient(_DecisionCore):
     async def _post(self, body: bytes, *, timeout_s: float | None = None) -> tuple[bytes, int]:
         kwargs: dict[str, Any] = {}
         if timeout_s is not None and httpx is not None:
-            kwargs["timeout"] = httpx.Timeout(
-                timeout_s, connect=self.config.timeout_connect_s
-            )
+            kwargs["timeout"] = _timeouts(timeout_s, self.config.timeout_connect_s)
+        # Counted before the await, for the reason in `JevClient._count_request`:
+        # a cancelled hedge leg never returns here, and it was still sent and
+        # still billed. One event loop, one thread, so no lock — unlike the sync
+        # client, where two threads share the counter.
+        self.requests_sent += 1
         response = await self._client.post(
             self.config.decisions_url, content=body, **kwargs
         )
-        # One event loop, one thread: no lock needed here, unlike the sync client.
-        self.requests_sent += 1
         return response.content, response.status_code
 
     async def aclose(self) -> None:
