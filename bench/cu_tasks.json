@@ -117,18 +117,13 @@
     "oracle": {
       "type": "uia_value",
       "automation_id": "CalculatorResults",
-      "expect_contains": "408",
-      "fallback": {
-        "type": "clipboard_equals",
-        "expect": "408",
-        "note": "Only meaningful if the goal text is extended to also ask the agent to copy the result (Ctrl+C); the default goal above does not ask for that. Use only if uia_value proves unreliable for the installed Calculator build."
-      }
+      "expect_contains": "408"
     },
     "human_steps": 6,
     "irreversible": false,
     "restores_state": false,
     "coverage_risk": "uia",
-    "notes": "Calculator (CalculatorApp.exe) launches through a calc.exe/Calculator.exe shim that can exit right after handing off to the real app, so setup resolves the PID by diffing the process list rather than assuming an image name. AutomationId 'CalculatorResults' is the documented id for the result display; its accessible Name is a full localized sentence ('Wy\u015bwietlacz to 408' in Polish) -- match the trailing digits, never the sentence prefix, to stay language-independent. Setup does not force Standard mode explicitly; a cold launch defaults to it, but a window left over from a differently-moded previous run (Scientific/Programmer/a converter) could violate that -- the PID-diff approach only guarantees a fresh process, not a fresh UI state, so confirm mode if flakiness appears.",
+    "notes": "Calculator (CalculatorApp.exe) launches through a calc.exe/Calculator.exe shim that can exit right after handing off to the real app, so setup resolves the PID by diffing the process list rather than assuming an image name. AutomationId 'CalculatorResults' is the documented id for the result display; its accessible Name is a full localized sentence ('Wy\u015bwietlacz to 408' in Polish) -- match the trailing digits, never the sentence prefix, to stay language-independent. Setup does not force Standard mode explicitly; a cold launch defaults to it, but a window left over from a differently-moded previous run (Scientific/Programmer/a converter) could violate that -- the PID-diff approach only guarantees a fresh process, not a fresh UI state, so confirm mode if flakiness appears. The oracle carried a clipboard_equals fallback until 2026-09-20; it was removed because its own note said the clause could only work if the goal asked the agent to press Ctrl+C, and the goal (deliberately unchanged) does not -- so it was unreachable, and an unreachable grading path in a benchmark is a claim nobody can check. If uia_value ever proves unreliable on some Calculator build, change the goal and the oracle together in one commit rather than leaving a spare.",
     "expected_agent_steps_min": 7
   },
   {

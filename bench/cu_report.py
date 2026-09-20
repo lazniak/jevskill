@@ -61,7 +61,20 @@ contract = _load_contract()
 TaskRun = contract.TaskRun
 summarise = contract.summarise
 
-DEFAULT_IN = ROOT / "bench" / "cu_runs.json"
+DEFAULT_IN_LIVE = ROOT / "bench" / "cu_task_results.json"
+DEFAULT_IN_DRY = ROOT / "bench" / "cu_runs.json"
+DEFAULT_IN = DEFAULT_IN_DRY     # kept: callers that pass a path explicitly
+
+
+def default_input() -> Path:
+    """The live results if they exist, otherwise the dry run's.
+
+    Measured rows win by default. `bench/cu_runs.json` is synthetic and
+    gitignored, so on a fresh clone only the live file is there; on this machine
+    both may be, and a report that silently preferred the fake would be the worst
+    possible default.
+    """
+    return DEFAULT_IN_LIVE if DEFAULT_IN_LIVE.exists() else DEFAULT_IN_DRY
 
 #: The per-task columns, as `bench/cu_tasks.md` asks for them. `calls` is the
 #: doc's `jev_calls`, named generically because the comparison agent calls a
@@ -313,8 +326,11 @@ def render_compare(left: Sequence[Any], right: Sequence[Any], *,
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("results", nargs="?", type=Path, default=DEFAULT_IN,
-                        help=f"results file (default {DEFAULT_IN.name})")
+    parser.add_argument("results", nargs="?", type=Path, default=None,
+                        help=f"results file; defaults to {DEFAULT_IN_LIVE.name} when "
+                             f"it exists, else {DEFAULT_IN_DRY.name}")
+    parser.add_argument("--in", dest="results_opt", type=Path, default=None,
+                        metavar="RESULTS.json", help="same as the positional argument")
     parser.add_argument("--compare", type=Path, default=None, metavar="OTHER.json",
                         help="a second results file in the same schema, side by side")
     parser.add_argument("--label", default=None, help="name for the first file's agent")
@@ -341,6 +357,7 @@ def _filter(rows: Sequence[Any], args) -> List[Any]:
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = build_parser().parse_args(argv)
+    args.results = args.results or args.results_opt or default_input()
     if not args.results.exists():
         print(f"{args.results} does not exist - run `python bench/cu_run.py --dry-run` "
               "first.", file=sys.stderr)
