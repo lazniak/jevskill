@@ -399,15 +399,23 @@ def cmd_patterns(args: argparse.Namespace) -> int:
 
 
 def cmd_stats(args: argparse.Namespace) -> int:
-    """Report the measured record of this skill's own effectiveness."""
-    paths = None
+    """Report the measured record of this skill's own effectiveness.
+
+    Scope is deliberate: this project's ledger only, unless asked otherwise. An
+    earlier version always merged ``~/.jevskill/ledger.jsonl``, which made the
+    output depend on whatever the machine had ever run and made a per-project
+    report quietly include every other project's decisions. Merging is now opt-in
+    via ``--include-global``.
+    """
     if args.ledger:
         paths = [Path(args.ledger)]
     elif args.global_only:
         from .stats import global_ledger_path
 
         paths = [global_ledger_path()]
-    records = load_records(paths)
+    else:
+        paths = [ledger_path()]
+    records = load_records(paths, include_global=bool(args.include_global))
     summary = summarize(records)
 
     if args.json:
@@ -533,6 +541,9 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("stats", help="report measured effectiveness from the ledger")
     p.add_argument("--ledger", help="specific ledger file")
     p.add_argument("--global-only", action="store_true", help="use ~/.jevskill/ledger.jsonl only")
+    p.add_argument("--include-global", action="store_true",
+                   help="also merge ~/.jevskill/ledger.jsonl (off by default: an "
+                        "explicit ledger must mean exactly that ledger)")
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_stats)
 

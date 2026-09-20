@@ -249,9 +249,30 @@ class TestSummarize:
 
 
 class TestLedgerPath:
-    def test_env_override_wins(self, tmp_path, monkeypatch):
+    def test_env_is_used_when_no_root_is_given(self, tmp_path, monkeypatch):
         monkeypatch.setenv("JEVSKILL_LEDGER_DIR", str(tmp_path / "elsewhere"))
         assert ledger_path() == tmp_path / "elsewhere" / "ledger.jsonl"
+
+    def test_explicit_root_beats_the_environment(self, tmp_path, monkeypatch):
+        """An explicit root must mean exactly that root.
+
+        The opposite precedence was a real bug: a caller could pass a precise
+        path and still have its records written into whatever
+        JEVSKILL_LEDGER_DIR happened to point at. It presented as a test that
+        wrote ten decisions and read back zero.
+        """
+        monkeypatch.setenv("JEVSKILL_LEDGER_DIR", str(tmp_path / "elsewhere"))
+        assert ledger_path(tmp_path / "chosen") == \
+            tmp_path / "chosen" / ".jevskill" / "ledger.jsonl"
+
+    def test_explicit_root_is_not_affected_by_a_polluted_environment(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("JEVSKILL_LEDGER_DIR", str(tmp_path / "elsewhere"))
+        decision_id = record_decision(which="gate", root=tmp_path / "chosen")
+        written = tmp_path / "chosen" / ".jevskill" / "ledger.jsonl"
+        assert written.is_file(), "record was written somewhere other than the given root"
+        assert not (tmp_path / "elsewhere" / "ledger.jsonl").exists()
+        decisions, _ = read_ledger(written)
+        assert [d["decision_id"] for d in decisions] == [decision_id]
 
     def test_explicit_root(self, tmp_path, monkeypatch):
         monkeypatch.delenv("JEVSKILL_LEDGER_DIR", raising=False)

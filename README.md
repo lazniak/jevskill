@@ -9,7 +9,7 @@ tokens on decisions — and start making them for **$0.000013** in **325 ms**.
 
 **A/B tested: 99.3% fewer input tokens, and accuracy went *up* (12/18 → 15/18).**
 
-[![tests](https://img.shields.io/badge/tests-211%20passing-brightgreen)](#-does-it-actually-help-ab-tested)
+[![tests](https://img.shields.io/badge/tests-215%20passing-brightgreen)](#-does-it-actually-help-ab-tested)
 [![A/B](https://img.shields.io/badge/A%2FB-99.3%25%20fewer%20tokens-blue)](#-does-it-actually-help-ab-tested)
 [![cost](https://img.shields.io/badge/decision-%240.000013-success)](#-cost-per-decision)
 [![license](https://img.shields.io/badge/license-MIT-informational)](LICENSE)
@@ -419,14 +419,14 @@ jevskill/              the Python package — the measurement half
 bench/
   run.py               E1–E7 microbenchmarks (latency, fan-out, REDUCE, guards)
   ab.py                the A/B evaluation vs the model doing it alone
-tests/                 211 tests, offline, green
+tests/                 215 tests, offline, green
 docs/DESIGN.md         architecture + the mistakes that shaped it
 AGENTS.md              conventions for agents working on this repo
 ```
 
 ## 🧭 Status & known limits — `v0.3.0`
 
-CLI, skill, bundled scripts, ledger and reference docs (211 offline tests) are
+CLI, skill, bundled scripts, ledger and reference docs (215 offline tests) are
 complete, and there are now two benchmark suites. What is **not** proven:
 
 * **Latency is one location.** Measured from Poland. TypeSafe quotes 70–500 ms

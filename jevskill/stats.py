@@ -53,15 +53,25 @@ DEFAULT_BASELINE = {
 def ledger_path(root: Path | str | None = None) -> Path:
     """Where this project's ledger lives.
 
-    Defaults to ``<cwd>/.jevskill/ledger.jsonl`` so stats travel with the repo
-    that produced them. ``JEVSKILL_LEDGER_DIR`` overrides it, and the global
-    ledger lives at ``~/.jevskill/ledger.jsonl``.
+    Precedence, and the order matters:
+
+    1. an explicit ``root`` — the caller said exactly where, so we obey;
+    2. ``JEVSKILL_LEDGER_DIR`` — a *default* for callers that did not say;
+    3. ``<cwd>/.jevskill/ledger.jsonl`` — so stats travel with the repo.
+
+    ``JEVSKILL_LEDGER_DIR`` used to win over an explicit ``root``, which meant a
+    caller could pass a precise path and still have its records written somewhere
+    else entirely. The symptom was a test that wrote ten decisions and read back
+    zero, and it is the kind of bug that hides in whatever the environment
+    happens to contain.
+
+    The global ledger is separate: ``~/.jevskill/ledger.jsonl``.
     """
+    if root is not None:
+        return Path(root) / LEDGER_DIRNAME / LEDGER_FILENAME
     override = os.environ.get("JEVSKILL_LEDGER_DIR")
     if override:
         return Path(override) / LEDGER_FILENAME
-    if root is not None:
-        return Path(root) / LEDGER_DIRNAME / LEDGER_FILENAME
     return Path.cwd() / LEDGER_DIRNAME / LEDGER_FILENAME
 
 
