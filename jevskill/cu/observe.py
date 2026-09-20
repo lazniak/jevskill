@@ -66,8 +66,10 @@ import ctypes
 import threading
 import time
 from ctypes import wintypes
+from dataclasses import replace
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
+from ..orchestrate import count_tokens
 from .reduce import union_bbox
 from .types import CONTROL_TYPES, REGION_ROLES, Snapshot, UIElement
 
@@ -95,10 +97,67 @@ _MENU_CONTROL_TYPES = (50009, 50011)  # Menu, MenuItem
 _MENUBAR = "menubar"
 _local = threading.local()
 
+#: ``CoInitializeEx``: MTA. Measured indistinguishable from STA on the 213-node
+#: Notepad selection probe, and MTA is the honest apartment for this object —
+#: it is created lazily on whatever thread first calls :func:`snapshot`, which
+#: in a daemon is a worker with no message pump, and an STA without a pump is a
+#: deadlock waiting for a cross-apartment call.
+COINIT_MULTITHREADED = 0x0
+#: ``RPC_E_CHANGED_MODE``: this thread already joined the other apartment kind.
+#: Not an error for us — somebody else (pywinauto, a GUI toolkit, a host
+#: application) initialised COM first and their apartment works fine.
+_RPC_E_CHANGED_MODE = 0x80010106
+_RPC_E_CHANGED_MODE_SIGNED = _RPC_E_CHANGED_MODE - 0x100000000
+
+#: Win32 class of a menu / dropdown / context-menu popup. Popups are separate
+#: top-level windows, so one HWND's subtree never contains them; see
+#: :func:`snapshot`.
+POPUP_CLASS = "#32768"
+#: The ``region`` a merged popup's own root carries, so a caller can tell
+#: "this came from another window" without a second field on every element.
+POPUP_REGION = "popup"
+
+
+def _co_initialize(comtypes: Any) -> None:
+    """Join a COM apartment on *this* thread, tolerating one already joined.
+
+    ``comtypes`` calls ``CoInitializeEx`` once, on the thread that first
+    imports it. A :class:`_Uia` is thread-local precisely so a worker thread
+    can have its own client — and that worker's first UIA call then failed with
+    ``CO_E_NOTINITIALIZED`` (0x800401F0), because nobody had initialised COM
+    there. This is the missing call.
+
+    No matching ``CoUninitialize``: the client is cached in :data:`_local` for
+    the lifetime of the thread, and every element handle in every
+    :class:`Snapshot` it produced is a live cross-process pointer into that
+    apartment. Uninitialising while those are alive is how you turn a clean
+    shutdown into ``RPC_E_DISCONNECTED`` in somebody else's code. A daemon's
+    perception thread is expected to outlive its snapshots; a thread that
+    genuinely wants to hand the apartment back should drop ``_local.uia``, drop
+    its snapshots, and call ``CoUninitialize`` itself.
+    """
+    try:
+        comtypes.CoInitializeEx(COINIT_MULTITHREADED)
+    except OSError as exc:  # pragma: no cover - needs a real COM apartment
+        code = getattr(exc, "winerror", None)
+        if code is None:
+            code = getattr(exc, "hresult", None)
+        if code not in (_RPC_E_CHANGED_MODE, _RPC_E_CHANGED_MODE_SIGNED):
+            raise
+    except AttributeError:  # pragma: no cover - a comtypes without the helper
+        pass
+
 
 # --------------------------------------------------------------------------- #
 # Win32 helpers (ctypes, so the import costs nothing on a non-Windows box)
 # --------------------------------------------------------------------------- #
+
+#: ``EnumWindows`` callback type. Built once: a fresh ``WINFUNCTYPE`` per call
+#: leaks a thunk, and this runs on every snapshot.
+_ENUM_WINDOWS_PROC = ctypes.WINFUNCTYPE(
+    wintypes.BOOL, wintypes.HWND, wintypes.LPARAM) if hasattr(
+        ctypes, "WINFUNCTYPE") else None
+
 
 def _user32():
     if not hasattr(ctypes, "windll"):  # pragma: no cover - non-Windows
@@ -166,6 +225,7 @@ class _Uia:
             import comtypes.client
         except ImportError as exc:  # pragma: no cover - depends on the extra
             raise ImportError(_INSTALL_HINT) from exc
+        _co_initialize(comtypes)
         try:
             comtypes.client.GetModule("UIAutomationCore.dll")
             from comtypes.gen import UIAutomationClient as uia_mod
@@ -185,6 +245,13 @@ class _Uia:
             ("rangevalue", uia_mod.UIA_IsRangeValuePatternAvailablePropertyId),
         ]
         self.dialog_prop = getattr(uia_mod, "UIA_IsDialogPropertyId", 30174)
+        #: State, not availability. Two more cached properties (read
+        #: in-process, with the rest) buy the difference between "this list
+        #: item can be selected" and "this list item is selected".
+        self.selected_prop = getattr(
+            uia_mod, "UIA_SelectionItemIsSelectedPropertyId", 30079)
+        self.toggle_prop = getattr(
+            uia_mod, "UIA_ToggleToggleStatePropertyId", 30086)
         #: One call for the whole window (atomic, one round trip).
         self.cache_subtree = self._cache_request(uia_mod.TreeScope_Subtree)
         #: One call per container (prunable, budget can stop it mid-walk).
@@ -201,7 +268,8 @@ class _Uia:
                  uia_mod.UIA_IsOffscreenPropertyId,
                  uia_mod.UIA_AutomationIdPropertyId,
                  uia_mod.UIA_ClassNamePropertyId, uia_mod.UIA_ProcessIdPropertyId,
-                 uia_mod.UIA_ValueValuePropertyId]
+                 uia_mod.UIA_ValueValuePropertyId, self.selected_prop,
+                 self.toggle_prop]
         props.extend(pid for _, pid in self.pattern_props)
         for prop in props:
             cache.AddProperty(prop)
@@ -279,6 +347,16 @@ def _read(el: Any, uia: _Uia, element_id: str, depth: int,
         if "value" in patterns:
             value = _text(el.GetCachedPropertyValue(uia.mod.UIA_ValueValuePropertyId),
                           MAX_VALUE_CHARS) or None
+        # Only asked when the pattern is advertised: a provider that does not
+        # support SelectionItem/Toggle answers these with a default that would
+        # otherwise read as "off" rather than "not applicable".
+        selected = "select" in patterns and _cached_bool(el, uia.selected_prop)
+        toggled = None
+        if "toggle" in patterns:
+            try:
+                toggled = int(el.GetCachedPropertyValue(uia.toggle_prop))
+            except Exception:
+                toggled = None
         return UIElement(
             id=element_id, role=role, name=_text(el.CachedName, MAX_NAME_CHARS),
             value=value, enabled=bool(el.CachedIsEnabled),
@@ -286,7 +364,7 @@ def _read(el: Any, uia: _Uia, element_id: str, depth: int,
             offscreen=bool(el.CachedIsOffscreen), bbox=bbox, patterns=patterns,
             automation_id=_text(el.CachedAutomationId, 64),
             class_name=_text(el.CachedClassName, 64), depth=depth,
-            parent=parent, region=region)
+            parent=parent, region=region, selected=selected, toggled=toggled)
     except Exception:
         # A node can die mid-walk (a tooltip closing, a UWP app suspending).
         # One dead node is not a failed snapshot.
@@ -304,66 +382,61 @@ def _cached_bool(el: Any, prop: int) -> bool:
 # The walk
 # --------------------------------------------------------------------------- #
 
-def snapshot(hwnd: Optional[int] = None, *, max_nodes: int = 4000,
-             budget_ms: float = 600.0, strategy: str = DEFAULT_STRATEGY) -> Snapshot:
-    """Observe one window. Defaults to whatever is in the foreground.
+def _root_of(uia: _Uia, hwnd: int, strategy: str) -> Any:
+    """``ElementFromHandle`` + ``BuildUpdatedCache``, as an ``OSError``.
 
-    ``max_nodes`` and ``budget_ms`` are both hard stops that set
-    ``truncated``; the element list is then a document-order prefix of the
-    tree, never a sample, so "the first N controls" stays a meaningful set.
-
-    ``strategy`` picks how the tree is fetched, and the choice is measured
-    rather than argued (``bench/cu_observe_bench.py`` runs both):
-
-    ``"subtree"``
-        One ``BuildUpdatedCache(TreeScope_Subtree)`` for the whole window, then
-        a pure-Python walk over the cached children. One cross-process round
-        trip, an atomic view of the tree, and the pruning still happens — but
-        on the client side, so the provider has already paid for the MenuBar
-        subtree by the time it is skipped, and ``budget_ms`` can only stop the
-        Python half.
-    ``"lazy"``
-        One call per container (60-64 on a Notepad with tabs open). Equal to
-        ``"subtree"`` on an idle machine and measurably worse under load — see
-        the module docstring for both sets of figures — because every round
-        trip pays the contention again. It buys the ability to abandon a walk
-        mid-tree, which matters for an application far larger than
-        ``max_nodes``.
-
-    Raises ``ImportError`` naming the extra when comtypes or Windows is
-    missing. Raises ``OSError`` when there is no such window.
+    Both raise ``COMError`` — not ``OSError`` — when the window is dying,
+    suspended by Process Lifetime Management, or owned by a process at a higher
+    integrity level. The docstring of :func:`snapshot` promises ``OSError`` for
+    "there is no such window", and a caller that wrote ``except OSError`` around
+    a snapshot got a ``COMError`` through the gap. Re-raised here with the
+    HRESULT and the hwnd, because "0x80040201 on hwnd 0x000707A2" is the whole
+    diagnosis and ``COMError(...)`` alone is none of it.
     """
-    if strategy not in ("subtree", "lazy"):
-        raise ValueError("strategy must be 'subtree' or 'lazy', not %r" % strategy)
-    started = time.time()
-    clock = time.perf_counter()
-    uia = _client()
-    if hwnd is None:
-        hwnd = foreground_hwnd()
-    if not hwnd:
-        raise OSError("no foreground window")
+    try:
+        live = uia.iuia.ElementFromHandle(hwnd)
+        return live.BuildUpdatedCache(
+            uia.cache_subtree if strategy == "subtree" else uia.cache)
+    except Exception as exc:
+        hresult = getattr(exc, "hresult", None)
+        if hresult is None:
+            hresult = getattr(exc, "winerror", None)
+        code = "0x%08X" % (hresult & 0xFFFFFFFF) if hresult is not None else "?"
+        raise OSError(
+            "cannot read window 0x%08X: %s %s (%s) — the window may have "
+            "closed, or a packaged app may have been suspended"
+            % (hwnd, type(exc).__name__, code, exc)) from exc
 
-    root_live = uia.iuia.ElementFromHandle(hwnd)
-    root = root_live.BuildUpdatedCache(
-        uia.cache_subtree if strategy == "subtree" else uia.cache)
 
+def _walk(uia: _Uia, root: Any, strategy: str, *, max_nodes: int,
+          clock: float, budget_ms: float, first_index: int = 0,
+          parent: Optional[str] = None,
+          region: Optional[str] = None) -> Tuple[List[UIElement], Dict[str, Any], bool]:
+    """The pure descent, shared by the main window and by every popup.
+
+    Returns ``(elements, handles, truncated)``. ``first_index`` continues the
+    ``e0, e1, ...`` numbering, so a popup's elements can be appended to the
+    window's list without either renumbering or colliding.
+    """
     elements: List[UIElement] = []
     handles: Dict[str, Any] = {}
     truncated = False
     menu_open: Optional[bool] = None
     # (element, depth, parent id, region id, its children are already cached)
     stack: List[Tuple[Any, int, Optional[str], Optional[str], bool]] = [
-        (root, 0, None, None, True)]
+        (root, 0, parent, region, True)]
 
     while stack:
-        el, depth, parent, region, has_children = stack.pop()
-        record = _read(el, uia, "e%d" % len(elements), depth, parent, region)
+        el, depth, node_parent, node_region, has_children = stack.pop()
+        record = _read(el, uia, "e%d" % (first_index + len(elements)), depth,
+                       node_parent, node_region)
         if record is None:
             continue
 
         # A 0x0 or 1x1 node is layout, not a control: it can never be clicked,
-        # so it is not recorded. Its *children* still are — measured on
-        # Notepad, dropping the subtree with the node cost 74 of 135 nodes,
+        # so it is not recorded. Its *children* still are — measured on a
+        # Notepad with tabs restored (a selection probe, not the committed
+        # fixture), dropping the subtree with the node cost 74 of 135 nodes,
         # including real buttons under an unsized WinUI content host. The
         # children take the dropped node's place (same parent, same depth), so
         # the recorded tree stays a tree.
@@ -371,7 +444,7 @@ def snapshot(hwnd: Optional[int] = None, *, max_nodes: int = 4000,
         if keep:
             elements.append(record)
             handles[record.id] = el
-            if len(elements) >= max_nodes:
+            if first_index + len(elements) >= max_nodes:
                 truncated = True
                 break
         if (time.perf_counter() - clock) * 1000.0 >= budget_ms:
@@ -393,13 +466,151 @@ def snapshot(hwnd: Optional[int] = None, *, max_nodes: int = 4000,
             continue
         if not children:
             continue
-        child_parent = record.id if keep else parent
+        child_parent = record.id if keep else node_parent
         child_depth = depth + 1 if keep else depth
         child_region = (record.id if keep and record.role in REGION_ROLES
-                        else region)
+                        else node_region)
         for index in range(children.Length - 1, -1, -1):
             stack.append((children.GetElement(index), child_depth, child_parent,
                           child_region, False))
+    return elements, handles, truncated
+
+
+def popup_hwnds(pid: int) -> List[int]:
+    """Visible ``#32768`` popups belonging to ``pid``, topmost last.
+
+    A dropped-down menu, a combo box list and a context menu are *separate
+    top-level windows* on Windows, so the subtree of the application's HWND
+    does not contain them. That is why clicking "File" appeared to do nothing:
+    the menu opened, the next snapshot walked the same window, and ``tree_hash``
+    reported "unchanged".
+
+    Filtered by pid because a popup is created by the thread that owns the menu;
+    a shell-extension context menu hosted out of process would be missed, which
+    is a limitation this function does not hide.
+    """
+    user32 = _user32()
+    found: List[int] = []
+
+    def callback(popup: int, _lparam: int) -> bool:
+        if not user32.IsWindowVisible(popup):
+            return True
+        buf = ctypes.create_unicode_buffer(64)
+        user32.GetClassNameW(popup, buf, 64)
+        if buf.value != POPUP_CLASS:
+            return True
+        owner = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(popup, ctypes.byref(owner))
+        if not pid or int(owner.value) == pid:
+            found.append(int(popup))
+        return True
+
+    user32.EnumWindows(_ENUM_WINDOWS_PROC(callback), 0)
+    return found
+
+
+def merge_popup(elements: Sequence[UIElement],
+                popup: Sequence[UIElement]) -> List[UIElement]:
+    """Append a popup's elements to a window's, renumbering as we go.
+
+    Pure, so the merge is testable without a menu on screen. The popup's own
+    root keeps ``parent=None`` — it genuinely has no parent inside this window
+    — and carries ``region=POPUP_REGION`` so a caller (and
+    :func:`jevskill.cu.reduce.regions`) can tell where it came from. Its
+    descendants point at ids inside the popup, which is why the renumbering has
+    to rewrite ``parent`` and ``region`` and not just ``id``.
+    """
+    out = list(elements)
+    offset = len(out)
+    remap = {el.id: "e%d" % (offset + index) for index, el in enumerate(popup)}
+    for el in popup:
+        parent = remap.get(el.parent) if el.parent else None
+        region = remap.get(el.region, POPUP_REGION) if el.region else POPUP_REGION
+        out.append(replace(el, id=remap[el.id], parent=parent, region=region))
+    return out
+
+
+def snapshot(hwnd: Optional[int] = None, *, max_nodes: int = 4000,
+             budget_ms: float = 600.0, strategy: str = DEFAULT_STRATEGY,
+             include_popups: bool = True) -> Snapshot:
+    """Observe one window. Defaults to whatever is in the foreground.
+
+    ``max_nodes`` and ``budget_ms`` both set ``truncated``; the element list is
+    then a document-order prefix of the tree, never a sample, so "the first N
+    controls" stays a meaningful set.
+
+    **What ``budget_ms`` actually bounds, precisely.** It bounds the *Python
+    walk*, checked once per node, and it bounds nothing else.
+
+    In ``"subtree"`` the tree arrives in a single ``BuildUpdatedCache`` that has
+    already completed before the first check could run, and that call is the
+    expensive half — a 4,000-node window can spend seconds inside it. The
+    budget clock therefore starts **after** that call returns. Charging the
+    walk for the provider's time was worse than useless: it aborted after the
+    root node, so the caller paid the whole provider cost and then threw the
+    tree away, when walking a cached 2,000-node tree costs 2.8 ms. In
+    ``"lazy"`` the clock runs from the start, because there every step really
+    can decide not to pay for the next one.
+
+    So ``truncated`` answers "is this list incomplete?" — ``max_nodes`` was hit,
+    or the Python walk itself ran long — and never "was the budget honoured?".
+    :attr:`Snapshot.over_budget` answers the second question, from total wall
+    time, after the fact. A snapshot can be ``over_budget`` and complete, and
+    that is the common case on a slow window.
+
+    Deliberately **not** done: probing with ``FindAll`` to guess the node count
+    and falling back to ``"lazy"``. That probe is itself a cross-process call
+    over the same tree — it costs the thing it is trying to bound, and on the
+    213-node selection probe ``FindAllBuildCache`` measured 3x *worse* than the
+    walk it would protect. A caller who needs a hard wall should pass
+    ``strategy="lazy"``, which pays more round trips and is the only mode that
+    can stop mid-tree, or run perception on a thread it is willing to abandon.
+
+    ``strategy`` picks how the tree is fetched, and the choice is measured
+    rather than argued (``bench/cu_observe_bench.py`` runs both):
+
+    ``"subtree"``
+        One ``BuildUpdatedCache(TreeScope_Subtree)`` for the whole window, then
+        a pure-Python walk over the cached children. One cross-process round
+        trip, an atomic view of the tree, and the pruning still happens — but
+        on the client side, so the provider has already paid for the MenuBar
+        subtree by the time it is skipped.
+    ``"lazy"``
+        One call per container — 11 on the committed 34-node Notepad fixture,
+        13 on Calculator, and a *selection probe* of a Notepad with 18 tabs
+        restored put it at 60-64. Equal to ``"subtree"`` on an idle machine and
+        measurably worse under load — see the module docstring for both sets of
+        figures — because every round trip pays the contention again. It buys
+        the ability to abandon a walk mid-tree.
+
+    ``include_popups`` merges any visible ``#32768`` popup owned by the same
+    process into the element list (see :func:`popup_hwnds`). It costs one
+    ``EnumWindows`` — an in-process call, microseconds — and only descends when
+    a popup is actually up. **Not verified against a live menu**: the merge
+    logic is covered offline, the enumeration is not, so treat a popup that
+    fails to appear as a bug in this function rather than in the caller.
+
+    Raises ``ImportError`` naming the extra when comtypes or Windows is
+    missing. Raises ``OSError`` when there is no such window, and when reading
+    it fails — including the ``COMError`` a suspended or dying window raises.
+    """
+    if strategy not in ("subtree", "lazy"):
+        raise ValueError("strategy must be 'subtree' or 'lazy', not %r" % strategy)
+    started = time.time()
+    clock = time.perf_counter()
+    uia = _client()
+    if hwnd is None:
+        hwnd = foreground_hwnd()
+    if not hwnd:
+        raise OSError("no foreground window")
+
+    root = _root_of(uia, hwnd, strategy)
+    # See the docstring: in "subtree" the provider has already been paid, so
+    # the walk gets its own clock and actually walks what was bought.
+    walk_clock = time.perf_counter() if strategy == "subtree" else clock
+    elements, handles, truncated = _walk(
+        uia, root, strategy, max_nodes=max_nodes, clock=walk_clock,
+        budget_ms=budget_ms)
 
     pid = window_pid(hwnd)
     app = process_name(pid)
@@ -409,10 +620,34 @@ def snapshot(hwnd: Optional[int] = None, *, max_nodes: int = 4000,
         real = _hosted_pid(elements, handles, uia, pid)
         if real:
             pid, app = real, process_name(real)
+
+    if include_popups and not truncated:
+        for popup in popup_hwnds(pid):
+            if popup == hwnd:
+                continue
+            try:
+                popup_root = _root_of(uia, popup, strategy)
+            except OSError:
+                continue  # a menu can close between enumeration and read
+            found, popup_handles, popup_truncated = _walk(
+                uia, popup_root, strategy, max_nodes=max_nodes,
+                clock=walk_clock, budget_ms=budget_ms,
+                first_index=len(elements), region=POPUP_REGION)
+            if not found:
+                continue
+            elements = merge_popup(elements, found)
+            for element_id, handle in popup_handles.items():
+                handles[element_id] = handle
+            truncated = truncated or popup_truncated
+            if truncated:
+                break
+
+    elapsed = (time.perf_counter() - clock) * 1000.0
     return Snapshot(
         window_title=window_title(hwnd), app=app, pid=pid, hwnd=int(hwnd),
-        taken_at=started, elapsed_ms=(time.perf_counter() - clock) * 1000.0,
-        elements=elements, truncated=truncated, _handles=handles)
+        taken_at=started, elapsed_ms=elapsed, elements=elements,
+        truncated=truncated, over_budget=elapsed > budget_ms,
+        _handles=handles)
 
 
 def _hosted_pid(elements: Sequence[UIElement], handles: Dict[str, Any],
@@ -487,6 +722,18 @@ def to_state(snapshot: Union[Snapshot, Sequence[Any]], *,
       what the model should notice. Pass ``omit_defaults=False`` for the
       literal ``cu_bench`` shape.
 
+    Three keys the ``cu_bench`` shape does not have, each earning its tokens:
+
+    * ``dup`` — ``duplicates`` from :func:`jevskill.cu.reduce.dedupe`, emitted
+      only when non-zero. The reduction collapses identical siblings and then
+      *nothing told the model*: a survivor standing for nine looked exactly
+      like a unique control, so "click the only Save button" and "click one of
+      nine identical Save buttons" were the same question. Three characters.
+    * ``sel`` — ``selected``, emitted only when true. Which row is highlighted
+      is usually the whole state of a list.
+    * ``tog`` — ``toggled``, emitted only when the control has a toggle state.
+      ``0`` off, ``1`` on, ``2`` indeterminate.
+
     Never contains a live UIA handle: this is data, and it crosses a network.
     """
     if isinstance(snapshot, Snapshot):
@@ -516,17 +763,17 @@ def to_state(snapshot: Union[Snapshot, Sequence[Any]], *,
             entry["focused"] = el.focused
         if el.value:
             entry["value"] = el.value
+        if el.selected:
+            entry["sel"] = True
+        if el.toggled is not None:
+            entry["tog"] = el.toggled
+        if el.duplicates:
+            entry["dup"] = el.duplicates
         out[el.id] = entry
     head["elements"] = out
     return head
 
 
 def state_tokens(state: Dict[str, Any]) -> int:
-    """Token estimate for a state, through the package's one calibrated rule.
-
-    Imported here rather than at module import time so ``jevskill.cu`` stays
-    importable on its own.
-    """
-    from ..orchestrate import count_tokens
-
+    """Token estimate for a state, through the package's one calibrated rule."""
     return count_tokens(state)
