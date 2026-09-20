@@ -229,6 +229,17 @@ teardown confined to `%TEMP%\jevcu`; success is graded by the oracle alone, neve
 by the agent's own `done`/`goal_reached`. Method, metrics and threats to validity
 in `bench/cu_tasks.md`.
 
+### Fixed — `import jevskill` on Python 3.9
+
+Every `@dataclass(slots=True)` in the package (seven, since 0.1.0) was a
+`TypeError` on Python 3.9, where `slots` does not exist — so the "Python 3.9+"
+promise in `pyproject.toml` and the 3.9 leg of the CI matrix had never been true,
+and nobody had read that leg's result. `DATACLASS_SLOTS` in `config.py` keeps
+slots on 3.10+ (the hot loop reads these objects thousands of times a minute) and
+makes them ordinary classes on 3.9. Found by running the suite under 3.9 before
+opening the pull request; one ledger test that counted weak references instead of
+checking membership was made GC-robust on the way.
+
 ### Fixed — what the review of the loop found (before release)
 
 - **Escalation bypassed the destructive gate.** An `escalate` handler's `Action`

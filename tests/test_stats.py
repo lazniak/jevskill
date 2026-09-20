@@ -535,14 +535,16 @@ class TestOneAtexitHookForEveryLedger:
     without the leak."""
 
     def test_fifty_ledgers_add_fifty_entries_and_no_hooks(self, tmp_path):
-        before = len(stats._OPEN_LEDGERS)
         ledgers = [
             Ledger(root=tmp_path / str(i), start_thread=False) for i in range(50)
         ]
-        assert len(stats._OPEN_LEDGERS) == before + 50
+        # Membership, not arithmetic: the registry holds weak references, so a
+        # ledger left behind by an earlier test can be collected between the
+        # `before` count and this line (it was, on Python 3.9).
+        assert all(ledger in stats._OPEN_LEDGERS for ledger in ledgers)
         for ledger in ledgers:
             ledger.close()
-        assert len(stats._OPEN_LEDGERS) == before, "closed ledgers stayed registered"
+        assert not any(ledger in stats._OPEN_LEDGERS for ledger in ledgers), \n            "closed ledgers stayed registered"
 
     def test_a_forgotten_ledger_can_be_collected(self, tmp_path):
         ledger = Ledger(root=tmp_path, start_thread=False)

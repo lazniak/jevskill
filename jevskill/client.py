@@ -29,6 +29,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any, Mapping
 
 from .config import (
+    DATACLASS_SLOTS,
     CHARS_PER_TOKEN,
     HOT_RETRIES,
     HOT_TIMEOUT_CONNECT_S,
@@ -71,7 +72,7 @@ import urllib.error
 import urllib.request
 
 
-@dataclass(slots=True)
+@dataclass(**DATACLASS_SLOTS)
 class Answer:
     """One typed answer. Exactly one payload field is populated, per ``kind``."""
 
@@ -115,7 +116,7 @@ class Answer:
         return {"kind": self.kind, "name": self.name, **self.raw}
 
 
-@dataclass(slots=True)
+@dataclass(**DATACLASS_SLOTS)
 class Decisions:
     """The full response: answers, usage and stage timings."""
 

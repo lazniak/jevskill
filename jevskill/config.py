@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -103,6 +104,14 @@ ALL_KEY_ENV_VARS: tuple[str, ...] = (
 OPENROUTER_KEY_PREFIX = "sk-or-"
 
 CONFIG_PATH = Path.home() / ".jevskill" / "config.json"
+
+#: ``@dataclass(slots=True)`` where the interpreter has it. ``slots`` arrived in
+#: Python 3.10; this package promises 3.9, and until 2026-09-20 every slotted
+#: dataclass made ``import jevskill`` a ``TypeError`` there — the CI matrix said
+#: 3.9 and nobody had read its result. Slots stay on 3.10+ because the hot loop
+#: reads these objects thousands of times per minute; on 3.9 they are ordinary
+#: classes and everything else is identical.
+DATACLASS_SLOTS: dict = {"slots": True} if sys.version_info >= (3, 10) else {}
 
 # --------------------------------------------------------------------------- #
 # Hot-loop defaults
@@ -392,7 +401,7 @@ def model_for_provider(model: str, provider: str) -> str:
     return name if "/" in name else f"typesafe/{name}"
 
 
-@dataclass(slots=True)
+@dataclass(**DATACLASS_SLOTS)
 class Config:
     """Everything a decision needs, resolved once.
 
