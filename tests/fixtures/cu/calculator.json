@@ -1008,6 +1008,7 @@
    },
    "e2": {
     "bbox": "r0c7",
+    "dup": 2,
     "name": "calculator",
     "role": "button"
    },
@@ -1049,11 +1050,6 @@
    "e29": {
     "bbox": "r5c4",
     "name": "Minus",
-    "role": "button"
-   },
-   "e3": {
-    "bbox": "r0c7",
-    "name": "calculator",
     "role": "button"
    },
    "e30": {
@@ -1099,11 +1095,6 @@
    "e39": {
     "bbox": "r5c3",
     "name": "Sze\u015b\u0107",
-    "role": "button"
-   },
-   "e4": {
-    "bbox": "r0c7",
-    "name": "calculator",
     "role": "button"
    },
    "e40": {

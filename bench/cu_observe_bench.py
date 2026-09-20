@@ -8,6 +8,20 @@ one snapshot of whatever is in the foreground.
 
     python bench/cu_observe_bench.py                 # table + cu_observe_results.json
     python bench/cu_observe_bench.py --save-fixtures # + tests/fixtures/cu/*.json
+    python bench/cu_observe_bench.py --from-fixtures # offline: recompute the
+                                                     # derived half, any OS
+
+``--from-fixtures`` exists because the published derived numbers went stale
+without anyone editing them. ``--save-fixtures`` scrubs the snapshot *after*
+``measure()`` has already counted candidates, tokens and the tree hash, so the
+figures in ``cu_observe_results.json`` described the pre-scrub window while the
+committed fixture described the scrubbed one. Measured divergences: Notepad's
+``tree_hash`` (``9f679d53…`` published, ``f4721556…`` from the fixture),
+Calculator's candidate count (36 vs 34) and its reduced token count (1,535 vs
+1,375), and the ``state`` block inside ``calculator.json`` itself, which listed
+two elements the same pipeline no longer selects. Node counts are identical
+either way — scrubbing rewrites names and values, never the tree — which is why
+the live *timing* rows stay valid and are left untouched.
 
 Privacy: the foreground window is timed, never recorded. No title, no element
 names, no process name — the row carries milliseconds and counts only. The two
@@ -34,15 +48,49 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from jevskill.cu import candidates, tree_hash  # noqa: E402
-from jevskill.cu.observe import (foreground_hwnd, snapshot, state_tokens,  # noqa: E402
-                                 to_state)
+from jevskill.cu import candidates, diff, tree_hash  # noqa: E402
+from jevskill.cu.observe import (foreground_hwnd, snapshot,  # noqa: E402
+                                 state_tokens, to_state)
+from jevskill.cu.types import Snapshot  # noqa: E402
 
 RESULTS = ROOT / "bench" / "cu_observe_results.json"
 FIXTURES = ROOT / "tests" / "fixtures" / "cu"
-user32 = ctypes.windll.user32
-EnumWindowsProc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+#: Every app row that has a committed fixture, and the fixture it came from.
+#: ``--from-fixtures`` recomputes exactly these rows' derived fields.
+FIXTURE_OF = {"notepad": "notepad", "calculator": "calculator"}
+#: The fields in an app row that are a function of the committed fixture alone.
+#: Everything else in the row is a live timing and is not recomputable offline.
+DERIVED_FIELDS = ("nodes", "candidates", "containers", "tokens_full_state",
+                  "tokens_reduced_state", "tree_hash", "reduce_ms_median",
+                  "hash_ms_median", "diff_ms_median", "element_bytes_all_keys",
+                  "element_bytes_to_dict", "payload_bytes_pretty",
+                  "payload_bytes_compact", "derived_from")
+#: The subset of :data:`DERIVED_FIELDS` that is a *value*, not a duration. A
+#: test can assert these are exactly equal; the three ``*_ms_median`` fields
+#: move with the machine's load and can only be bounded.
+STABLE_FIELDS = tuple(f for f in DERIVED_FIELDS if not f.endswith("_ms_median"))
+#: Every fixture ``--from-fixtures`` derives from, real and synthetic.
+ALL_FIXTURES = ("notepad", "calculator", "synthetic_50", "synthetic_500",
+                "synthetic_2000")
+#: Written to the results file so a reader knows which half is stale-proof.
+LIVE_ROW_NOTE = (
+    "Timing rows (apps.*.ms, apps.*.snapshot_ms, apps.*.strategies, "
+    "apps.*.compare, foreground.snapshot_ms) were measured on the live "
+    "pre-scrub windows and are NOT reproducible from the committed fixtures; "
+    "they are left untouched. Node counts are identical before and after "
+    "scrubbing — scrub() rewrites names and values, never the tree — so those "
+    "timings still describe trees of the size the fixtures record. Every "
+    "field listed under 'fixtures', and the same fields inside each app row, "
+    "is recomputed offline by 'python bench/cu_observe_bench.py "
+    "--from-fixtures' and carries 'derived_from'.")
 WM_CLOSE = 0x0010
+
+if os.name == "nt":
+    user32 = ctypes.windll.user32
+    EnumWindowsProc = ctypes.WINFUNCTYPE(
+        wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+else:  # --from-fixtures and --synthetic-only are pure Python and run anywhere.
+    user32 = EnumWindowsProc = None
 
 
 # --------------------------------------------------------------------------- #
@@ -229,6 +277,84 @@ def measure(hwnd, runs, cap=60, budget_ms=2000.0):
     }
 
 
+# --------------------------------------------------------------------------- #
+# The offline half: everything that is a function of a committed fixture
+# --------------------------------------------------------------------------- #
+
+def load_fixture(name):
+    return json.loads((FIXTURES / ("%s.json" % name)).read_text(encoding="utf-8"))
+
+
+def _best_ms(call, runs=7):
+    """Fastest of ``runs``, after one warm-up.
+
+    The minimum, not the median: this machine runs other work, and for a pure
+    function the fastest run is the one least contaminated by it. Quoting a
+    median here would publish the neighbours' load.
+    """
+    call()
+    best = float("inf")
+    for _ in range(runs):
+        started = time.perf_counter()
+        call()
+        best = min(best, (time.perf_counter() - started) * 1000.0)
+    return best
+
+
+#: Every field ``UIElement.to_dict`` omits when it holds its default. Written
+#: out here so the "how much does omitting defaults save" figure is a
+#: measurement rather than a memory.
+_ALL_ELEMENT_KEYS = (
+    "id", "role", "name", "value", "enabled", "focused", "offscreen", "bbox",
+    "patterns", "automation_id", "class_name", "depth", "parent", "region",
+    "selected", "toggled", "duplicates")
+
+
+def _every_key(el):
+    out = {}
+    for key in _ALL_ELEMENT_KEYS:
+        value = getattr(el, key)
+        out[key] = list(value) if isinstance(value, tuple) else value
+    return out
+
+
+def derive(name):
+    """Every published number that a committed fixture determines on its own.
+
+    Deliberately excludes anything measured against a live window (``ms`` per
+    strategy, ``snapshot_ms``, the library comparison): those describe a walk,
+    not a tree, and no fixture can reproduce them.
+    """
+    snap = Snapshot.from_dict(load_fixture(name)["snapshot"])
+    elements = snap.elements
+    shortlist = candidates(elements, cap=60)
+    payload = {"snapshot": snap.to_dict(),
+               "state": to_state(snap, elements=shortlist)}
+    return {
+        "nodes": len(elements),
+        "candidates": len(shortlist),
+        # Nodes with children: what a "lazy" walk pays one round trip each for.
+        "containers": len({el.parent for el in elements if el.parent}),
+        "tokens_full_state": state_tokens(to_state(snap)),
+        "tokens_reduced_state": state_tokens(to_state(snap, elements=shortlist)),
+        "tree_hash": tree_hash(elements),
+        "reduce_ms_median": round(_best_ms(lambda: candidates(elements)), 3),
+        "hash_ms_median": round(_best_ms(lambda: tree_hash(elements)), 3),
+        "diff_ms_median": round(_best_ms(lambda: diff(elements, elements)), 3),
+        "element_bytes_all_keys": len(json.dumps(
+            [_every_key(el) for el in elements], sort_keys=True,
+            separators=(",", ":")).encode("utf-8")),
+        "element_bytes_to_dict": len(json.dumps(
+            [el.to_dict() for el in elements], sort_keys=True,
+            separators=(",", ":")).encode("utf-8")),
+        "payload_bytes_pretty": len(json.dumps(
+            payload, sort_keys=True, indent=1).encode("utf-8")),
+        "payload_bytes_compact": len(json.dumps(
+            payload, sort_keys=True, separators=(",", ":")).encode("utf-8")),
+        "derived_from": "tests/fixtures/cu/%s.json (post-scrub)" % name,
+    }
+
+
 #: Roles whose ``name`` is the user's content rather than the app's chrome.
 #: Windows 11 Notepad reopens the previous session's tabs, so a snapshot of a
 #: freshly launched Notepad carries the machine owner's file names in every
@@ -258,17 +384,30 @@ def scrub(snap, app_name):
     return snap
 
 
-def save_fixture(name, snap, shortlist):
+def save_fixture(name, snap, cap=60):
+    """Scrub first, then reduce. The order is the whole bug this fixes.
+
+    The shortlist used to be the one ``measure()`` computed from the *live*
+    snapshot, and it was written into a file whose names had since been
+    replaced. ``scrub()`` renames content-bearing nodes, which changes what
+    ``dedupe()`` collapses, which changes the shortlist: the committed
+    ``calculator.json`` carried a ``state`` block listing two elements the same
+    pipeline no longer selects. Reducing the scrubbed snapshot makes the file
+    self-consistent by construction, and ``--from-fixtures`` then keeps the
+    published row consistent with the file.
+    """
     FIXTURES.mkdir(parents=True, exist_ok=True)
     snap = scrub(snap, name)
+    shortlist = candidates(snap.elements, cap=cap)
     payload = {
         "source": "bench/cu_observe_bench.py --save-fixtures",
         "note": ("Real UIA snapshot of an app this script launched. Window "
                  "title, every value and every content-bearing name are "
-                 "replaced; roles, rectangles, patterns and nesting are real."),
+                 "replaced; roles, rectangles, patterns and nesting are real. "
+                 "The state block is reduced from this scrubbed snapshot, not "
+                 "from the live one."),
         "snapshot": snap.to_dict(),
-        "state": to_state(snap, elements=[e for e in snap.elements
-                                          if e.id in {c.id for c in shortlist}]),
+        "state": to_state(snap, elements=shortlist),
     }
     path = FIXTURES / ("%s.json" % name)
     write_json(path, json.dumps(payload, indent=1, sort_keys=True))
@@ -402,6 +541,76 @@ def foreground_row(cap=60):
             "note": "content deliberately not recorded"}
 
 
+def rewrite_fixture_state(name):
+    """Recompute a fixture's own ``state`` block from its own ``snapshot``.
+
+    The ``snapshot`` block is the measurement and is never touched. ``state``
+    is a pure function of it — ``candidates()`` then ``to_state()`` — and it had
+    drifted: ``calculator.json`` listed ``e3`` and ``e4``, which the pipeline
+    stopped selecting once the snapshot was scrubbed before reduction rather
+    than after. Returns True when the file changed.
+    """
+    path = FIXTURES / ("%s.json" % name)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    snap = Snapshot.from_dict(data["snapshot"])
+    rebuilt = to_state(snap, elements=candidates(snap.elements, cap=60))
+    if data.get("state") == rebuilt:
+        return False
+    data["state"] = rebuilt
+    # Byte-for-byte the formatting each writer used, so the diff is the state
+    # block and nothing else: the synthetic trees are written compact.
+    if name.startswith("synthetic_"):
+        write_json(path, json.dumps(data, sort_keys=True,
+                                    separators=(",", ":")))
+    else:
+        write_json(path, json.dumps(data, indent=1, sort_keys=True))
+    return True
+
+
+def from_fixtures(write=True):
+    """Recompute the derived half of the results file, offline, on any OS.
+
+    Merges rather than rewrites: the live timing rows in each app row are the
+    one thing this cannot re-measure, and silently dropping them would trade a
+    stale number for a missing one.
+
+    Also rewrites each fixture's own ``state`` block, because that block is
+    derived from the same snapshot by the same two functions and went stale for
+    the same reason. One command, one definition of "derived", nothing left
+    that can drift in silence.
+    """
+    rewritten = [name for name in ALL_FIXTURES
+                 if write and rewrite_fixture_state(name)]
+    results = {}
+    if RESULTS.exists():
+        results = json.loads(RESULTS.read_text(encoding="utf-8"))
+    results.setdefault("apps", {})
+    results["derived_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+    results["live_rows"] = LIVE_ROW_NOTE
+    results["fixtures"] = {name: derive(name) for name in ALL_FIXTURES}
+    for app, fixture_name in FIXTURE_OF.items():
+        row = results["apps"].get(app)
+        if not row or "error" in row:
+            continue
+        row.update({key: results["fixtures"][fixture_name][key]
+                    for key in DERIVED_FIELDS})
+    if write:
+        write_json(RESULTS, json.dumps(results, indent=1))
+    results["_rewrote"] = rewritten
+    return results
+
+
+def print_derived(results):
+    print("fixture         nodes  cand  cont  reduce ms  hash ms  diff ms  "
+          "tokens full -> reduced  tree_hash")
+    for name, row in results["fixtures"].items():
+        print("%-14s %5d %5d %5d %10.3f %8.3f %8.3f  %6d -> %-6d %s"
+              % (name, row["nodes"], row["candidates"], row["containers"],
+                 row["reduce_ms_median"], row["hash_ms_median"],
+                 row["diff_ms_median"], row["tokens_full_state"],
+                 row["tokens_reduced_state"], row["tree_hash"]))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--runs", type=int, default=3)
@@ -411,11 +620,23 @@ def main():
     parser.add_argument("--synthetic-only", action="store_true",
                         help="write tests/fixtures/cu/synthetic_*.json and exit "
                              "(pure Python: runs on any OS)")
+    parser.add_argument("--from-fixtures", action="store_true",
+                        help="recompute every fixture-derived field in "
+                             "cu_observe_results.json and exit; touches no "
+                             "window, runs on any OS")
     parser.add_argument("--compare-worker", choices=["uiautomation", "pywinauto"],
                         help=argparse.SUPPRESS)
     parser.add_argument("--hwnd", type=int, default=0, help=argparse.SUPPRESS)
     args = parser.parse_args()
 
+    if args.from_fixtures:
+        results = from_fixtures()
+        print_derived(results)
+        for name in results["_rewrote"]:
+            print("rewrote the state block of tests/fixtures/cu/%s.json" % name)
+        print("\nwrote %s (derived fields only; live timings untouched)"
+              % RESULTS.relative_to(ROOT))
+        return
     if args.synthetic_only:
         for path in save_synthetic():
             print("wrote %s" % path.relative_to(ROOT).as_posix())
@@ -458,7 +679,11 @@ def main():
                 results["apps"][name] = row
                 if args.save_fixtures:
                     row["fixture"] = save_fixture(
-                        name, snap, shortlist).relative_to(ROOT).as_posix()
+                        name, snap, args.cap).relative_to(ROOT).as_posix()
+                    # The row's derived fields described the pre-scrub window
+                    # and the fixture described the scrubbed one; they drifted
+                    # apart in silence. Re-derive from what was just written.
+                    row.update(derive(name))
                 break
             except Exception as exc:  # noqa: BLE001
                 results["apps"][name] = {"error": "%s: %s" % (type(exc).__name__, exc),

@@ -39,11 +39,11 @@
    "snapshot_ms_median": 77.1,
    "nodes": 34,
    "truncated": false,
-   "reduce_ms_median": 0.047,
+   "reduce_ms_median": 0.094,
    "candidates": 16,
-   "tokens_full_state": 1412,
-   "tokens_reduced_state": 734,
-   "tree_hash": "9f679d53df00ab39d372c7e36b585eff",
+   "tokens_full_state": 1358,
+   "tokens_reduced_state": 711,
+   "tree_hash": "d456a5872ce5741b44394d481c06f9ab",
    "compare": {
     "uiautomation": {
      "ms": [
@@ -63,7 +63,15 @@
     }
    },
    "attempt": 1,
-   "fixture": "tests/fixtures/cu/notepad.json"
+   "fixture": "tests/fixtures/cu/notepad.json",
+   "containers": 11,
+   "hash_ms_median": 0.199,
+   "diff_ms_median": 0.251,
+   "element_bytes_all_keys": 10134,
+   "element_bytes_to_dict": 5769,
+   "payload_bytes_pretty": 10844,
+   "payload_bytes_compact": 7094,
+   "derived_from": "tests/fixtures/cu/notepad.json (post-scrub)"
   },
   "calculator": {
    "library": "comtypes+CacheRequest",
@@ -100,11 +108,11 @@
    "snapshot_ms_median": 44.3,
    "nodes": 53,
    "truncated": false,
-   "reduce_ms_median": 0.088,
-   "candidates": 36,
-   "tokens_full_state": 2265,
-   "tokens_reduced_state": 1535,
-   "tree_hash": "18b9155de9732dc08d4f9a2d447a6eaf",
+   "reduce_ms_median": 0.098,
+   "candidates": 34,
+   "tokens_full_state": 2158,
+   "tokens_reduced_state": 1381,
+   "tree_hash": "59fd7a8fb994e633e179e8dd812917a1",
    "compare": {
     "uiautomation": {
      "ms": [
@@ -124,7 +132,15 @@
     }
    },
    "attempt": 1,
-   "fixture": "tests/fixtures/cu/calculator.json"
+   "fixture": "tests/fixtures/cu/calculator.json",
+   "containers": 13,
+   "hash_ms_median": 0.17,
+   "diff_ms_median": 0.214,
+   "element_bytes_all_keys": 15975,
+   "element_bytes_to_dict": 9843,
+   "payload_bytes_pretty": 18639,
+   "payload_bytes_compact": 12222,
+   "derived_from": "tests/fixtures/cu/calculator.json (post-scrub)"
   }
  },
  "foreground": {
@@ -134,5 +150,89 @@
   "truncated": false,
   "tokens_reduced_state": 3093,
   "note": "content deliberately not recorded"
+ },
+ "derived_at": "2026-09-20T22:25:19",
+ "live_rows": "Timing rows (apps.*.ms, apps.*.snapshot_ms, apps.*.strategies, apps.*.compare, foreground.snapshot_ms) were measured on the live pre-scrub windows and are NOT reproducible from the committed fixtures; they are left untouched. Node counts are identical before and after scrubbing \u2014 scrub() rewrites names and values, never the tree \u2014 so those timings still describe trees of the size the fixtures record. Every field listed under 'fixtures', and the same fields inside each app row, is recomputed offline by 'python bench/cu_observe_bench.py --from-fixtures' and carries 'derived_from'.",
+ "fixtures": {
+  "notepad": {
+   "nodes": 34,
+   "candidates": 16,
+   "containers": 11,
+   "tokens_full_state": 1358,
+   "tokens_reduced_state": 711,
+   "tree_hash": "d456a5872ce5741b44394d481c06f9ab",
+   "reduce_ms_median": 0.094,
+   "hash_ms_median": 0.199,
+   "diff_ms_median": 0.251,
+   "element_bytes_all_keys": 10134,
+   "element_bytes_to_dict": 5769,
+   "payload_bytes_pretty": 10844,
+   "payload_bytes_compact": 7094,
+   "derived_from": "tests/fixtures/cu/notepad.json (post-scrub)"
+  },
+  "calculator": {
+   "nodes": 53,
+   "candidates": 34,
+   "containers": 13,
+   "tokens_full_state": 2158,
+   "tokens_reduced_state": 1381,
+   "tree_hash": "59fd7a8fb994e633e179e8dd812917a1",
+   "reduce_ms_median": 0.098,
+   "hash_ms_median": 0.17,
+   "diff_ms_median": 0.214,
+   "element_bytes_all_keys": 15975,
+   "element_bytes_to_dict": 9843,
+   "payload_bytes_pretty": 18639,
+   "payload_bytes_compact": 12222,
+   "derived_from": "tests/fixtures/cu/calculator.json (post-scrub)"
+  },
+  "synthetic_50": {
+   "nodes": 50,
+   "candidates": 28,
+   "containers": 5,
+   "tokens_full_state": 1973,
+   "tokens_reduced_state": 1138,
+   "tree_hash": "e0b3bc2dfb2c2411a5c324ec4b789b87",
+   "reduce_ms_median": 0.086,
+   "hash_ms_median": 0.149,
+   "diff_ms_median": 0.207,
+   "element_bytes_all_keys": 13707,
+   "element_bytes_to_dict": 6317,
+   "payload_bytes_pretty": 13548,
+   "payload_bytes_compact": 8179,
+   "derived_from": "tests/fixtures/cu/synthetic_50.json (post-scrub)"
+  },
+  "synthetic_500": {
+   "nodes": 500,
+   "candidates": 60,
+   "containers": 21,
+   "tokens_full_state": 19815,
+   "tokens_reduced_state": 2497,
+   "tree_hash": "382d7a558bb9f43df798c54b5fb8d54c",
+   "reduce_ms_median": 0.724,
+   "hash_ms_median": 1.517,
+   "diff_ms_median": 2.563,
+   "element_bytes_all_keys": 139322,
+   "element_bytes_to_dict": 66304,
+   "payload_bytes_pretty": 117933,
+   "payload_bytes_compact": 70210,
+   "derived_from": "tests/fixtures/cu/synthetic_500.json (post-scrub)"
+  },
+  "synthetic_2000": {
+   "nodes": 2000,
+   "candidates": 60,
+   "containers": 73,
+   "tokens_full_state": 79672,
+   "tokens_reduced_state": 2488,
+   "tree_hash": "bc8dd0c9a70791c8cae6f9412d6bf0b1",
+   "reduce_ms_median": 3.096,
+   "hash_ms_median": 6.076,
+   "diff_ms_median": 9.232,
+   "element_bytes_all_keys": 561080,
+   "element_bytes_to_dict": 268404,
+   "payload_bytes_pretty": 457280,
+   "payload_bytes_compact": 272301,
+   "derived_from": "tests/fixtures/cu/synthetic_2000.json (post-scrub)"
+  }
  }
 }
