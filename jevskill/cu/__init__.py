@@ -5,8 +5,14 @@ The shape of one step, and which half of it lives here::
     observe.snapshot()            UIA tree of the active window       ~40-400 ms
     reduce.candidates()           deterministic filter to <= 60       <= 2 ms
     hashing.tree_hash()/diff()    did the screen change               < 1 ms
+    macros.MacroCache.lookup()    has this screen been solved before  < 1 ms
     --- everything above is code; everything below is a decision ---
-    jev fan-out                   target / op / goal_reached          ~300 ms
+    decide.decide()               target / op / goal_reached          ~300 ms
+    --- and everything below is code again ---
+    decide.validate()             does the answer survive the checks  < 1 ms
+    act.execute()                 UIA Invoke / SetValue / SendInput   ~1-20 ms
+    act.settle()                  poll the hash until the screen moves  <= cap
+    loop.run()                    all of the above, with the budgets
 
 The split is the point. Visible, enabled, on-screen, big enough, duplicated,
 unchanged — these are facts, and code settles facts faster, cheaper and more
@@ -23,18 +29,35 @@ from __future__ import annotations
 
 from typing import Any
 
+from .act import (DESTRUCTIVE_NAMES, Action, ActResult, execute,
+                  is_destructive_name, settle)
+from .contract import RunOptions, RunResult, StepRecord
+# ``decide_step``, not ``decide``: ``jevskill.cu.decide`` is a *module*, and a
+# from-import of a function with the same name would overwrite the module
+# attribute on this package — so ``jevskill.cu.decide.build_bundle`` would
+# resolve to an attribute of a function. ``run_loop`` is the same rule for
+# ``jevskill.cu.loop``.
+from .decide import (OPS, THRESHOLDS, Decision, Verdict, build_bundle,
+                     build_state, decide as decide_step, decide_cascade,
+                     validate)
 from .hashing import TreeDiff, diff, normalise, tree_hash
+from .loop import run as run_loop
+from .macros import MacroCache
 from .reduce import (candidates, dedupe, interactive, prioritise, region_state,
                      regions, visible_enabled)
 from .types import (CONTROL_TYPES, INTERACTIVE_ROLES, PATTERN_KEYS,
                     REGION_ROLES, Region, Snapshot, UIElement)
 
 __all__ = [
-    "CONTROL_TYPES", "INTERACTIVE_ROLES", "PATTERN_KEYS", "REGION_ROLES",
-    "Region", "Snapshot", "TreeDiff", "UIElement", "candidates", "dedupe",
-    "diff", "foreground_hwnd", "interactive", "normalise", "prioritise",
-    "region_state", "regions", "snapshot", "state_tokens", "to_state",
-    "tree_hash", "visible_enabled",
+    "CONTROL_TYPES", "DESTRUCTIVE_NAMES", "INTERACTIVE_ROLES", "OPS",
+    "PATTERN_KEYS", "REGION_ROLES", "THRESHOLDS", "Action", "ActResult",
+    "Decision", "MacroCache", "Region", "RunOptions", "RunResult", "Snapshot",
+    "StepRecord", "TreeDiff", "UIElement", "Verdict", "build_bundle",
+    "build_state", "candidates", "decide_cascade", "decide_step", "dedupe",
+    "diff", "execute", "foreground_hwnd", "interactive", "is_destructive_name",
+    "normalise", "prioritise", "region_state", "regions", "run_loop", "settle",
+    "snapshot", "state_tokens", "to_state", "tree_hash", "validate",
+    "visible_enabled",
 ]
 
 _LAZY = {"snapshot", "to_state", "state_tokens", "foreground_hwnd"}
@@ -47,6 +70,13 @@ def __getattr__(name: str) -> Any:
     ctypes and comtypes inside functions — but going through ``__getattr__``
     keeps that a guarantee of this module rather than a property of another
     one that a later edit could quietly break.
+
+    ``decide``, ``act``, ``loop`` and ``macros`` are imported eagerly above
+    because they are pure Python: ``act`` keeps every ``ctypes`` and
+    ``comtypes`` reference inside a method body, and ``loop`` imports
+    ``observe`` only when its ``observe`` argument is left unset. Importing
+    this package still costs nothing on a machine without the extra, and
+    ``tests/test_cu_observe.py::TestImportContract`` proves it in a subprocess.
     """
     if name in _LAZY:
         from . import observe

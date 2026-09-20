@@ -1,0 +1,237 @@
+{
+  "note": "Live validation of jevskill/cu/decide.py against real UIA fixtures. Regenerate with `python bench/cu_decide_live.py`.",
+  "source": "bench/cu_decide_live.py",
+  "cases": [
+    {
+      "case": "notepad",
+      "goal": "Open the File menu",
+      "candidates": 16,
+      "tree_hash": "943f956266886935a66f0b1f83efc171",
+      "target": "none",
+      "target_name": null,
+      "target_confidence": 0.98,
+      "margin": 0.98,
+      "op": "key",
+      "op_confidence": 0.46,
+      "top3_target": [
+        [
+          "none",
+          0.99
+        ],
+        [
+          "e9",
+          0.01
+        ],
+        [
+          "e20",
+          0.0
+        ]
+      ],
+      "goal_reached": 0.04,
+      "needs_text": 0.06,
+      "is_destructive": 0.59,
+      "per_element_destructive": {
+        "e10": 0.05,
+        "e14": 0.04,
+        "e15": 0.05,
+        "e16": 0.03,
+        "e17": 0.03,
+        "e18": 0.07,
+        "e19": 0.05,
+        "e20": 0.05,
+        "e21": 0.09,
+        "e22": 0.05,
+        "e23": 0.05,
+        "e9": 0.3
+      },
+      "questions": 17,
+      "tokens_in": 5095,
+      "state_tokens_estimated": 767,
+      "cost_usd": 0.00021399,
+      "http_ms": 536.9,
+      "window_title": "notepad",
+      "app": "Notepad.exe",
+      "risky_ids": [
+        "e21"
+      ],
+      "destructive_scope": "commands",
+      "destructive_cap": 12
+    },
+    {
+      "case": "calculator",
+      "goal": "Compute 7 times 8",
+      "candidates": 34,
+      "tree_hash": "aa8d13f953334fe4d87026cc9f601259",
+      "target": "e40",
+      "target_name": "Siedem",
+      "target_confidence": 0.93,
+      "margin": 0.89,
+      "op": "click",
+      "op_confidence": 0.61,
+      "top3_target": [
+        [
+          "e40",
+          0.92
+        ],
+        [
+          "e20",
+          0.03
+        ],
+        [
+          "e10",
+          0.02
+        ]
+      ],
+      "goal_reached": 0.04,
+      "needs_text": 0.14,
+      "is_destructive": 0.66,
+      "per_element_destructive": {
+        "e14": 0.09,
+        "e15": 0.44,
+        "e16": 0.13,
+        "e18": 0.06,
+        "e19": 0.39,
+        "e2": 0.07,
+        "e20": 0.51,
+        "e21": 0.42,
+        "e23": 0.06,
+        "e24": 0.13,
+        "e51": 0.04,
+        "e8": 0.03
+      },
+      "questions": 17,
+      "tokens_in": 7223,
+      "state_tokens_estimated": 1430,
+      "cost_usd": 0.00030337,
+      "http_ms": 395.3,
+      "window_title": "calculator",
+      "app": "CalculatorApp.exe",
+      "risky_ids": [],
+      "destructive_scope": "commands",
+      "destructive_cap": 12
+    },
+    {
+      "case": "synthetic_500:names",
+      "goal": "Save the current document and close the dialog",
+      "candidates": 60,
+      "tree_hash": "c341fe9a3a0dccd8c9c4f07b2b65a153",
+      "target": "e183",
+      "target_name": "Save",
+      "target_confidence": 0.5,
+      "margin": 0.2,
+      "op": "click",
+      "op_confidence": 0.71,
+      "top3_target": [
+        [
+          "e183",
+          0.52
+        ],
+        [
+          "e6",
+          0.32
+        ],
+        [
+          "e150",
+          0.09
+        ]
+      ],
+      "goal_reached": 0.05,
+      "needs_text": 0.19,
+      "is_destructive": 0.82,
+      "per_element_destructive": {
+        "e148": 0.13,
+        "e156": 0.15,
+        "e180": 0.14,
+        "e182": 0.43,
+        "e326": 0.13,
+        "e348": 0.46,
+        "e38": 0.15
+      },
+      "questions": 12,
+      "tokens_in": 9658,
+      "state_tokens_estimated": 2557,
+      "cost_usd": 0.00040564,
+      "http_ms": 296.9,
+      "destructive_scope": "names",
+      "destructive_cap": 12,
+      "risky_ids": [
+        "e38",
+        "e148",
+        "e326",
+        "e156",
+        "e348",
+        "e180",
+        "e182"
+      ]
+    },
+    {
+      "case": "synthetic_500:commands",
+      "goal": "Save the current document and close the dialog",
+      "candidates": 60,
+      "tree_hash": "c341fe9a3a0dccd8c9c4f07b2b65a153",
+      "target": "e183",
+      "target_name": "Save",
+      "target_confidence": 0.61,
+      "margin": 0.37,
+      "op": "click",
+      "op_confidence": 0.62,
+      "top3_target": [
+        [
+          "e183",
+          0.62
+        ],
+        [
+          "e6",
+          0.25
+        ],
+        [
+          "e4",
+          0.05
+        ]
+      ],
+      "goal_reached": 0.04,
+      "needs_text": 0.17,
+      "is_destructive": 0.81,
+      "per_element_destructive": {
+        "e148": 0.14,
+        "e156": 0.14,
+        "e180": 0.15,
+        "e182": 0.41,
+        "e2": 0.04,
+        "e326": 0.12,
+        "e348": 0.42,
+        "e38": 0.13,
+        "e43": 0.04,
+        "e46": 0.06,
+        "e60": 0.04,
+        "e64": 0.06
+      },
+      "questions": 17,
+      "tokens_in": 10294,
+      "state_tokens_estimated": 2557,
+      "cost_usd": 0.00043235,
+      "http_ms": 327.3,
+      "destructive_scope": "commands",
+      "destructive_cap": 12,
+      "risky_ids": [
+        "e38",
+        "e148",
+        "e326",
+        "e156",
+        "e348",
+        "e180",
+        "e182"
+      ]
+    }
+  ],
+  "destructive_scope_delta": {
+    "tokens_names": 9658,
+    "tokens_commands": 10294,
+    "extra_tokens": 636,
+    "extra_pct": 6.59,
+    "extra_cost_usd": 2.671e-05,
+    "questions_names": 12,
+    "questions_commands": 17
+  },
+  "total_cost_usd": 0.00135534
+}

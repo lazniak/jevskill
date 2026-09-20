@@ -94,40 +94,40 @@ class StepRecord:
     #: Wall time of the whole step, including the parts no stage covers.
     t_ms: float
     #: Per-stage milliseconds, keyed by :data:`STAGES`. Missing keys read as 0.0.
-    stages_ms: Dict[str, float]
+    stages_ms: Dict[str, float] = field(default_factory=dict)
     #: Elements offered to Jev **after** reduction — the ≤ 60 of `act.md` §1. Not
     #: the raw accessibility-tree size, which is the observer's business.
-    candidates: int
+    candidates: int = 0
     #: The element id Jev chose (``e11``), ``"none"`` when it chose none, or
     #: ``None`` when code overrode the choice and never asked.
-    target: Optional[str]
+    target: Optional[str] = None
     #: The operation Jev chose (``click``/``type``/``key``/…), or ``None`` as above.
-    op: Optional[str]
+    op: Optional[str] = None
     #: The top-1 probability the step was gated on. Per `act.md` §3 that is the
     #: **minimum** of the confidences the step depended on (`op` and `target`),
     #: never their product — "one wrong argument is enough to spoil the result". A
     #: loop that depends on `target` alone records `target`'s top-1.
-    confidence: float
+    confidence: float = 0.0
     #: `target`'s top-1 minus its top-2. Confidence is concentration, not
     #: correctness: two controls named "Save" within ~0.10 is a narrow-and-re-ask,
     #: not an action (`act.md` §3).
-    margin: float
+    margin: float = 0.0
     #: The three Nouls of the bundle, as probabilities. Recorded even when the
     #: step did not branch on them — they ride free in the same call (`act.md` §2)
     #: and they are what a later analysis of *why* a run failed has to look at.
-    goal_reached: float
-    needs_text: float
-    is_destructive: float
+    goal_reached: float = 0.0
+    needs_text: float = 0.0
+    is_destructive: float = 0.0
     #: One of :data:`DECIDED_BY`.
-    decided_by: str
+    decided_by: str = ""
     #: Whether an action was actually performed. A validated-away step (stale
     #: element, illegal op for the role) is ``False`` and still costs a step.
-    executed: bool
+    executed: bool = False
     #: Whether the tree hash differed after settle. Code's own judgement, never a
     #: model's — the `stuck` question measured 0.31-0.60 on changed screens.
-    tree_changed: bool
-    tokens_in: int
-    cost_usd: float
+    tree_changed: bool = False
+    tokens_in: int = 0
+    cost_usd: float = 0.0
     #: Free text for whatever the columns cannot hold: the escalation reason, the
     #: name that tripped the destructive list, the dialog that was not expressible.
     note: str = ""
@@ -197,23 +197,23 @@ class RunResult:
     """What one agent did on one task, once. No success field — see the module docstring."""
 
     task_id: str
-    run: int
+    run: int = 0
     #: One of :data:`STOP_REASONS`.
-    stop_reason: str
-    steps: List[StepRecord]
+    stop_reason: str = ""
+    steps: List[StepRecord] = field(default_factory=list)
     #: Goal handed over → agent stopped, by the agent's own clock.
-    wall_ms: float
+    wall_ms: float = 0.0
     #: Model round trips. Differs from ``len(steps)``: a macro hit is a step with
     #: no decision, an escalation may be a decision with no step of its own.
-    decisions: int
+    decisions: int = 0
     #: Times the loop handed the step to a VLM or a human (plan item 4.8).
     #: Should equal :attr:`escalation_steps`; :meth:`problems` says so when it does not.
-    escalations: int
+    escalations: int = 0
     #: Times the deterministic destructive-name list fired and forced a
     #: confirmation, whatever `is_destructive` said (`act.md` §4).
-    destructive_gates: int
-    tokens_in: int
-    cost_usd: float
+    destructive_gates: int = 0
+    tokens_in: int = 0
+    cost_usd: float = 0.0
     error: str = ""
 
     # --- derived -----------------------------------------------------------
