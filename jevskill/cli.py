@@ -33,6 +33,7 @@ from .errors import JevApiError, JevConfigError, JevError, JevQuestionError
 from .orchestrate import (
     PATTERNS,
     choose_pattern,
+    count_tokens,
     estimate_saving,
     plan_for,
     profile,
@@ -117,20 +118,23 @@ def _build_questions(args: argparse.Namespace) -> dict[str, dict]:
 def _baseline_tokens(state: object, questions: dict) -> int:
     """Estimate the context an LLM would have needed for the same judgement.
 
-    This is the number the ledger stores as ``baseline_tokens`` and the number
-    the README's savings figure is built from, so it is stated plainly rather
-    than buried: the *data itself*, plus the question text an LLM would have
-    needed, plus ~350 tokens of scaffolding (system prompt, output-format
-    instructions). It is treated as input because an LLM must read it.
+    This is the number the ledger stores as ``baseline_tokens`` and the number the
+    README's savings figure is built from, so it is stated plainly rather than
+    buried: the *data itself*, plus the question text an LLM would have needed.
+    (The ~350 tokens of scaffolding — system prompt, output-format instructions —
+    are added later by `stats.DEFAULT_BASELINE`, so they are not counted here, to
+    avoid double-counting.)
+
+    Routed through the single calibrated `count_tokens` helper on purpose. An
+    earlier version open-coded its own chars/3.6 division while the rest of the
+    codebase used a calibrated constant, so the ledger and the budget check
+    disagreed about how big the same data was.
     """
     import json as _json
 
-    state_tokens = (len(_json.dumps(state, ensure_ascii=False)) if not isinstance(state, str)
-                    else len(state)) / 3.6
-    question_tokens = sum(
-        len(_json.dumps(q, ensure_ascii=False)) for q in questions.values()
-    ) / 3.6
-    return int(state_tokens + question_tokens)
+    state_text = state if isinstance(state, str) else _json.dumps(state, ensure_ascii=False)
+    question_text = _json.dumps(questions, ensure_ascii=False)
+    return count_tokens(state_text) + count_tokens(question_text)
 
 
 # --------------------------------------------------------------------------- #

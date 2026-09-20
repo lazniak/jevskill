@@ -247,15 +247,24 @@ class TestLedgerIntegration:
     def test_baseline_tokens_are_recorded(self, capsys, tmp_path):
         run(capsys, ["ask", "--state", "x" * 3600, "--question-type", "noul", "--name", "q", "--json"])
         row = json.loads((tmp_path / "ledger.jsonl").read_text(encoding="utf-8").strip())
-        # 3600 chars of state (~1000 tokens) plus the question text, which an
-        # LLM would also have had to read.
-        assert 1000 <= row["baseline_tokens"] <= 1100
+        # The state, plus the question text an LLM would also have had to read.
+        assert 2000 <= row["baseline_tokens"] <= 2300
 
     def test_baseline_grows_with_the_state(self, capsys, tmp_path):
-        run(capsys, ["ask", "--state", "x" * 360, "--question-type", "noul", "--name", "q", "--json"])
-        run(capsys, ["ask", "--state", "x" * 18000, "--question-type", "noul", "--name", "q", "--json"])
+        # Both sizes must stay inside the state budget or the larger one is
+        # refused (and correctly writes no ledger row), so size them from the
+        # constant rather than guessing character counts.
+        from jevskill.config import CHARS_PER_TOKEN
+
+        small_chars = 720
+        big_chars = int(7000 * CHARS_PER_TOKEN)
+        run(capsys, ["ask", "--state", "x" * small_chars, "--question-type", "noul",
+                     "--name", "q", "--json"])
+        run(capsys, ["ask", "--state", "x" * big_chars, "--question-type", "noul",
+                     "--name", "q", "--json"])
         rows = [json.loads(line) for line in (tmp_path / "ledger.jsonl").read_text(
             encoding="utf-8").strip().splitlines()]
+        assert len(rows) == 2
         assert rows[1]["baseline_tokens"] > rows[0]["baseline_tokens"] * 10
 
     def test_a_refused_state_writes_no_ledger_row(self, capsys, tmp_path):

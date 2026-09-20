@@ -319,11 +319,17 @@ class TestWarm:
 
 class TestHelpers:
     def test_estimate_tokens_grows_with_size(self):
-        assert estimate_tokens("x" * 360) == 100
-        assert estimate_tokens({"a": "b"}) >= 1
+        from jevskill.config import CHARS_PER_TOKEN
+
+        assert estimate_tokens("x" * 3600) == int(3600 / CHARS_PER_TOKEN)
 
     def test_estimate_tokens_accepts_bytes(self):
-        assert estimate_tokens(b"x" * 360) == 100
+        assert estimate_tokens(b"x" * 3600) == estimate_tokens("x" * 3600)
+
+    def test_estimate_agrees_with_the_orchestrate_helper(self):
+        from jevskill.orchestrate import count_tokens
+
+        assert estimate_tokens("x" * 3600) == count_tokens("x" * 3600)
 
     def test_decisions_to_dict_is_serialisable(self):
         client, _ = make_client([FakeResponse(200, FIXTURE)])

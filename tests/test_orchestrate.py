@@ -21,16 +21,37 @@ from jevskill.orchestrate import (
 
 class TestCountTokens:
     def test_scales_with_length(self):
-        assert count_tokens("x" * 360) == 100
+        # Derived, not hard-coded: the constant is calibrated against the live
+        # API and will be re-tuned, and these tests should track it rather than
+        # pin it.
+        from jevskill.config import CHARS_PER_TOKEN
+
+        assert count_tokens("x" * 10_000) == int(10_000 / CHARS_PER_TOKEN)
 
     def test_handles_structures(self):
-        assert count_tokens(["a" * 360]) >= 100
+        from jevskill.config import CHARS_PER_TOKEN
+
+        assert count_tokens(["a" * 10_000]) >= int(10_000 / CHARS_PER_TOKEN)
 
     def test_handles_bytes(self):
-        assert count_tokens(b"x" * 360) == 100
+        assert count_tokens(b"x" * 360) == count_tokens("x" * 360)
 
     def test_never_returns_zero(self):
         assert count_tokens("") == 1
+
+    def test_calibration_is_conservative_for_logs(self):
+        """The estimate must not under-count log-like content.
+
+        Measured against the live API, the naive 3.6 chars/token rule
+        under-counted synthetic log lines by 2.15x. The corrected constant is
+        derived from that measurement, so a state that looks like it fits really
+        does fit.
+        """
+        from jevskill.config import CHARS_PER_TOKEN
+
+        assert CHARS_PER_TOKEN <= 2.0, (
+            "chars-per-token above 2.0 risks under-counting code and log content"
+        )
 
 
 class TestProfile:
