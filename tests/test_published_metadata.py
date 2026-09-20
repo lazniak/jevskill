@@ -364,17 +364,6 @@ ALLOW_LIST = [
     # --- worked examples, not measurements ---
     ("%", 95, "illustrative threshold in the STOP worked example, not a measurement"),
     ("$", 0.00006, "illustrative state cost in the same worked example"),
-    # --- unbacked: no artifact produces these today ---
-    ("ms", 371, "unbacked - flagged 2026-09-20 (cu_bench range; bench/cu_results.json "
-                "is not written yet, plan 1.6)"),
-    ("ms", 292, "unbacked - flagged 2026-09-20 (vendor-endpoint range, same missing "
-                "artifact)"),
-    ("ms", 320, "unbacked - flagged 2026-09-20 (vendor-endpoint range, same missing "
-                "artifact)"),
-    ("%", 92, "unbacked - flagged 2026-09-20 (stage share read from a local ledger, "
-              "which no committed artifact holds)"),
-    ("%", 96, "unbacked - flagged 2026-09-20 (same local stage report)"),
-    ("%", 4, "unbacked - flagged 2026-09-20 (skill overhead, same local stage report)"),
 ]
 
 

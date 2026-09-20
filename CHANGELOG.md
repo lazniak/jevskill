@@ -92,6 +92,59 @@ names load lazily (PEP 562): `import jevskill.client` costs ~525 ms of `httpx`
 import time, the stdlib half ~70 ms, and a test keeps `httpx` out of
 `sys.modules` after a bare `import jevskill`.
 
+### Changed — `SKILL.md` is a 248-line decision guide (was 499)
+
+The entry document is for an agent deciding what to do in the next thirty seconds,
+so it now holds only what changes that decision: the shape test, the three
+primitives, **one** call path (the bundled script; the package CLI when
+importable), four rules, how to read an answer, key and no-key policy, hard
+constraints with a single anti-pattern table, and a router. Everything measured
+moved out: the ledger, `stats`, `advice` and the per-stage breakdown are now
+`references/measure.md` (relocated verbatim, with provenance notes — the 92–96 %
+stage shares come from one machine's local ledger and no artifact regenerates
+them). `SKILL.md` carries no latency figure at all; `description` is 641
+characters; `allowed-tools` lists the three commands the file actually runs;
+the `$SKILL_DIR` convention is stated for harnesses other than Claude Code. Two
+examples that could never have worked were fixed on the way (`--questions
+@file.json` was not supported by either CLI; backticked paths inside double quotes
+were shell command substitution). `TestSkillIsADecisionGuide` pins the shape:
+≤ 250 lines, no `ms`/`×` figures beyond the two E3 multipliers, every
+`references/*.md` reachable from the router, every fence matching `allowed-tools`.
+
+### Added — `jevskill.cu`: perception and reduction for a Windows GUI loop
+
+`observe.snapshot()` reads one window's UI Automation tree; `reduce.candidates()`
+cuts it to the ≤ 60 controls worth deciding over; `hashing.tree_hash()`/`diff()`
+answer "did the screen change" in code. `import jevskill.cu` needs nothing
+installed; only `snapshot()` needs Windows and `pip install "jevskill[cu]"`
+(`comtypes`), and says so.
+
+- **Library chosen by measurement** (`bench/cu_observe_bench.py`,
+  `bench/cu_observe_results.json`, three warm runs per app): `uiautomation`
+  188–197 ms and `pywinauto` 138–223 ms on a 34-node Notepad, both reading every
+  property live; **`comtypes` with one `CacheRequest` 73–104 ms** (Calculator,
+  53 nodes: 144–161 / 101–123 / **42–52 ms**). Sixteen properties for the whole
+  window in one cross-process round trip.
+- **Three findings that contradict the plan, kept because they are measured.**
+  The 10–60 ms observe budget holds only for small windows — cost tracks the
+  provider's node count (506 nodes: 340 ms; a Notepad with 18 restored tabs:
+  368–410 ms), so budget ~1 ms per node. No client-side trick moves it
+  (`AutomationElementMode_None`, six properties, Content/Raw view, MTA — all
+  within noise; `FindAllBuildCache` 3× worse). One round trip beats sixty-four:
+  a lazy per-container descent ties on an idle machine and loses under load, so
+  `strategy="subtree"` is the default and `"lazy"` stays for windows too large
+  to fetch at once.
+- `reduce` is pure and deterministic (visible → interactive → dedupe →
+  prioritise → cap), 0.047–0.088 ms on the real windows; above the cap
+  `regions()`/`region_state()` build the hierarchical cascade, and cap the region
+  list too (a 2 000-node tree produced 71 regions). `to_state()` emits an 8×8
+  grid cell instead of a pixel rectangle and omits default `enabled`/`focused`:
+  a real 60-candidate screen is 3 093 tokens, under the 3 500 budget only
+  because of that.
+- Live UIA handles never reach `to_dict()`/`to_state()`. Ninety offline tests on
+  committed fixtures (synthetic 50/500/2 000 and scrubbed real Notepad and
+  Calculator snapshots); live UIA tests run only with `JEVSKILL_CU_LIVE=1`.
+
 ### Added — the hot path (`references/hotloop.md`, `bench/cu_results.json`)
 
 - **`JevClient(hot=True)`** — 1.5 s read, 2 s connect, 0 retries; retunes only

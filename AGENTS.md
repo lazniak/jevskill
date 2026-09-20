@@ -16,6 +16,7 @@ Two halves, deliberately separate:
 |---|---|
 | `skills/jev/` | the Skill: `SKILL.md`, `references/`, and stdlib-only `scripts/` |
 | `jevskill/` | the Python package: client, primitives, orchestration, ledger, CLI |
+| `jevskill/cu/` | the computer-use half: `observe` (Windows UIA through `comtypes`, the `cu` extra), `reduce`, `hashing` — everything but `snapshot()` is pure Python and runs on Linux CI |
 
 The Skill must work with **no install** (stdlib only). The package adds the
 measurement half (ledger, `stats`, `outcome`, `plan`). Keep that boundary: if you
@@ -86,7 +87,7 @@ one honestly:
 ## Running things
 
 ```bash
-python -m pytest -q                       # 622 tests, offline, must stay green
+python -m pytest -q                       # 721 tests, offline, must stay green
 python bench/run.py --legacy-reduce       # live API: E1-E7, writes bench/results.json
 python bench/ab.py --runs 3               # live API: the A/B evaluation, writes bench/ab_results.json
 

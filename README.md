@@ -26,7 +26,7 @@ tokens on decisions — and start making them for **$0.000013** in **325 ms**.
 **Jev** is TypeSafe's *System One* decision model, and it is the whole engine here.
 Official model page: **[typesafe.ai](https://typesafe.ai/)** · [API docs](https://docs.typesafe.ai/)
 
-[![tests](https://img.shields.io/badge/tests-622%20passing-brightgreen)](#-does-it-actually-help-ab-tested)
+[![tests](https://img.shields.io/badge/tests-721%20passing-brightgreen)](#-does-it-actually-help-ab-tested)
 [![A/B](https://img.shields.io/badge/A%2FB-99.3%25%20fewer%20tokens-blue)](#-does-it-actually-help-ab-tested)
 [![cost](https://img.shields.io/badge/decision-%240.000013-success)](#-cost-per-decision)
 [![license](https://img.shields.io/badge/license-MIT-informational)](LICENSE)
@@ -694,7 +694,7 @@ and what Jev is asked — is [`act.md`](skills/jev/references/act.md).
 ```
 skills/jev/            the Agent Skill — works with NOTHING installed
   SKILL.md             what your harness loads
-  references/          api · patterns · prompting · benchmarks · commands · hotloop · act
+  references/          api · patterns · prompting · benchmarks · commands · measure · hotloop · act
   scripts/
     jev_query.py       stdlib-only caller: decisions + reversible REDUCE
     jev_recovery.py    read back everything REDUCE rejected
@@ -708,13 +708,15 @@ jevskill/              the Python package — the measurement half
   stats.py             the effectiveness ledger
   cli.py               doctor · plan · patterns · ask · batch · outcome · stats · advice
   jevtask.py           batching: N items, one question set, measured saving
+  cu/                  computer use: observe (Windows UIA, `[cu]` extra) · reduce · hashing — pure Python otherwise
 bench/
   run.py               E1–E7 microbenchmarks (latency, fan-out, REDUCE, guards)
   ab.py                the A/B evaluation vs the model doing it alone
   cu_bench.py          per-step decision bench: providers, N=12…240, warm-up, hedging → cu_results.json
   act_validate.py      the three live calls behind references/act.md §9
+  cu_observe_bench.py  UIA walk: comtypes CacheRequest vs uiautomation vs pywinauto → cu_observe_results.json
   cu_tasks.json        10 Windows computer-use tasks with oracles (+ cu_tasks.md)
-tests/                 622 tests, offline, green
+tests/                 721 tests, offline, green
 docs/install.md        install guide an agent reads and executes
 docs/DESIGN.md         architecture + the mistakes that shaped it
 AGENTS.md              conventions for agents working on this repo
@@ -722,7 +724,7 @@ AGENTS.md              conventions for agents working on this repo
 
 ## 🧭 Status & known limits — `v0.11.0`
 
-CLI, skill, bundled scripts, ledger and reference docs (622 offline tests) are
+CLI, skill, bundled scripts, ledger and reference docs (721 offline tests) are
 complete, and there are now two benchmark suites. What is **not** proven:
 
 * **Redaction is not a PII policy.** It catches credential-shaped strings, not
@@ -768,6 +770,7 @@ complete, and there are now two benchmark suites. What is **not** proven:
 | [`skills/jev/references/prompting.md`](skills/jev/references/prompting.md) | the vendor's 11 failure modes, then 11 rules, each backed by a measurement |
 | [`skills/jev/references/commands.md`](skills/jev/references/commands.md) | every command, flag and script invocation |
 | [`skills/jev/references/benchmarks.md`](skills/jev/references/benchmarks.md) | every number + threats to validity |
+| [`skills/jev/references/measure.md`](skills/jev/references/measure.md) | the ledger, `stats`, `advice`, stage timings — is the skill paying for itself? |
 | [`skills/jev/references/hotloop.md`](skills/jev/references/hotloop.md) | `JevClient(hot=True)`, warm-up and hedging **measured** (hedging lost), latency vs state size on both providers |
 | [`skills/jev/references/act.md`](skills/jev/references/act.md) | the `act` pattern: Jev as the per-step decision core of a GUI loop, validated live |
 | [`bench/cu_tasks.md`](bench/cu_tasks.md) | the 10-task Windows computer-use benchmark: method, oracles, threats to validity |
