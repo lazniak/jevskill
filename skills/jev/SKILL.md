@@ -17,14 +17,15 @@ description: >-
 license: MIT
 allowed-tools: Bash(python:*)
 metadata:
-  version: "0.10.2"
+  version: "0.11.0"
   requirements: >-
     Python 3.9+ (standard library only — no install, no dependencies) and network
-    access to OpenRouter or api.typesafe.ai. Needs OPENROUTER_API_KEY or
-    TYPESAFE_API_KEY; calls are billed (about $0.000013 per decision, output
-    free). Secret-shaped strings in the state are redacted before sending by
-    default. Without a key, ask the user before judging in Jev's place — never
-    simulate silently.
+    access to api.typesafe.ai or OpenRouter. Needs one key: JEV_API_KEY or
+    TYPESAFE_API_KEY (vendor endpoint) or OPENROUTER_API_KEY; a vendor-named key
+    wins when both exist, JEVSKILL_PROVIDER or --provider overrides. Calls are
+    billed (about $0.000013 per decision, output free). Secret-shaped strings in
+    the state are redacted before sending by default. Without a key, ask the user
+    before judging in Jev's place — never simulate silently.
 ---
 
 # Jev: decisions, not text
@@ -90,29 +91,33 @@ jevskill doctor --provider openrouter  # the aggregator
 
 | | OpenRouter | TypeSafe (vendor) |
 |---|---|---|
-| Model field | `typesafe/jev-1.13` | `jev-latest` |
-| Key | `OPENROUTER_API_KEY` | `TYPESAFE_API_KEY` |
+| Model field | `typesafe/jev-1.13` | `jev-latest` (answers as `jev-1.13.0`) |
+| Key | `OPENROUTER_API_KEY` | `JEV_API_KEY` or `TYPESAFE_API_KEY` |
 | Context | 32,000 tokens | **64,000** (32,000 for state + longest question) |
 | Price | $0.042/Mtok | **identical** |
 | Response `cost` | ✅ reported | ❌ absent — computed from the rate |
+| `session_id` in body | accepted | **rejected (400)** — the client omits it |
+| Measured 2026-09-20 (PL, warm p50) | 325–371 ms | **292–320 ms** |
 
-Prefer **OpenRouter** if you already have a key — it also reports the billed cost,
-so the ledger needs no arithmetic. Prefer **TypeSafe** for double the context: the
-price is identical, so going direct is a dependency question, not a cost one.
-Model names are translated automatically; the wrong one is a 404 or a 422.
+**Provider choice**: `--provider`, then `JEVSKILL_PROVIDER`, then the config file; a
+stated provider uses only its own key. Nothing stated → the first key found **by
+name** decides, vendor names (`JEV_API_KEY`, `TYPESAFE_API_KEY`) before OpenRouter's,
+each checked in the environment and then the Windows registry. Same price either
+way. Model names are translated automatically; the wrong one is a 404 or a 422.
 
-`setx` does not affect shells that are already open. On Windows the client also
-reads the user registry, so a key set yesterday works in a terminal opened before
-it. Without the install, `scripts/jev.py` delegates to the package if it can find
-it, so either path works.
+`setx` does not affect open shells; the client also reads the Windows user registry,
+so a key set yesterday works in a terminal opened before it. Without the install,
+`scripts/jev.py` delegates to the package if it can find it.
 
 Do **not** reach for Jev before reading §2: the most common waste is using it on a
 task whose answer is text.
 
 ### No key? Ask — never simulate silently
 
-Check only the **presence** of a key (`jevskill doctor` reports `key_found`); never
-print a key's value. If there is none, warn the user and ask in their language:
+Check only the **presence** of a key (`jevskill doctor` reports `key_found`, the
+variable's `key_name`, its `key_source` and an 8-hex `key_fingerprint` — never a
+prefix of the secret); never print a key's value. If there is none, warn the user
+and ask in their language:
 
 > No Jev key was found, so I cannot call the model. Which do you prefer?
 > **A — get a key:** create one at <https://openrouter.ai/settings/keys> (or

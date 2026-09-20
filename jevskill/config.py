@@ -42,6 +42,8 @@ PROVIDERS: dict[str, dict] = {
         # OpenRouter returns usage.cost; TypeSafe does not.
         "reports_cost": True,
         "reports_request_id": True,
+        # OpenRouter accepts the optional observability field.
+        "accepts_session_id": True,
         # Documented as 32K on the model page.
         "context_tokens": 32_000,
     },
@@ -50,9 +52,16 @@ PROVIDERS: dict[str, dict] = {
         "endpoint": "/v1/systemone",
         "models_path": "/v1/models",
         "model": "jev-latest",
-        "key_env": ("TYPESAFE_API_KEY", "JEV_API_KEY"),
+        # Either name is a vendor key. ``JEV_API_KEY`` first because it names the
+        # model rather than the company, which is how people actually label it.
+        "key_env": ("JEV_API_KEY", "TYPESAFE_API_KEY"),
         "reports_cost": False,
         "reports_request_id": False,
+        # Measured live 2026-09-20: a body carrying ``session_id`` is rejected with
+        # HTTP 400 ``{"detail": {"error_type": "api_usage_error", "message":
+        # "Invalid request."}}``. The field is an OpenRouter extension, not part
+        # of the vendor's schema, so the client must not send it here.
+        "accepts_session_id": False,
         # Documented: 64k per request, of which 32k for state + longest question.
         "context_tokens": 64_000,
         "state_plus_question_tokens": 32_000,
@@ -75,8 +84,18 @@ KEY_ENV_VARS: tuple[str, ...] = (
     "JEVUSE_API_KEY",
 )
 
-#: All key variables, any provider.
-ALL_KEY_ENV_VARS: tuple[str, ...] = KEY_ENV_VARS + PROVIDERS["typesafe"]["key_env"]
+#: All key variables, any provider, in the order consulted when **no provider was
+#: stated**. The vendor's own names come before the aggregator's on purpose: a
+#: variable called ``JEV_API_KEY`` says which model and endpoint you meant, while
+#: ``OPENROUTER_API_KEY`` is shared by every tool on the machine and says nothing
+#: about Jev. The first version of this list put OpenRouter first, and a machine
+#: holding both keys silently kept routing through the aggregator after the
+#: vendor key had been added — which is the opposite of what adding it meant.
+ALL_KEY_ENV_VARS: tuple[str, ...] = (
+    ("JEVSKILL_API_KEY",)
+    + PROVIDERS["typesafe"]["key_env"]
+    + PROVIDERS["openrouter"]["key_env"]
+)
 
 #: OpenRouter keys look like ``sk-or-v1-...``. TypeSafe issues its own prefix; we
 #: only need to recognise OpenRouter positively, and treat anything that is not an
@@ -134,21 +153,35 @@ def _file_key() -> str:
     return str(key).strip() if key else ""
 
 
-def _lookup_env(names: tuple[str, ...]) -> tuple[str, str]:
-    """First non-empty ``(name, value)`` from the environment, then the registry.
+def _lookup_env_source(names: tuple[str, ...]) -> tuple[str, str, str]:
+    """First non-empty ``(name, source, value)``, searching **name by name**.
 
-    Returns the *name* as well as the value so the caller can tell which provider
-    a variable belongs to.
+    For each name the process environment is consulted first, then the Windows
+    user registry (``HKCU\\Environment``), and only then the next name. The
+    ordering is by *name*, not by *where the value lives*: a key called
+    ``JEV_API_KEY`` set yesterday with ``setx`` (registry only, because running
+    shells do not inherit it) must beat an ``OPENROUTER_API_KEY`` that happens
+    to be exported in this shell — the name is the statement of intent, the
+    storage is an accident of when the terminal was opened.
+
+    The previous implementation searched every name in the environment before
+    any name in the registry, and that is exactly how a freshly added vendor key
+    was ignored in favour of an older aggregator key.
     """
     for name in names:
         value = (os.environ.get(name) or "").strip()
         if value:
-            return name, value
-    for name in names:
+            return name, "env", value
         value = _registry_env(name)
         if value:
-            return name, value
-    return "", ""
+            return name, "registry", value
+    return "", "", ""
+
+
+def _lookup_env(names: tuple[str, ...]) -> tuple[str, str]:
+    """``(name, value)`` — see :func:`_lookup_env_source`."""
+    name, _source, value = _lookup_env_source(names)
+    return name, value
 
 
 def looks_like_openrouter(key: str) -> bool:
@@ -169,18 +202,27 @@ def detect_provider(key: str) -> str:
     return "openrouter" if looks_like_openrouter(key) else "typesafe"
 
 
-def find_api_key(provider: str | None = None) -> str:
-    """Resolve a key from the environment, the registry, or the config file.
+def find_api_key_source(provider: str | None = None) -> tuple[str, str, str]:
+    """Resolve ``(name, source, key)``; ``source`` is ``env``/``registry``/``file``.
 
     With ``provider`` set, only that provider's variables are consulted — which
     matters when a machine holds both keys and the caller asked for a specific
     endpoint. Without it, variables are searched in :data:`ALL_KEY_ENV_VARS`
-    order, and the result's shape decides the provider.
+    order (vendor names first), and the result's shape decides the provider.
+
+    The name and source exist so that ``doctor`` can say *which* variable it used
+    without printing a single character of the key.
     """
-    name, value = _lookup_env(resolve_key_vars(provider))
+    name, source, value = _lookup_env_source(resolve_key_vars(provider))
     if value:
-        return value
-    return _file_key()
+        return name, source, value
+    value = _file_key()
+    return ("api_key", "file", value) if value else ("", "", "")
+
+
+def find_api_key(provider: str | None = None) -> str:
+    """The key alone — see :func:`find_api_key_source`."""
+    return find_api_key_source(provider)[2]
 
 
 def resolve_key_vars(provider: str | None) -> tuple[str, ...]:
@@ -192,15 +234,18 @@ def resolve_key_vars(provider: str | None) -> tuple[str, ...]:
     return ALL_KEY_ENV_VARS
 
 
-def resolve_provider(explicit: str | None = None, key: str = "") -> str:
-    """Decide which endpoint to use.
+def resolve_provider_intent(explicit: str | None = None) -> str | None:
+    """The provider the user *stated*, or ``None`` when nothing was stated.
 
-    Precedence:
+    Precedence: an explicit argument (the CLI flag), then ``JEVSKILL_PROVIDER``,
+    then the ``provider`` field in ``~/.jevskill/config.json``.
 
-    1. an explicit provider (CLI flag, then ``JEVSKILL_PROVIDER``);
-    2. the ``provider`` field in ``~/.jevskill/config.json``;
-    3. the shape of the key — see :func:`detect_provider`;
-    4. the default, OpenRouter.
+    This is separate from :func:`resolve_provider` because the stated intent must
+    be known **before** the key is looked up: the key search has to be scoped to
+    the stated provider, or a machine holding both keys sends the wrong one.
+    Measured live 2026-09-20: ``JEVSKILL_PROVIDER=typesafe`` with an OpenRouter
+    key exported in the shell produced a 401 from the vendor, because the key was
+    resolved provider-agnostically first and the provider decided afterwards.
     """
     if explicit in PROVIDERS:
         return explicit
@@ -219,7 +264,21 @@ def resolve_provider(explicit: str | None = None, key: str = "") -> str:
     from_file = str(_file_config().get("provider", "")).strip().lower()
     if from_file in PROVIDERS:
         return from_file
-    return detect_provider(key)
+    return None
+
+
+def resolve_provider(explicit: str | None = None, key: str = "") -> str:
+    """Decide which endpoint to use.
+
+    Precedence:
+
+    1. an explicit provider (CLI flag, then ``JEVSKILL_PROVIDER``);
+    2. the ``provider`` field in ``~/.jevskill/config.json``;
+    3. the shape of the key — see :func:`detect_provider`;
+    4. the default, OpenRouter.
+    """
+    intent = resolve_provider_intent(explicit)
+    return intent if intent else detect_provider(key)
 
 
 def model_for_provider(model: str, provider: str) -> str:
@@ -259,8 +318,20 @@ class Config:
 
     @classmethod
     def from_env(cls, provider: str | None = None, **overrides: object) -> "Config":
-        key = find_api_key(provider)
-        chosen = resolve_provider(provider, key)
+        """Resolve provider and key in the only order that cannot cross them up.
+
+        1. What did the user *say*? (flag, ``JEVSKILL_PROVIDER``, config file)
+        2. If they said something, look for **that provider's** key only.
+        3. If they said nothing, take the first key by name priority — vendor
+           names first — and let its shape pick the endpoint.
+
+        ``extra["key_name"]`` / ``extra["key_source"]`` record which variable
+        answered and where it lived, so ``doctor`` can explain the choice
+        without echoing the secret.
+        """
+        intent = resolve_provider_intent(provider)
+        key_name, key_source, key = find_api_key_source(intent)
+        chosen = intent if intent else detect_provider(key)
         spec = PROVIDERS[chosen]
         cfg = cls(
             api_key=key,
@@ -270,6 +341,7 @@ class Config:
             ),
             base_url=os.environ.get("JEVSKILL_BASE_URL", "") or spec["base_url"],
         )
+        cfg.extra.update({"key_name": key_name, "key_source": key_source})
         for name, value in overrides.items():
             if value is not None and hasattr(cfg, name):
                 setattr(cfg, name, value)
@@ -293,6 +365,21 @@ class Config:
     def reports_cost(self) -> bool:
         """Whether the provider returns a billed cost in ``usage``."""
         return bool(self.spec["reports_cost"])
+
+    @property
+    def accepts_session_id(self) -> bool:
+        """Whether the request body may carry ``session_id`` (vendor: 400 if it does)."""
+        return bool(self.spec.get("accepts_session_id", True))
+
+    def key_fingerprint(self) -> str:
+        """Eight hex chars of SHA-256 over the key — enough to tell two keys apart,
+        useless for recovering either. This is what reports print instead of a
+        prefix of the secret."""
+        if not self.api_key:
+            return ""
+        import hashlib
+
+        return hashlib.sha256(self.api_key.encode("utf-8")).hexdigest()[:8]
 
     @property
     def context_tokens(self) -> int:

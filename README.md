@@ -26,7 +26,7 @@ tokens on decisions — and start making them for **$0.000013** in **325 ms**.
 **Jev** is TypeSafe's *System One* decision model, and it is the whole engine here.
 Official model page: **[typesafe.ai](https://typesafe.ai/)** · [API docs](https://docs.typesafe.ai/)
 
-[![tests](https://img.shields.io/badge/tests-520%20passing-brightgreen)](#-does-it-actually-help-ab-tested)
+[![tests](https://img.shields.io/badge/tests-544%20passing-brightgreen)](#-does-it-actually-help-ab-tested)
 [![A/B](https://img.shields.io/badge/A%2FB-99.3%25%20fewer%20tokens-blue)](#-does-it-actually-help-ab-tested)
 [![cost](https://img.shields.io/badge/decision-%240.000013-success)](#-cost-per-decision)
 [![license](https://img.shields.io/badge/license-MIT-informational)](LICENSE)
@@ -178,7 +178,8 @@ Claude Code plugin marketplace users can instead do:
 ```bash
 git clone https://github.com/lazniak/jevskill && cd jevskill
 python -m pip install -e ".[fast]"          # the measurement half (ledger, stats)
-export OPENROUTER_API_KEY=sk-or-v1-...      # Windows: setx OPENROUTER_API_KEY "..."
+export JEV_API_KEY=apikey_...               # vendor key; Windows: setx JEV_API_KEY "..."
+# or: export OPENROUTER_API_KEY=sk-or-v1-...  # the aggregator route, same price
 
 jevskill doctor          # verifies key, endpoint, latency, live cost
 ```
@@ -197,7 +198,7 @@ jevskill doctor --provider openrouter  # POST openrouter.ai/api/alpha/decisions
 | | OpenRouter | TypeSafe (vendor) |
 |---|---|---|
 | Model field | `typesafe/jev-1.13` | `jev-latest` |
-| Key variable | `OPENROUTER_API_KEY` | `TYPESAFE_API_KEY` |
+| Key variable | `OPENROUTER_API_KEY` | `JEV_API_KEY` or `TYPESAFE_API_KEY` |
 | Context | 32,000 tokens | **64,000** (32,000 for state + longest question) |
 | Choice options | — | documented max 255 |
 | Score levels | — | documented 2–10 |
@@ -217,6 +218,15 @@ Two things worth knowing about the vendor endpoint:
 - **`jev-latest` is a moving alias.** The response's `model` field reports the
   versioned id that answered — log it, and pin a version if you have tuned a
   confidence threshold against it.
+- **It rejects `session_id`** (HTTP 400 `api_usage_error`; the field is an
+  OpenRouter extension), so the client sends it only to OpenRouter and keeps it
+  for the local ledger on both.
+
+**Which one is used?** `--provider`, then `JEVSKILL_PROVIDER`, then the config
+file; a stated provider uses only its own key. With nothing stated, the first key
+found **by name** decides, vendor names first — so `setx JEV_API_KEY …` next to an
+existing OpenRouter key moves traffic to the vendor. Measured live on 2026-09-20
+from Poland: vendor warm p50 292–320 ms, OpenRouter 325–371 ms, identical price.
 
 Full delta table, including error codes: [`api.md`](skills/jev/references/api.md).
 
@@ -669,15 +679,15 @@ jevskill/              the Python package — the measurement half
 bench/
   run.py               E1–E7 microbenchmarks (latency, fan-out, REDUCE, guards)
   ab.py                the A/B evaluation vs the model doing it alone
-tests/                 520 tests, offline, green
+tests/                 544 tests, offline, green
 docs/install.md        install guide an agent reads and executes
 docs/DESIGN.md         architecture + the mistakes that shaped it
 AGENTS.md              conventions for agents working on this repo
 ```
 
-## 🧭 Status & known limits — `v0.10.2`
+## 🧭 Status & known limits — `v0.11.0`
 
-CLI, skill, bundled scripts, ledger and reference docs (520 offline tests) are
+CLI, skill, bundled scripts, ledger and reference docs (544 offline tests) are
 complete, and there are now two benchmark suites. What is **not** proven:
 
 * **Redaction is not a PII policy.** It catches credential-shaped strings, not

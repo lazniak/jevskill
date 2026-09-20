@@ -280,7 +280,12 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         "provider": config.provider,
         "provider_options": sorted(PROVIDERS),
         "key_found": config.has_key(),
-        "key_source_hint": config.api_key[:12] + "..." if config.api_key else None,
+        # Which variable answered and where it lived — never the key itself. The
+        # previous field printed the first twelve characters of the secret, which
+        # is a partial credential in every log that captured a doctor run.
+        "key_name": config.extra.get("key_name") or None,
+        "key_source": config.extra.get("key_source") or None,
+        "key_fingerprint": config.key_fingerprint() or None,
         "model": config.model,
         "endpoint": config.decisions_url,
         "context_tokens": config.context_tokens,

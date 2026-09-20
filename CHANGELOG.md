@@ -13,14 +13,88 @@ replaced.
 ### Planned- A genuinely ambiguous case for the `shortlist` pattern, so narrowing can be
   demonstrated rather than only unit-tested.
 - Per-repository ledger merging (`jevskill stats --merge`).
-- Live verification of the vendor endpoint. It is verified by 51 unit tests plus
-  endpoint existence, but not by a real call — no TypeSafe key was available.
 - A `doctor` contract probe and further providers (Cloudflare Workers AI, Vercel AI
   Gateway). Both need a schema or an account to verify against, so neither is
   shipped as a guess — see the note in 0.9.0.
 - Block mode on **deep** nesting, and on formats whose blocks are not delimited by
   indentation (minified JSON, unformatted XML). One workload proves the fix, not the
   generality.
+
+## [0.11.0] — 2026-09-20
+
+### Fixed — the vendor endpoint, called for the first time, exposed two defects
+
+Until today `api.typesafe.ai` was verified by unit tests and by a `401` probe, never
+by a real decision. A vendor key arrived (`JEV_API_KEY`), the first real call went
+through — `model: "jev-1.13.0"`, `usage: {input_tokens, output_tokens}`, no `id`,
+no `cost`, exactly as the docs said — and the second call found two things the docs
+could not have told us:
+
+- **The key was chosen before the provider.** `Config.from_env` looked a key up
+  provider-agnostically and decided the endpoint afterwards, so
+  `JEVSKILL_PROVIDER=typesafe` on a machine that also holds an OpenRouter key sent
+  the **OpenRouter** key to the vendor: `401 authentication_error`. The stated
+  provider (`--provider`, `JEVSKILL_PROVIDER`, config file) is now resolved first
+  and the key search is scoped to it. `resolve_provider_intent()` is the new seam;
+  `resolve_provider()` keeps its contract.
+- **`session_id` is not part of the vendor schema.** A body carrying it is
+  `400 {"detail": {"error_type": "api_usage_error", "message": "Invalid request."}}`.
+  It is an OpenRouter observability extension, and the reference doc had listed it
+  (with `user`, `provider`, `trace`) as if it were generic. `PROVIDERS[...]
+  ["accepts_session_id"]` now gates it in the client; the id stays on the result so
+  the local ledger still groups by it. The 400 hint names the cause for both
+  providers.
+
+### Changed — which key wins when nothing is stated (behaviour change)
+
+Keys are now searched **by name, vendor names first** (`JEVSKILL_API_KEY`,
+`JEV_API_KEY`, `TYPESAFE_API_KEY`, then `OPENROUTER_API_KEY`, `OPEN_ROUTER_API_KEY`,
+`JEVUSE_API_KEY`), each in the environment and then in `HKCU\Environment`. Before,
+every name was searched in the environment before any name in the registry, and
+OpenRouter's names came first — so `setx JEV_API_KEY …` next to an existing
+OpenRouter key changed nothing: traffic kept going through the aggregator, which is
+the opposite of what adding the vendor key meant. A variable named after the model
+is a statement of intent; an aggregator key shared by every tool on the machine is
+not. `JEV_API_KEY` is listed before `TYPESAFE_API_KEY` for the same reason. The
+zero-install script carries the identical rule and now also honours
+`JEVSKILL_PROVIDER`, which it previously ignored.
+
+### Changed — `doctor` no longer prints key material
+
+`key_source_hint` printed the first twelve characters of the key — a partial
+credential in every captured `doctor` run. Replaced by `key_name` (the variable),
+`key_source` (`env` / `registry` / `file`) and `key_fingerprint` (eight hex chars of
+SHA-256), which together explain *why* a provider was chosen without echoing the
+secret. `JevConfigError` and the 401 hint name both providers' variables.
+
+### Added
+
+- `tests/test_key_precedence.py` — 24 tests pinning the intent-first order, the
+  vendor-first name order, the registry-versus-environment case that happened
+  live, the `session_id` gate per provider, the fingerprint, and parity between
+  the package and the zero-install script. Suite: **520 → 544**.
+- `bench/cu_bench.py` — Jev as the per-step decision core of a computer-use loop:
+  a UI tree of N elements, four questions in one call (`target`, `action`,
+  `goal_reached`, `stuck`), warm latency over K calls, both providers.
+- `docs/research-2026-09-20-jev-cu.md` — the research and the critique of this
+  skill against the official documentation (four parallel research agents plus
+  live measurement); `docs/plan-2026-09-20.md` and `TASKS.md` — the plan that
+  follows from it.
+
+### Measured — both endpoints, same minutes, same machine (Poland, httpx/h2, warm)
+
+| N elements in state | tokens in | OpenRouter http p50 | **vendor http p50** |
+|---:|---:|---:|---:|
+| 12 | 1,723 | 367 ms (291–485) | **304 ms (281–333)** |
+| 30 | 3,308 | 325 ms (295–431) | **292 ms (264–355)** |
+| 60 | 6,041 | 371 ms (322–442) | **320 ms (288–401)** |
+
+Latency is flat in N on both routes; target selection was stable (`e11` at 0.99,
+confidence 0.98) at every N. The vendor route is 30–50 ms faster with a tighter
+tail — one hop fewer. **The `stuck` question scored 0.42–0.60 on a screen that had
+plainly changed**: a comparison between two states is a code job (hash the tree
+before and after), not a model question. That rule goes into `prompting.md` in the
+next release. No previously published figure changes.
 
 ## [0.10.2] — 2026-09-20
 

@@ -206,8 +206,9 @@ class JevClient:
         self.config = config or Config.from_env()
         if not self.config.has_key():
             raise JevConfigError(
-                "No OpenRouter API key found. Set OPENROUTER_API_KEY (or JEVSKILL_API_KEY), "
-                "or write {'api_key': '...'} to ~/.jevskill/config.json."
+                "No Jev API key found. Set JEV_API_KEY (vendor endpoint) or "
+                "OPENROUTER_API_KEY, or JEVSKILL_API_KEY for either, or write "
+                "{'api_key': '...'} to ~/.jevskill/config.json."
             )
         self.requests_sent = 0
         self._client = client
@@ -298,7 +299,11 @@ class JevClient:
             + b',"questions":'
             + questions_bytes
         )
-        if session_id:
+        # ``session_id`` is an OpenRouter observability extension. The vendor
+        # endpoint rejects any body that carries it (HTTP 400 ``api_usage_error``,
+        # measured 2026-09-20), so it is sent only where accepted — and still kept
+        # on the result, because the ledger's grouping is local and unaffected.
+        if session_id and self.config.accepts_session_id:
             safe = str(session_id).encode("utf-8", "replace")[:256].replace(b'"', b"'")
             body += b',"session_id":"' + safe + b'"'
         body += b"}"

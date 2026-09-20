@@ -292,7 +292,7 @@ class TestConfigGuard:
             monkeypatch.delenv(name, raising=False)
         monkeypatch.setattr("jevskill.config._file_key", lambda: "")
         monkeypatch.setattr("jevskill.config._registry_env", lambda _n: "")
-        with pytest.raises(JevConfigError, match="No OpenRouter API key"):
+        with pytest.raises(JevConfigError, match="No Jev API key"):
             JevClient(Config(api_key=""))
 
     def test_invalid_questions_never_reach_the_network(self):

@@ -26,8 +26,14 @@ class JevApiError(JevError):
     """
 
     HINTS = {
-        400: "Malformed request — check question types are exactly noul/choice/score.",
-        401: "Bad or missing API key. Set OPENROUTER_API_KEY (or TYPESAFE_API_KEY for the vendor endpoint).",
+        400: ("Malformed request. OpenRouter: check question types are exactly "
+              "noul/choice/score and criteria are non-empty. TypeSafe "
+              "(`api_usage_error`): the body carries a field the vendor schema does "
+              "not define — session_id, user, provider and trace are OpenRouter-only."),
+        401: ("Bad or missing API key for this provider. Vendor endpoint: JEV_API_KEY "
+              "or TYPESAFE_API_KEY; OpenRouter: OPENROUTER_API_KEY. If both keys exist, "
+              "state the provider (--provider / JEVSKILL_PROVIDER) so the matching key "
+              "is used."),
         402: "Out of OpenRouter credits. Top up at openrouter.ai/credits, or fall back to the plain LLM path. (The vendor endpoint does not use this code.)",
         403: "Key lacks access to this model.",
         404: "Wrong endpoint for the provider. OpenRouter uses /api/alpha/decisions; TypeSafe uses /v1/systemone. Check --provider.",

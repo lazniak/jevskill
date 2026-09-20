@@ -14,8 +14,10 @@ miss — most importantly, one reports a billed cost and the other does not.
 | Endpoint | `POST https://openrouter.ai/api/alpha/decisions` | `POST https://api.typesafe.ai/v1/systemone` |
 | Model field | `typesafe/jev-1.13` | `jev-latest` (→ `jev-1.13.0`) |
 | Aliases | — | `jev-latest`, `jev-preview` |
-| Key variable | `OPENROUTER_API_KEY` etc. | `TYPESAFE_API_KEY`, `JEV_API_KEY` |
-| Key shape | `sk-or-v1-…` | vendor-issued |
+| Key variable | `OPENROUTER_API_KEY` etc. | `JEV_API_KEY`, `TYPESAFE_API_KEY` |
+| Key shape | `sk-or-v1-…` | vendor-issued (`apikey_…`, 108 chars observed) |
+| `session_id` in the body | accepted | **HTTP 400 `api_usage_error`** — the client omits it |
+| Measured live (2026-09-20, Poland, warm p50) | 325–371 ms | **292–320 ms** |
 | Context | 32,000 tokens | **64,000** per request; 32,000 for state + longest question |
 | Price | $0.042 / Mtok input, output free | **identical** — $0.042 / Mtok, output free |
 | Rate limits | not documented here | 250,000 tok/s, 1,200 req/min, **dynamic** |
@@ -24,7 +26,7 @@ miss — most importantly, one reports a billed cost and the other does not.
 | Response `provider` | ✅ | ❌ absent |
 | Choice options | (undocumented) | documented max **255** |
 | Score levels | (undocumented) | documented min 2, max **10** |
-| Error codes | 400, 401, 402, 403, 404, 413, 429, 502, 529 | **422** (validation), 401, 429, **529** |
+| Error codes | 400, 401, 402, 403, 404, 413, 429, 502, 529 | **400** (`api_usage_error`, unknown field), **422** (validation), 401, 429, **529** |
 | Model listing | `GET /api/v1/models` | `GET /v1/models` |
 | Access | immediate with credits | waitlist, keys in batches |
 
@@ -35,8 +37,14 @@ jevskill doctor                         # auto-detect from the key
 ```
 
 The skill picks a provider in this order: an explicit `--provider`, then
-`JEVSKILL_PROVIDER`, then a `"provider"` field in `~/.jevskill/config.json`, then
-the shape of the key (`sk-or-…` is OpenRouter), else OpenRouter.
+`JEVSKILL_PROVIDER`, then a `"provider"` field in `~/.jevskill/config.json`. A
+stated provider is resolved **before** the key is looked up and only its own key
+variables are consulted — measured 2026-09-20, the reverse order sent an OpenRouter
+key to the vendor and got a 401. When nothing is stated, keys are searched **by
+name**, vendor names first (`JEVSKILL_API_KEY`, `JEV_API_KEY`, `TYPESAFE_API_KEY`,
+then `OPENROUTER_API_KEY`, `OPEN_ROUTER_API_KEY`, `JEVUSE_API_KEY`), each in the
+environment and then in `HKCU\Environment`; the shape of the key found decides
+(`sk-or-…` is OpenRouter, anything else the vendor), else OpenRouter.
 
 **Model names are translated automatically** in both directions, because passing
 `typesafe/jev-1.13` to the vendor endpoint or `jev-latest` to OpenRouter is a 404
@@ -78,9 +86,12 @@ Content-Type: application/json
 
 The vendor's own API is the reference implementation, not a compatibility shim:
 TypeSafe documents the same `state` + `questions` shape, so the request body this
-skill builds is **identical for both providers** — only the URL and the `model`
-name differ. Verified live: both `/v1/systemone` and `/v1/models` exist and return
-a structured `401` for an invalid key:
+skill builds is **identical for both providers** — only the URL, the `model` name
+and the optional `session_id` differ. First real decision against the vendor:
+**2026-09-20** — `model: "jev-1.13.0"`, `usage: {"input_tokens": 311,
+"output_tokens": 21}`, no `id`, no `cost`, warm p50 292–320 ms from Poland (the
+OpenRouter route measured 325–371 ms in the same minutes). Both `/v1/systemone` and
+`/v1/models` return a structured `401` for an invalid key:
 
 ```json
 {"detail": {"error_type": "authentication_error",
@@ -146,12 +157,17 @@ it from the documented rate and marks the provenance:
   "model": "typesafe/jev-1.13",   // required
   "state": { },                   // required — string | object | array
   "questions": { },               // required — name -> question
-  "session_id": "...",            // optional, max 256 chars, for observability
-  "user": "...",                  // optional, max 256 chars
-  "provider": { },                // optional — provider routing preferences
-  "trace": { }                    // optional
+  "session_id": "...",            // OpenRouter only — optional, max 256 chars
+  "user": "...",                  // OpenRouter only — optional, max 256 chars
+  "provider": { },                // OpenRouter only — routing preferences
+  "trace": { }                    // OpenRouter only
 }
 ```
+
+The last four fields are OpenRouter extensions. **The vendor schema is exactly
+`model`, `state`, `questions`**; any other top-level field is a `400
+api_usage_error` (measured with `session_id`). The client sends `session_id` only
+where the provider accepts it and keeps it on the result for the local ledger.
 
 `state` and `questions` accept nested JSON. One request carries one state and as
 many questions as you like, all evaluated **independently and in parallel**.
@@ -330,6 +346,7 @@ your coding agent to reach for Jev while working.
 | Code | Provider | Meaning | What to do |
 |---|---|---|---|
 | 400 | OpenRouter | Malformed request (bad question type, empty criteria) | Fix the shape; do not retry |
+| **400** | **TypeSafe** | `api_usage_error` — a top-level field the vendor does not define (`session_id`, `user`, `provider`, `trace`) | Remove the field; do not retry |
 | **422** | **TypeSafe** | **Validation failed** — missing field or malformed question; body names the field | **Fix it; do not retry** |
 | 401 | both | Bad or missing key | Fix the key for *that* provider |
 | 402 | OpenRouter | No credits | Top up, or fall back to the LLM path |
