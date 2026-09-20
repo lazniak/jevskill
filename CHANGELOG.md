@@ -229,6 +229,41 @@ teardown confined to `%TEMP%\jevcu`; success is graded by the oracle alone, neve
 by the agent's own `done`/`goal_reached`. Method, metrics and threats to validity
 in `bench/cu_tasks.md`.
 
+### Fixed — what the review of the perception package found (before release)
+
+- **The dialog prior never fired.** `interactive()` dropped the `dialog` node
+  before `prioritise()` looked for it, so on a 72-control screen with a modal open
+  both modal buttons ranked 71–72 and fell outside the cap. Dialog membership now
+  comes from the unreduced tree and dialog members have their own bucket above
+  the focus region.
+- **Dedupe erased list rows.** Ten "Delete" buttons under one list collapsed to one
+  survivor, so row 7 was unreachable. `parent` is part of the key now: per-row
+  controls survive, nine "More options" under one toolbar still collapse (`dup: 8`
+  reaches the model in `to_state`).
+- **`diff` was quadratic per identity bucket** — 4 000 identical controls took
+  747 ms; now 16 ms (`deque`). The hash also sees `selected`/`toggled`, so an
+  arrow-key move or a ticked checkbox counts as a change; the remaining hole (a
+  rename dialog whose only difference is the typed filename, with `value` ignored
+  by default) is named in the docstring and pinned by a test.
+- `observe`: COM is initialised on the caller's thread (MTA, tolerating
+  `RPC_E_CHANGED_MODE`); the two root UIA calls re-raise `COMError` as `OSError`
+  with the HRESULT and hwnd; popup windows (menus, dropdowns) are merged into the
+  walk as region `popup` — merge logic tested offline, enumeration **not
+  live-verified**; the budget clock starts after the subtree call so a tree
+  already paid for is not thrown away, and `Snapshot.over_budget` reports wall
+  time separately from `truncated`.
+- Oversized regions are chunked (`r0a…r0e`, `"part": "2/5"`) so every member is
+  reachable in two rounds; the previous `members[:cap]` left member 61 of a
+  254-member region unreachable.
+- **Published fixture-derived numbers predated the fixture scrub** (the notepad
+  hash, calculator's 36 candidates and 1 535 tokens). `bench/cu_observe_bench.py
+  --from-fixtures` now regenerates every such figure offline and
+  `tests/test_cu_derived_numbers.py` fails on disagreement; calculator is 34
+  candidates and 1 381 tokens. Docstring figures that rounded up (187.9 → 188 and
+  five more) now quote one decimal; "16 round trips" is 20; two unbacked
+  per-property timings were deleted; the ≤ 60 cap is justified as latency and
+  tokens, not accuracy, because accuracy held at 241 options.
+
 ### Added — the decision, action and loop half of `jevskill.cu`
 
 `decide.build_bundle()` is the one-call bundle from `act.md` (target over the

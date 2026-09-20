@@ -3,8 +3,8 @@
 The shape of one step, and which half of it lives here::
 
     observe.snapshot()            UIA tree of the active window       ~40-400 ms
-    reduce.candidates()           deterministic filter to <= 60       <= 2 ms
-    hashing.tree_hash()/diff()    did the screen change               < 1 ms
+    reduce.candidates()           deterministic filter to <= 60       0.05-3 ms (34-2,000 nodes)
+    hashing.tree_hash()/diff()    did the screen change               0.1-9 ms (34-2,000 nodes)
     macros.MacroCache.lookup()    has this screen been solved before  < 1 ms
     --- everything above is code; everything below is a decision ---
     decide.decide()               target / op / goal_reached          ~300 ms
