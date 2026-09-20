@@ -250,6 +250,10 @@ def cmd_ask(args: argparse.Namespace) -> int:
     with JevClient(config) as client:
         if args.warm:
             client.warm()
+        # `warm` gets its own stage: folding the connection handshake into `http`
+        # would report a first-call latency several times the real inference time
+        # (measured 1189 ms of "http" against a 345 ms decision).
+        stages.mark("warm")
         started = time.perf_counter()
         result = client.decide(state, questions, session_id=args.session_id)
         wall_ms = (time.perf_counter() - started) * 1000

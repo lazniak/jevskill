@@ -75,6 +75,12 @@ residential connection in Poland:
 Bugs found by the benchmark suite and by its own tests, each now covered by a
 regression test:
 
+- **`http` stage absorbed the connection handshake.** On a first call, `ask`
+  reported 1 189 ms of "http" against a 345 ms decision, because the `warm()`
+  HEAD request was inside the same marked region. Connection setup now has its
+  own `warm` stage, so the inference number is honest. Measured on this machine:
+  `warm()` costs ~74–100 ms and saves ~100 ms on the first real call (437 ms cold
+  vs 340 ms warm), so warming remains on by default.
 - **Stage timing double-counted.** `Stages` computed a stage as "elapsed minus the
   sum of earlier stages" while also absorbing the client's own `serialize`/`http`/
   `parse` measurements, which sit inside an already-marked region. `doctor`

@@ -43,11 +43,15 @@ from dataclasses import dataclass, field
 from typing import Iterator
 
 #: Canonical stage order. Report in this order, always, so runs are comparable.
+#: ``warm`` covers the connection handshake, which is real work a harness pays on
+#: its first call and worth keeping out of ``http`` so the inference number stays
+#: honest.
 STAGE_ORDER: tuple[str, ...] = (
     "t_decision",
     "profile",
     "plan",
     "build",
+    "warm",
     "http",
     "act",
     "report",
