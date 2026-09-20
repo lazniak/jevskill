@@ -61,11 +61,14 @@ PATTERN_KEYS: Tuple[str, ...] = (
 #: Roles that can act as the grouping ancestor of a region. ``dialog`` is not a
 #: UIA control type: :mod:`jevskill.cu.observe` promotes a window whose
 #: ``IsDialog`` property is true to this role, because "the dialog on top" is
-#: the single most useful prior a computer-use loop has.
+#: the single most useful prior a computer-use loop has. ``menu`` is here as
+#: well as ``menubar``: a dropped-down menu arrives as the root of a separate
+#: ``#32768`` popup window, and without it every item in an open File menu
+#: would be grouped under the window behind it.
 REGION_ROLES = frozenset({
-    "dialog", "window", "pane", "group", "toolbar", "menubar", "statusbar",
-    "titlebar", "document", "list", "tree", "table", "datagrid", "tab",
-    "header", "appbar",
+    "dialog", "window", "pane", "group", "toolbar", "menu", "menubar",
+    "statusbar", "titlebar", "document", "list", "tree", "table", "datagrid",
+    "tab", "header", "appbar",
 })
 
 #: Below this, a rectangle is a layout artefact rather than a control. Windows
@@ -97,6 +100,17 @@ class UIElement:
     depth: int = 0
     parent: Optional[str] = None
     region: Optional[str] = None
+    #: ``SelectionItemPattern.IsSelected``. ``patterns`` says a control *can*
+    #: be selected; this says it *is*. Without the distinction an arrow-key
+    #: move down a list produced an identical tree hash — measured — and the
+    #: loop was told its keystroke did nothing. One cached property to read.
+    selected: bool = False
+    #: ``TogglePattern.ToggleState``: 0 off, 1 on, 2 indeterminate, ``None``
+    #: when the control has no TogglePattern. An int rather than a bool because
+    #: indeterminate is a real third state (a tri-state checkbox in a
+    #: "select all" header) and collapsing it to False would make ticking the
+    #: last child invisible.
+    toggled: Optional[int] = None
     #: How many identical siblings this element stands for after
     #: :func:`jevskill.cu.reduce.dedupe`. Kept so a caller can tell "one Save
     #: button" from "one of nine identical Save buttons" without re-walking.
@@ -120,9 +134,11 @@ class UIElement:
 
         Absent means default, which :meth:`from_dict` restores. Most nodes in a
         real window have no automation id, no class name, no value and no
-        duplicates, and writing those out quadrupled the committed fixtures
-        (the 2,000-node tree: 776 KB with every key, 220 KB without) while
-        burying the fields that differ.
+        duplicates, and writing those out doubles the committed fixtures while
+        burying the fields that differ. Measured by
+        ``bench/cu_observe_bench.py --from-fixtures`` on the 2,000-node tree,
+        compact JSON: **547 KB** with every key, **262 KB** without
+        (``element_bytes_all_keys`` / ``element_bytes_to_dict``).
         """
         d: Dict[str, Any] = {"id": self.id, "role": self.role,
                              "bbox": list(self.bbox)}
@@ -148,6 +164,10 @@ class UIElement:
             d["parent"] = self.parent
         if self.region is not None:
             d["region"] = self.region
+        if self.selected:
+            d["selected"] = True
+        if self.toggled is not None:
+            d["toggled"] = self.toggled
         if self.duplicates:
             d["duplicates"] = self.duplicates
         return d
@@ -164,7 +184,10 @@ class UIElement:
             automation_id=d.get("automation_id", "") or "",
             class_name=d.get("class_name", "") or "",
             depth=int(d.get("depth", 0)), parent=d.get("parent"),
-            region=d.get("region"), duplicates=int(d.get("duplicates", 0)),
+            region=d.get("region"),
+            selected=bool(d.get("selected", False)),
+            toggled=(None if d.get("toggled") is None else int(d["toggled"])),
+            duplicates=int(d.get("duplicates", 0)),
         )
 
 
@@ -197,6 +220,14 @@ class Snapshot:
     a caller can enforce a step budget without instrumenting this module.
     ``truncated`` says the walk stopped early (node cap or time budget) — the
     element list is then a prefix of the tree in document order, not a sample.
+
+    ``truncated`` and ``over_budget`` are two different questions and were
+    conflated once already. ``truncated`` means "this list is incomplete".
+    ``over_budget`` means "this took longer than you asked", which happens
+    *without* truncation whenever the single provider call in
+    ``strategy="subtree"`` runs long: the budget is only checked between Python
+    steps, so a slow ``BuildUpdatedCache`` blows it before the first check and
+    still returns the whole tree.
     """
 
     window_title: str
@@ -207,6 +238,7 @@ class Snapshot:
     elapsed_ms: float
     elements: List[UIElement] = field(default_factory=list)
     truncated: bool = False
+    over_budget: bool = False
     #: ``id -> live UIA element``. Never serialised: see the module docstring.
     _handles: Dict[str, Any] = field(default_factory=dict, repr=False,
                                      compare=False)
@@ -232,13 +264,21 @@ class Snapshot:
         return None
 
     def to_dict(self) -> Dict[str, Any]:
-        """JSON-safe. Deliberately does not touch ``_handles``."""
-        return {
+        """JSON-safe. Deliberately does not touch ``_handles``.
+
+        ``over_budget`` is written only when true, so adding it did not
+        invalidate a single committed fixture — the same "absent means default"
+        rule :meth:`UIElement.to_dict` follows, for the same reason.
+        """
+        out: Dict[str, Any] = {
             "window_title": self.window_title, "app": self.app, "pid": self.pid,
             "hwnd": self.hwnd, "taken_at": self.taken_at,
             "elapsed_ms": self.elapsed_ms, "truncated": self.truncated,
             "elements": [el.to_dict() for el in self.elements],
         }
+        if self.over_budget:
+            out["over_budget"] = True
+        return out
 
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "Snapshot":
@@ -249,6 +289,7 @@ class Snapshot:
             elapsed_ms=float(d.get("elapsed_ms", 0.0)),
             elements=[UIElement.from_dict(e) for e in d.get("elements", [])],
             truncated=bool(d.get("truncated", False)),
+            over_budget=bool(d.get("over_budget", False)),
         )
 
 
