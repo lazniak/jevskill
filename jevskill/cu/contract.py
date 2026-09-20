@@ -58,9 +58,16 @@ STAGES: Tuple[str, ...] = ("observe", "reduce", "decide", "validate", "act", "se
 
 #: Who chose the step. ``jev`` is a model round trip; ``macro`` is a cache hit
 #: (plan item 4.6 — 0 calls, still 1 step, which is exactly why steps and
-#: decisions are counted separately); ``code`` is a deterministic override (the
-#: destructive name list, a liveness failure, a forced stop); ``escalation`` is the
-#: step handed to a VLM or a human (plan item 4.8).
+#: decisions are counted separately); ``code`` is a deterministic override;
+#: ``escalation`` is the step handed to a VLM or a human (plan item 4.8).
+#:
+#: ``code`` was documented here and produced nowhere, so every report printed
+#: zero for it. :mod:`jevskill.cu.loop` now sets it on the two paths where the
+#: step is genuinely code's: a ``click`` turned into a ``type`` because
+#: ``needs_text`` and the target's role contradicted the chosen op, and the
+#: clear-and-retry after the post-``type`` sanity Noul rejects what was typed.
+#: Both replace the model's answer rather than carrying it out, which is the
+#: line between this value and ``jev``.
 #:
 #: A sixth value exists in the code and deliberately **not** in this tuple yet:
 #: ``speculation`` — a step filled from a prediction made during the previous

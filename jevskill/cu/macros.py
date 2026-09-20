@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 import threading
 import time
 from dataclasses import asdict, dataclass
@@ -108,6 +109,15 @@ class MacroCache:
     things depending on how it was reached: a dialog that is up because the
     previous click opened it (``new_window``) wants a different next step from
     the same dialog after an action that did nothing (``unchanged``).
+
+    ``max_entries`` is a **least-recently-used** bound, not a hard stop: the
+    store never refuses a new macro, it drops the entries with the oldest
+    ``last_used`` until it is back under the limit (:meth:`_evict_locked`). The
+    default 2,000 is a size, not a measurement — one entry is a few hundred
+    bytes and a run learns a handful per application.
+
+    :data:`DEFAULT_PATH` is **shared by every process on the machine**, which
+    is why :meth:`save` merges rather than overwrites; see its docstring.
     """
 
     def __init__(self, path: Optional[Any] = None, *, autosave: bool = True,
@@ -120,6 +130,12 @@ class MacroCache:
         self.misses = 0
         self.invalidations = 0
         self.stores = 0
+        #: Keys this process dropped since it last wrote. A save merges the
+        #: file back in, and without a record of what was deleted the merge
+        #: would resurrect exactly the entries :meth:`invalidate` exists to
+        #: remove — an invalidated macro is *wrong*, not stale, and bringing it
+        #: back is a wasted action every run.
+        self._removed: set = set()
         self._lock = threading.Lock()
         self.load()
 
@@ -214,6 +230,7 @@ class MacroCache:
     def invalidate_key(self, entry_key: str) -> bool:
         with self._lock:
             existed = self.entries.pop(entry_key, None) is not None
+            self._removed.add(entry_key)
         if existed:
             self.invalidations += 1
             if self.autosave:
@@ -233,34 +250,95 @@ class MacroCache:
         A cache that cannot be read must not stop the loop it was meant to speed
         up — the same rule :mod:`jevskill.cache` follows for writes.
         """
-        try:
-            data = json.loads(self.path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return 0
-        if data.get("schema") != SCHEMA:
-            return 0
-        entries = data.get("entries")
-        if not isinstance(entries, dict):
-            return 0
-        loaded = {k: MacroEntry.from_dict(v) for k, v in entries.items()
-                  if isinstance(v, dict)}
+        loaded = self._read_entries()
         with self._lock:
             self.entries = loaded
+            self._removed.clear()
         return len(loaded)
 
     def save(self) -> bool:
-        """Write the store. Failures are swallowed and reported as ``False``."""
-        with self._lock:
-            payload = {"schema": SCHEMA, "saved": time.time(),
-                       "entries": {k: v.to_dict() for k, v in self.entries.items()}}
+        """Merge this process's entries into the file. ``False`` on any failure.
+
+        **Two runs share one file, and the old write lost one of them.** Every
+        process wrote ``cu_macros.tmp`` — one fixed name, next to the shared
+        store — and dumped its *whole* in-memory map over whatever was there.
+        Two loops running at once therefore interleaved on the same temporary
+        path, and the later ``os.replace`` silently discarded everything the
+        other had learned. :data:`DEFAULT_PATH` is deliberately machine-wide (a
+        macro is a fact about an application's UI, not about a repo), so
+        concurrent writers are the normal case, not an edge one.
+
+        So: a unique temporary file per writer (:func:`tempfile.mkstemp` in the
+        target directory, which keeps the atomic ``os.replace`` on the same
+        volume), and the file is re-read and merged immediately before the
+        swap. Newer ``last_used`` wins a key held by both, this process wins a
+        tie — it is the one holding the lock — and a key it invalidated is not
+        brought back. That is last-writer-wins *per entry* rather than per
+        file; a lock file would be stricter and would also mean a crashed run
+        could block every later one out of its own cache.
+        """
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = self.path.with_suffix(".tmp")
-            tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-            os.replace(tmp, self.path)
-            return True
         except OSError:
             return False
+        with self._lock:
+            merged = self._merge_locked(self._read_entries())
+            payload = {"schema": SCHEMA, "saved": time.time(),
+                       "entries": {k: v.to_dict() for k, v in merged.items()}}
+            try:
+                handle, tmp = tempfile.mkstemp(dir=str(self.path.parent),
+                                               prefix=self.path.name + ".",
+                                               suffix=".tmp")
+            except OSError:
+                return False
+            try:
+                with os.fdopen(handle, "w", encoding="utf-8") as stream:
+                    json.dump(payload, stream, ensure_ascii=False)
+                os.replace(tmp, self.path)
+            except OSError:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+                return False
+            # The merge is now on disk, so it is also what this process holds:
+            # entries another run learned are worth replaying here too.
+            self.entries = merged
+            self._removed.clear()
+            if len(self.entries) > self.max_entries:
+                self._evict_locked()
+        return True
+
+    def _read_entries(self) -> Dict[str, MacroEntry]:
+        """The file's entries, or ``{}`` for anything unreadable or foreign."""
+        try:
+            data = json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        if data.get("schema") != SCHEMA:
+            return {}
+        entries = data.get("entries")
+        if not isinstance(entries, dict):
+            return {}
+        out: Dict[str, MacroEntry] = {}
+        for key, value in entries.items():
+            if isinstance(value, dict):
+                try:
+                    out[key] = MacroEntry.from_dict(value)
+                except (TypeError, ValueError):
+                    continue          # one bad row must not lose the others
+        return out
+
+    def _merge_locked(self, disk: Dict[str, MacroEntry]) -> Dict[str, MacroEntry]:
+        """This process's entries over the file's. Called with the lock held."""
+        merged = dict(disk)
+        for key in self._removed:
+            merged.pop(key, None)
+        for key, entry in self.entries.items():
+            other = merged.get(key)
+            if other is None or entry.last_used >= other.last_used:
+                merged[key] = entry
+        return merged
 
     # ---- reporting -------------------------------------------------------
     @property
@@ -286,6 +364,9 @@ class MacroCache:
     def clear(self) -> int:
         with self._lock:
             count = len(self.entries)
+            # Every key goes on the tombstone list, or the merge in `save`
+            # would read them straight back off disk.
+            self._removed.update(self.entries)
             self.entries = {}
         if self.autosave:
             self.save()

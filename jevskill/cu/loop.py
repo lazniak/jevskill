@@ -47,7 +47,7 @@ from .contract import RunOptions, RunResult, StepRecord
 from .decide import (THRESHOLDS, Decision, build_state, decide as decide_step,
                      decide_cascade, goal_verdict, text_sanity_question,
                      validate)
-from .hashing import tree_hash
+from .hashing import DEFAULT_IGNORE, tree_hash
 from .macros import goal_fingerprint
 from .reduce import candidates as reduce_candidates
 from .types import Snapshot, UIElement, as_elements
@@ -178,8 +178,9 @@ def run(goal: str, opts: Optional[RunOptions] = None, *, task_id: str = "",
                 result.stop_reason = step.stop_reason
                 break
         else:
-            result.stop_reason = "max_steps"
-        if not result.stop_reason:
+            # Only a `break` skips this, and every `break` above sets a reason
+            # first — so there is no third path that could leave it empty. The
+            # `if not result.stop_reason` that used to follow was unreachable.
             result.stop_reason = "max_steps"
     except Exception as exc:  # a stage raised: the run ends, the records stay
         result.stop_reason = "error"
@@ -210,6 +211,12 @@ class _LoopState:
         #: settle that caught a half-painted frame would otherwise report a
         #: change that did not survive.
         self.pre_hash: Optional[str] = None
+        #: Which fields ``pre_hash`` was taken with. A ``type`` settles on a
+        #: hash that keeps ``value`` (act.py's ``settle_ignore_for``), and
+        #: comparing that against the default-ignore hash of the next screen
+        #: would report a change on every step. One field, so the two ends of
+        #: the comparison cannot drift apart.
+        self.pre_ignore: Tuple[str, ...] = DEFAULT_IGNORE
         self.pre_title: Optional[str] = None
         self.acted = False
         self.last_action: Dict[str, Any] = {"type": None, "target": None,
@@ -255,6 +262,10 @@ def _step(index: int, state: _LoopState, result: RunResult, options: RunOptions,
 
     mark = time.perf_counter()
     cands = reduce_candidates(snapshot.elements, cap)
+    #: The full reduced list, kept because the cascade below replaces ``cands``
+    #: with one region's members while ``current_hash`` — and every settle that
+    #: has to compare against it — is over the whole screen.
+    reduced = cands
     current_hash = tree_hash(cands)
     risky = act_module.risky_ids(cands)
     stages["reduce"] = (time.perf_counter() - mark) * 1000.0
@@ -262,9 +273,15 @@ def _step(index: int, state: _LoopState, result: RunResult, options: RunOptions,
     if state.acted and state.pre_hash is not None:
         # The authoritative answer to "did the last action do anything", made in
         # code from two hashes. The model is *told* the outcome; it is never
-        # asked for it (prompting.md §11: that question measured 0.31-0.60 on
+        # asked for it (prompting.md §11: that question measured 0.29-0.60 on
         # screens that had plainly changed).
-        if current_hash == state.pre_hash:
+        #
+        # Hashed the way the previous op's settle hashed, or a `type` whose
+        # whole effect is a new `value` reads "unchanged" here however well it
+        # worked.
+        comparable = (current_hash if state.pre_ignore == DEFAULT_IGNORE
+                      else tree_hash(cands, ignore=state.pre_ignore))
+        if comparable == state.pre_hash:
             state.last_action["outcome"] = "unchanged"
         elif snapshot.window_title != state.pre_title:
             state.last_action["outcome"] = "new_window"
@@ -393,7 +410,9 @@ def _step(index: int, state: _LoopState, result: RunResult, options: RunOptions,
             return finish("", "done proposed, no verifier: asking once more")
         return _escalate(state, result, record, finish, escalate, goal, snapshot,
                          cands, decision, verdict, executor, options,
-                         "done_unverified")
+                         "done_unverified", confirm_gate=confirm_gate,
+                         current_hash=current_hash, reduced=reduced,
+                         thresholds=thresholds)
     state.done_streak = 0
 
     if not verdict.ok:
@@ -408,7 +427,9 @@ def _step(index: int, state: _LoopState, result: RunResult, options: RunOptions,
             return finish("", "%s: %s" % (verdict.reason, verdict.detail))
         return _escalate(state, result, record, finish, escalate, goal, snapshot,
                          cands, decision, verdict, executor, options,
-                         verdict.reason)
+                         verdict.reason, confirm_gate=confirm_gate,
+                         current_hash=current_hash, reduced=reduced,
+                         thresholds=thresholds)
     state.invalid_streak = 0
 
     # act.md §3, the row the reference loop left out: the op is not `done`, but
@@ -433,6 +454,28 @@ def _step(index: int, state: _LoopState, result: RunResult, options: RunOptions,
         action.target = None
     element = next((el for el in cands if el.id == action.target), None)
 
+    if action.op == "key":
+        # act.md §2 asks for *one* `key` option and promises code will choose
+        # the chord. Without this the Action reached `execute` with `key=None`
+        # and was refused ("key without a chord"), twice, and the run
+        # escalated — with the model's answer having been right both times.
+        chord = act_module.chord_for(goal, cands, target=action.target,
+                                     snapshot=snapshot,
+                                     last_action=state.last_action)
+        if chord.key is None:
+            return _escalate(state, result, record, finish, escalate, goal,
+                             snapshot, cands, decision, verdict, executor,
+                             options, "no_chord", confirm_gate=confirm_gate,
+                             current_hash=current_hash, reduced=reduced,
+                             thresholds=thresholds)
+        action.key = chord.key
+        record.note = (record.note + "; key %s (%s)"
+                       % (chord.key, chord.why)).strip("; ")
+        # A keystroke that fires a destructive default is the same action as
+        # clicking it, so it takes the same gate. `requires_confirm` is only
+        # ever raised here, never cleared.
+        verdict.requires_confirm = verdict.requires_confirm or chord.requires_confirm
+
     wants_text = decision.needs_text >= float(thresholds.get("needs_text",
                                                              THRESHOLDS["needs_text"]))
     text_capable = element is not None and _is_text_target(element)
@@ -443,25 +486,43 @@ def _step(index: int, state: _LoopState, result: RunResult, options: RunOptions,
             # loop refuses to do.
             return _escalate(state, result, record, finish, escalate, goal,
                              snapshot, cands, decision, verdict, executor,
-                             options, "type_without_needs_text")
+                             options, "type_without_needs_text",
+                             confirm_gate=confirm_gate,
+                             current_hash=current_hash, reduced=reduced,
+                             thresholds=thresholds)
         try:
             action.text = write_text(goal, element)
         except Exception as exc:
             return _escalate(state, result, record, finish, escalate, goal,
                              snapshot, cands, decision, verdict, executor,
-                             options, "needs_text:%s" % type(exc).__name__)
+                             options, "needs_text:%s" % type(exc).__name__,
+                             confirm_gate=confirm_gate,
+                             current_hash=current_hash, reduced=reduced,
+                             thresholds=thresholds)
+        if action.op != "type":
+            # The model said `click`, `needs_text` said otherwise and the
+            # target holds text: code, not Jev, chose what happens next. That
+            # is what `contract.DECIDED_BY`'s "code" means, and until now
+            # nothing in the package ever set it, so `bench/cu_report.py` could
+            # only ever print zero for it.
+            record.decided_by = action.source = "code"
+            record.note = (record.note + "; op click -> type: needs_text %.2f"
+                           % decision.needs_text).strip("; ")
         action.op = "type"
         record.op = "type"
 
     # Phase 5 hook (consistency.py): three formulations in one call, consulted
     # when the destructive evidence is equivocal — the name list said nothing
     # and the single Noul landed between "probably fine" and the 0.85 gate,
-    # which is exactly where act.md §9 measured 0.78 for "Delete all documents".
+    # which is exactly where act.md §9 measured 0.79 for "Delete all documents".
     # It can only *add* a confirmation; `requires_confirm` is never cleared.
     if consistency is not None and element is not None and not verdict.requires_confirm:
         single = decision.destructive_for(action.target)
         gate = float(thresholds.get("destructive_noul", THRESHOLDS["destructive_noul"]))
-        if 0.5 <= single < gate:
+        # `None` is "never asked", which `validate` has already turned into a
+        # confirmation for a command control — there is no equivocal single
+        # answer here for a second formulation to break the tie on.
+        if single is not None and 0.5 <= single < gate:
             try:
                 agreed = consistency(goal, cands, element,
                                      last_action=state.last_action, snapshot=snapshot)
@@ -476,18 +537,22 @@ def _step(index: int, state: _LoopState, result: RunResult, options: RunOptions,
     # ---- the destructive gate: the name list first, the model second ------
     if verdict.requires_confirm:
         result.destructive_gates += 1
-        prompt = "%s %r?" % (action.op, (element.name if element is not None else action.target))
-        try:
-            allowed = bool(confirm_gate(prompt, action, element))
-        except Exception as exc:
-            allowed = False
-            record.note = "confirm raised: %s" % type(exc).__name__
+        allowed, note = _confirm(confirm_gate, action, element)
+        if note:
+            record.note = (record.note + "; " + note).strip("; ")
         if not allowed:
-            return finish("blocked", "destructive gate refused: %s" % prompt)
+            return finish("blocked", "destructive gate refused: %s"
+                          % _gate_prompt(action, element))
 
     # ---- act --------------------------------------------------------------
     mark = time.perf_counter()
-    state.pre_hash = current_hash
+    # The hash this action will be judged by, taken *before* it runs and with
+    # the fields that op can move (act.py's `settle_ignore_for`): the default
+    # ignores `value`, which is the whole effect of a `type`.
+    settle_ignore = act_module.settle_ignore_for(action.op)
+    state.pre_hash = (current_hash if settle_ignore == DEFAULT_IGNORE
+                      else tree_hash(reduced, ignore=settle_ignore))
+    state.pre_ignore = settle_ignore
     state.pre_title = snapshot.window_title
     state.acted = True
     act_result = executor(action, snapshot, dry_run=options.dry_run)
@@ -502,7 +567,9 @@ def _step(index: int, state: _LoopState, result: RunResult, options: RunOptions,
         if state.act_failures >= ESCALATE_AFTER_INVALID:
             return _escalate(state, result, record, finish, escalate, goal,
                              snapshot, cands, decision, verdict, executor,
-                             options, "act_failed")
+                             options, "act_failed", confirm_gate=confirm_gate,
+                             current_hash=current_hash, reduced=reduced,
+                             thresholds=thresholds)
         return finish("", note)
     state.act_failures = 0
 
@@ -520,9 +587,18 @@ def _step(index: int, state: _LoopState, result: RunResult, options: RunOptions,
 
     # ---- settle: the code-side `stuck` detector ---------------------------
     mark = time.perf_counter()
+    # act.md §4's per-control cap, applied the only way it can be: as a floor.
+    # `settle` polls a hash and one poll is a live `snapshot()` walk (40-400 ms
+    # measured), so capping *down* to 50 ms would call every slow repaint
+    # "unchanged" and stop real runs on the stall rule. The 200 ms combobox
+    # figure still earns its keep when a caller sets a shorter ceiling.
+    timeout = float(settle_ms)
+    if act_module.settle_cap_for(element) > act_module.SETTLE_CAP_MS:
+        timeout = max(timeout, act_module.settle_cap_for(element))
     after, changed, _waited = act_module.settle(
-        observe, current_hash, timeout_ms=settle_ms,
-        key=lambda snap: tree_hash(reduce_candidates(snap.elements, cap)))
+        observe, state.pre_hash, timeout_ms=timeout,
+        key=lambda snap: tree_hash(reduce_candidates(snap.elements, cap),
+                                   ignore=settle_ignore))
     stages["settle"] = (time.perf_counter() - mark) * 1000.0
     record.tree_changed = bool(changed)
 
@@ -544,14 +620,30 @@ def _step(index: int, state: _LoopState, result: RunResult, options: RunOptions,
             record.note = note
         if ok is False:
             # typesafe-computer-use clears the field below 0.5 and retries.
+            # Nothing the model said produced this action, so the record says
+            # "code" — the value `contract.DECIDED_BY` reserves for a
+            # deterministic override.
             clear = act_module.Action(op="type", target=action.target, text="",
                                       source="code")
             executor(clear, after, dry_run=options.dry_run)
+            record.decided_by = "code"
             state.last_action = {"type": "type", "target": action.target,
                                  "outcome": "error"}
             return finish("", "text rejected and cleared")
 
     # ---- macros: learn from a step that moved the screen -------------------
+    #
+    # `changed` here is settle's answer, and this module's docstring calls that
+    # non-authoritative on purpose: settle stops at the *first* differing hash,
+    # which can be a half-painted frame that the next observation does not
+    # confirm. Storing on it anyway is the deliberate trade. Deferring the
+    # store to the top of the next step would buy a stricter fact at the price
+    # of never learning from the last step of a run, and the entry is not
+    # trusted for long either way: `invalidate` below drops any macro whose
+    # replay leaves the tree unchanged, which is exactly what an entry learned
+    # from a frame that did not survive will do on its first replay. One wasted
+    # replay, self-correcting, versus a macro cache that only fills in the
+    # middle of runs.
     if macros is not None and changed and record.decided_by == "jev":
         macros.store(goal, cands, keyed_outcome, action.target or "none", action.op)
     if macros is not None and not changed and record.decided_by == "macro":
@@ -613,12 +705,30 @@ def _text_is_sane(client: Any, goal: str, after: Snapshot, action: Any, cap: int
 def _escalate(state: _LoopState, result: RunResult, record: StepRecord, finish,
               escalate, goal: str, snapshot: Snapshot, cands: Sequence[UIElement],
               decision: Decision, verdict: Any, executor, options: RunOptions,
-              reason: str) -> _StepOutcome:
+              reason: str, *, confirm_gate=_deny,
+              current_hash: Optional[str] = None,
+              reduced: Sequence[UIElement] = (),
+              thresholds: Mapping[str, float] = THRESHOLDS) -> _StepOutcome:
     """Hand the step to something bigger, or stop the run.
 
     Every escalation is counted, whether or not it was answered: the escalation
     *rate* is the metric that decides whether a loop is worth running, and a
     handler that silently fixes things would otherwise hide the cost.
+
+    **The handler's answer is an Action, not an authorisation.** It goes
+    through :func:`jevskill.cu.decide.validate` and the destructive gate exactly
+    like a model decision. It did not, once: a probe handed this function an
+    Action clicking "Delete all documents" and it was executed with
+    ``destructive_gates == 0`` and ``confirm`` never called — while this
+    module's docstring promised a run with no human attached "cannot click
+    'Delete all documents'". A VLM or a person answering an escalation is
+    exactly the party most likely to propose something irreversible, and
+    nothing about being asked for help makes an answer safe.
+
+    The confidence floor is *not* applied (``require_confidence=False``): an
+    escalation has no probability distribution, the same as a macro replay, and
+    fabricating one to get it past the floor would put that number in the
+    ledger where it would read as a measurement.
     """
     result.escalations += 1
     record.note = ("escalated: %s" % reason).strip()
@@ -636,17 +746,79 @@ def _escalate(state: _LoopState, result: RunResult, record: StepRecord, finish,
         return finish("escalated", "")
     record.decided_by = "escalation"
     record.op, record.target = action.op, action.target
-    # An escalation's action is not settled or hashed here: whatever answered it
-    # knows more than this loop does, and claiming an outcome it did not measure
-    # would put a guess in the record. The next step's observation says what
-    # actually happened.
-    state.acted = False
+
+    risky = act_module.risky_ids(cands)
+    proposal = Decision(target=action.target or "none", op=action.op,
+                        source="escalation", note="escalation: %s" % reason)
+    ruling = validate(proposal, cands, thresholds=thresholds, risky_ids=risky,
+                      require_confidence=False)
+    if not ruling.ok:
+        return finish("escalated", "escalation refused: %s %s"
+                      % (ruling.reason, ruling.detail))
+    element = next((el for el in cands if el.id == action.target), None)
+    if action.op == "key" and action.key:
+        # The handler named the chord. Enter or Delete on a screen whose
+        # default button is destructive is the same act as clicking it.
+        chord = act_module.chord_for(goal, cands, target=action.target,
+                                     snapshot=snapshot,
+                                     last_action=state.last_action)
+        if chord.requires_confirm and act_module.parse_chord(action.key)[-1] in (
+                "enter", "return", "delete"):
+            ruling.requires_confirm = True
+    if ruling.requires_confirm:
+        result.destructive_gates += 1
+        allowed, note = _confirm(confirm_gate, action, element)
+        if note:
+            record.note = (record.note + "; " + note).strip("; ")
+        if not allowed:
+            return finish("blocked", "destructive gate refused: %s"
+                          % _gate_prompt(action, element))
+
+    # An escalation's action is not settled here — whatever answered it knows
+    # more than this loop does and a second poll would only cost time. The
+    # outcome is left **unset** rather than claimed: `outcome: "changed"` was
+    # written here from nothing but "the call returned", which is the one thing
+    # `ActResult.ok` explicitly does not mean. The hash below is the same
+    # baseline an ordinary step leaves behind, so the next step's observation
+    # measures this action the same way it measures every other.
+    state.acted = current_hash is not None
+    if current_hash is not None:
+        state.pre_hash = current_hash
+        state.pre_ignore = act_module.settle_ignore_for(action.op)
+        if state.pre_ignore != DEFAULT_IGNORE:
+            # Over the *whole* reduced screen, which is what `current_hash` and
+            # the next step's comparison cover — after a cascade `cands` is one
+            # region, and hashing that would make every next step differ.
+            state.pre_hash = tree_hash(reduced or cands, ignore=state.pre_ignore)
+        state.pre_title = snapshot.window_title
     act_result = executor(action, snapshot, dry_run=options.dry_run)
     record.executed = bool(getattr(act_result, "ok", False))
+    if not record.executed:
+        state.acted = False
     state.invalid_streak = 0
     state.last_action = {"type": action.op, "target": action.target,
-                         "outcome": "changed" if record.executed else "error"}
+                         "outcome": None if record.executed else "error"}
     return finish("", "escalation handled: %s" % action.op)
+
+
+def _gate_prompt(action: Any, element: Any) -> str:
+    """What the human is asked. Names the chord for a key, the control for a click."""
+    if action.op == "key" and action.key:
+        return "key %s?" % action.key
+    return "%s %r?" % (action.op,
+                       (element.name if element is not None else action.target))
+
+
+def _confirm(confirm_gate, action: Any, element: Any) -> Tuple[bool, str]:
+    """Ask the human, and treat a gate that raises as a no.
+
+    One implementation for both callers: the ordinary step and an escalation
+    answer to the same rule, and a second copy is how they came to differ.
+    """
+    try:
+        return bool(confirm_gate(_gate_prompt(action, element), action, element)), ""
+    except Exception as exc:
+        return False, "confirm raised: %s" % type(exc).__name__
 
 
 def _record_ledger(ledger: Any, goal: str, result: RunResult,

@@ -14,9 +14,10 @@ them the model's:
   matched case-folded, as a substring, against the control's name. It fires
   before any probability is read. The per-element Noul in
   :mod:`jevskill.cu.decide` is a second opinion that *adds* to the list, and it
-  is measurably not a boundary: 0.78 and 0.76 (act.md §9) and 0.82 (the
-  2026-09-20 review run) for a button named literally "Delete all documents" —
-  all three below the 0.85 bar an automatic policy would need.
+  is measurably not a boundary: 0.79 and 0.76 for a button named literally
+  "Delete all documents" (act.md §9, out of the committed
+  ``bench/act_validate_out.json``) — both below the 0.85 bar an automatic
+  policy would need.
 * **Prefer the platform's patterns to synthetic input.** ``Invoke``,
   ``SetValue``, ``Toggle``, ``SelectionItem.Select`` and ``ScrollItem`` act on
   the control directly: they work when the window is occluded, they cannot land
@@ -35,8 +36,8 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional, Sequence, Tuple
 
-from .hashing import tree_hash
-from .types import Snapshot, UIElement
+from .hashing import DEFAULT_IGNORE, tree_hash
+from .types import Snapshot, UIElement, as_elements
 
 #: act.md §4's list, unchanged. Case-folded substring match, so "Delete all
 #: documents", "Empty Recycle Bin" and "Send now" all fire. Substring matching
@@ -47,18 +48,37 @@ DESTRUCTIVE_NAMES: Tuple[str, ...] = (
     "delete", "remove", "send", "pay", "buy", "format", "uninstall", "empty",
 )
 
-#: Settle caps from ``jev-ultrafast``, via act.md §4. A combobox whose
-#: suggestions populate asynchronously needs the longer one; everything else
-#: settles inside two animation frames or has not moved at all.
+#: ``jev-ultrafast``'s settle caps, kept because Phase 5 measures against them
+#: (`references/speculate.md`). They are **event-wait** caps: that loop blocks
+#: on a UIA structure-changed event, where 50 ms is a real budget. This module
+#: *polls a hash*, and one poll costs a live ``snapshot()`` walk — 40-400 ms on
+#: the measured windows — so 50 ms cannot contain even one observation. They
+#: are therefore a **floor** here, never a shortener: see :func:`settle_cap_for`
+#: and act.md §4.
 SETTLE_CAP_MS = 50.0
 SETTLE_CAP_COMBOBOX_MS = 200.0
 
-#: The ceiling :func:`settle` uses when the caller does not name one. Longer
-#: than act.md's per-control caps on purpose: this function *polls a hash*
-#: rather than waiting on a UIA event, so it returns the moment the tree moves
-#: and the ceiling is only paid when nothing happens at all.
+#: The ceiling :func:`settle` uses when the caller does not name one, and the
+#: number act.md §4 publishes. Longer than the caps above on purpose (see
+#: them): this function returns the moment the tree moves, so the ceiling is
+#: only ever paid when nothing happened at all — and when nothing happened, the
+#: loop's stall rule is what must fire, not an early "unchanged" that a 50 ms
+#: cap would manufacture on every slow repaint.
 SETTLE_TIMEOUT_MS = 800.0
 SETTLE_POLL_MS = 40.0
+
+#: Fields :func:`settle` must keep in the hash, per op. ``tree_hash``'s default
+#: drops ``value`` — right for "did my click do anything", wrong for a ``type``,
+#: whose *whole effect* is a new ``value``. Measured before this existed: a
+#: successful ``type`` settled ``changed=False``, the loop recorded
+#: ``tree_changed: False`` twice and stopped with ``blocked``, and no macro was
+#: ever learned from a text field. ``select`` is here for the same reason — a
+#: combobox selection lands in ``value``, and ``selected`` the default already
+#: keeps.
+SETTLE_IGNORE_BY_OP: Dict[str, Tuple[str, ...]] = {
+    "type": ("bbox", "focused"),
+    "select": ("bbox", "focused"),
+}
 
 #: Virtual-key codes for the names a decision may carry. Deliberately small: a
 #: loop that needs a key the model did not name is escalating, not guessing.
@@ -86,9 +106,120 @@ def is_destructive_name(name: Optional[str]) -> bool:
 
 def risky_ids(elements: Sequence[Any]) -> list:
     """Ids of every candidate whose name matches :data:`DESTRUCTIVE_NAMES`."""
-    from .types import as_elements
-
     return [el.id for el in as_elements(elements) if is_destructive_name(el.name)]
+
+
+# --------------------------------------------------------------------------- #
+# Which key — act.md §2's "which key it is, code decides", as the code
+# --------------------------------------------------------------------------- #
+
+#: Goal words that mean "get rid of this dialog". English, case-folded,
+#: substring — the same shape, and the same locale hole, as
+#: :data:`DESTRUCTIVE_NAMES`: on a localised goal string none of them match and
+#: :func:`chord_for` escalates, which is the safe direction.
+DISMISS_WORDS: Tuple[str, ...] = (
+    "cancel", "dismiss", "discard", "abort", "close without",
+    "don't save", "do not save", "without saving",
+)
+
+#: Roles a default button can have — what Enter activates.
+CONFIRM_ROLES = frozenset({"button", "splitbutton"})
+
+#: Roles that mean "the keyboard route into this is the menu bar".
+MENU_ROLES = frozenset({"menu", "menubar", "menuitem"})
+
+
+@dataclass
+class KeyChoice:
+    """What :func:`chord_for` decided, and whether a human has to hear about it.
+
+    ``key`` is ``None`` when no row matched: the caller escalates rather than
+    guessing. ``requires_confirm`` is the destructive gate applied to a
+    *keystroke* — Enter on a screen whose default button deletes is the same
+    action as clicking it, and it was reaching :func:`execute` without one.
+    """
+
+    key: Optional[str] = None
+    why: str = "no_chord"
+    requires_confirm: bool = False
+
+
+def chord_for(goal: str, candidates: Sequence[Any], *,
+              target: Optional[str] = None, snapshot: Any = None,
+              last_action: Any = None) -> KeyChoice:
+    """Which chord ``op="key"`` means on this screen. First row wins.
+
+    act.md §2 gives the model **one** ``key`` option on purpose — "which key it
+    is, code decides", because making a model choose between `press_enter` and
+    `press_escape` is the indirection failure mode. This function is the half
+    of that bargain the code owes, and until it existed every ``op="key"``
+    decision died in :func:`execute` on "key without a chord" — two failed
+    steps and an escalation, measured on the live Notepad case, where ``key``
+    is exactly what the model answers.
+
+    ======  ==========================================================  =======
+    Row     Screen                                                      Chord
+    ======  ==========================================================  =======
+    1       a dialog is up **and** ``goal`` asks to dismiss it           escape
+            (:data:`DISMISS_WORDS`)
+    2       a focused button/splitbutton — the default control           enter
+    3       a dialog is up and no focused default                        enter
+    4       ``target`` (or focus) is a menu, menubar or menuitem         alt
+    5       anything else                                                *none*
+    ======  ==========================================================  =======
+
+    Row 5 escalates. An application accelerator (``ctrl+s``) is deliberately
+    **not** inferred from the goal: which accelerator an app binds is not
+    knowable from the tree, and a wrong chord is a keystroke sent into whatever
+    had focus. A caller that knows its app passes the Action itself through
+    ``escalate``.
+
+    Rows 2 and 3 gate through the human when Enter would fire something
+    destructive (:data:`DESTRUCTIVE_NAMES`). With no focused default the
+    *screen's* command controls are checked instead, which over-fires in the
+    documented direction: a needless confirmation costs a second.
+    """
+    els = list(as_elements(candidates))
+    by_id = {el.id: el for el in els}
+    focused = next((el for el in els if el.focused), None)
+    named = by_id.get(target) if target and target != "none" else None
+    dialog = _dialog_present(snapshot, els)
+    goal_text = str(goal or "").casefold()
+
+    if dialog and any(word in goal_text for word in DISMISS_WORDS):
+        return KeyChoice("escape", "dismiss: a dialog is up and `goal` cancels it")
+
+    default = focused if (focused is not None
+                          and focused.role in CONFIRM_ROLES) else None
+    if default is not None:
+        return KeyChoice("enter", "default: focused %s %r" % (default.role,
+                                                              default.name),
+                         is_destructive_name(default.name))
+    if dialog:
+        risky = any(is_destructive_name(el.name) for el in els
+                    if el.role in CONFIRM_ROLES)
+        return KeyChoice("enter", "dialog: no focused default, Enter takes its",
+                         risky)
+
+    menu = named if named is not None else focused
+    if menu is not None and menu.role in MENU_ROLES:
+        return KeyChoice("alt", "menu: %s %r is reached from the menu bar"
+                         % (menu.role, menu.name))
+    return KeyChoice(None, "no_chord")
+
+
+def _dialog_present(snapshot: Any, candidates: Sequence[UIElement]) -> bool:
+    """Is a modal dialog on top?
+
+    The ``dialog`` node itself is stripped by :func:`jevskill.cu.reduce.interactive`
+    — it is not clickable — so the *unreduced* snapshot is the only place the
+    answer lives. :mod:`jevskill.cu.observe` promotes a window whose ``IsDialog``
+    property is true to that role, which is why one role check is enough.
+    """
+    elements = getattr(snapshot, "elements", None)
+    if elements:
+        return any(el.role == "dialog" for el in as_elements(elements))
+    return any(el.role == "dialog" for el in candidates)
 
 
 @dataclass
@@ -420,8 +551,15 @@ def execute(action: Action, snapshot: Snapshot, *, backend: Any = None,
 
     backend = backend if backend is not None else UiaBackend()
     handle = snapshot.handle(action.target) if action.target else None
-    if method not in ("sendinput_key", "wait", "noop") and handle is None:
+    # ``click_point`` is the one mechanism that does **not** use the handle: it
+    # sends a synthetic click at ``element.center``. Refusing it for a missing
+    # handle made the fallback's fallback — the path for a control that
+    # advertises no pattern at all, which is also the one most likely to have no
+    # live pointer — unreachable.
+    if method not in ("sendinput_key", "wait", "noop", "click_point") and handle is None:
         return done(False, method, "no live handle for %r" % action.target)
+    if method == "click_point" and element is None:
+        return done(False, method, "click without a target: nothing to click at")
 
     try:
         if op == "wait":
@@ -477,7 +615,7 @@ def settle(observe: Callable[[], Snapshot], prev_hash: Optional[str], *,
     """Poll the tree hash until it differs from ``prev_hash`` or time runs out.
 
     This is the code-side ``stuck`` detector, and it is the whole reason the
-    bundle has no ``stuck`` question: asked, that question returned 0.31-0.60 on
+    bundle has no ``stuck`` question: asked, that question returned 0.29-0.60 on
     screens that had plainly changed (act.md §9, prompting.md §11). Hashing two
     trees answers it exactly, in microseconds.
 
@@ -488,35 +626,68 @@ def settle(observe: Callable[[], Snapshot], prev_hash: Optional[str], *,
     A fixed ``sleep`` after each action is the anti-pattern this replaces: it is
     how a 350 ms step becomes a 1 s step. The first poll happens immediately, so
     an action whose effect is already visible costs one hash.
+
+    **The deadline bounds the whole call, not the polls inside it.** An
+    observation is not free — a live ``snapshot()`` walk is 40-400 ms — so
+    starting one that cannot finish before the deadline overshoots it by
+    however long the walk takes: measured, ``timeout_ms=800`` with a 400 ms
+    observer returned after **841 ms**. The loop below therefore stops when the
+    budget left is shorter than the last observation took, and reports the time
+    it actually spent.
     """
     hash_of = key or (lambda snap: tree_hash(snap.elements))
-    deadline = time.perf_counter() + max(0.0, timeout_ms) / 1000.0
     started = time.perf_counter()
+    deadline = started + max(0.0, timeout_ms) / 1000.0
+    poll_s = max(0.0, poll_ms) / 1000.0
+    mark = time.perf_counter()
     snapshot = observe()
+    observe_s = time.perf_counter() - mark
     while True:
         current = hash_of(snapshot)
         if prev_hash is None or current != prev_hash:
             return snapshot, True, (time.perf_counter() - started) * 1000.0
-        if time.perf_counter() >= deadline:
-            return snapshot, False, (time.perf_counter() - started) * 1000.0
-        sleep(max(0.0, poll_ms) / 1000.0)
+        now = time.perf_counter()
+        if now >= deadline or (now + poll_s + observe_s) > deadline:
+            return snapshot, False, (now - started) * 1000.0
+        sleep(poll_s)
+        mark = time.perf_counter()
         snapshot = observe()
+        observe_s = time.perf_counter() - mark
 
 
 def settle_cap_for(element: Optional[UIElement]) -> float:
-    """act.md §4's cap for this control: 200 ms for a combobox, 50 ms otherwise.
+    """``jev-ultrafast``'s published cap for this control: 200 ms for a
+    combobox, 50 ms otherwise.
 
-    Used by callers that want the published cap rather than :func:`settle`'s
-    more forgiving default; the difference is only paid when nothing changes.
+    A **floor** under a caller's ceiling, never a shortener —
+    :func:`jevskill.cu.loop.run` raises its settle timeout to this when the
+    target is a combobox whose suggestions populate asynchronously, and ignores
+    it otherwise. See :data:`SETTLE_CAP_MS` for why the reverse (capping a hash
+    poll at 50 ms) would classify a slow repaint as ``unchanged`` and stop every
+    real run on the stall rule.
     """
     if element is not None and element.role == "combobox":
         return SETTLE_CAP_COMBOBOX_MS
     return SETTLE_CAP_MS
 
 
+def settle_ignore_for(op: Optional[str]) -> Tuple[str, ...]:
+    """Which fields :func:`settle` must ignore after ``op``.
+
+    :data:`SETTLE_IGNORE_BY_OP` for a ``type`` or a ``select``,
+    :data:`jevskill.cu.hashing.DEFAULT_IGNORE` for everything else. The caller
+    must hash the *before* tree with the same tuple — comparing a ``value``-
+    sensitive hash against a ``value``-blind one reports a change on every step,
+    which is the opposite bug.
+    """
+    return SETTLE_IGNORE_BY_OP.get(str(op or ""), DEFAULT_IGNORE)
+
+
 __all__ = [
-    "Action", "ActResult", "DESTRUCTIVE_NAMES", "SETTLE_CAP_COMBOBOX_MS",
-    "SETTLE_CAP_MS", "SETTLE_POLL_MS", "SETTLE_TIMEOUT_MS", "UiaBackend",
-    "VK_CODES", "execute", "is_destructive_name", "parse_chord", "risky_ids",
-    "settle", "settle_cap_for", "vk_code",
+    "Action", "ActResult", "CONFIRM_ROLES", "DESTRUCTIVE_NAMES",
+    "DISMISS_WORDS", "KeyChoice", "MENU_ROLES", "SETTLE_CAP_COMBOBOX_MS",
+    "SETTLE_CAP_MS", "SETTLE_IGNORE_BY_OP", "SETTLE_POLL_MS",
+    "SETTLE_TIMEOUT_MS", "UiaBackend", "VK_CODES", "chord_for", "execute",
+    "is_destructive_name", "parse_chord", "risky_ids", "settle",
+    "settle_cap_for", "settle_ignore_for", "vk_code",
 ]

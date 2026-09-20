@@ -170,6 +170,65 @@ class TestPersistence:
         assert MacroEntry.from_dict(json.loads(json.dumps(entry.to_dict()))) == entry
 
 
+class TestTwoWritersOnOneFile:
+    """``DEFAULT_PATH`` is machine-wide, so this is the normal case.
+
+    The old write used one fixed ``cu_macros.tmp`` beside the store and dumped
+    the whole in-memory map over it, so the later ``os.replace`` discarded
+    everything the other process had learned.
+    """
+
+    def test_neither_writer_discards_the_other(self, tmp_path):
+        path = tmp_path / "cu_macros.json"
+        one, two = MacroCache(path), MacroCache(path)
+        one.store("goal one", screen(), "changed", "e1", "click")
+        two.store("goal two", screen("Open"), "changed", "e1", "click")
+
+        fresh = MacroCache(path, autosave=False)
+        assert len(fresh) == 2
+        assert fresh.lookup("goal one", screen(), "changed") == ("e1", "click")
+        assert fresh.lookup("goal two", screen("Open"), "changed") == ("e1", "click")
+
+    def test_the_merge_does_not_resurrect_an_invalidated_entry(self, tmp_path):
+        """An invalidated macro is wrong, not stale. Reading it back is a bug."""
+        path = tmp_path / "cu_macros.json"
+        one, two = MacroCache(path), MacroCache(path)
+        one.store("goal one", screen(), "changed", "e1", "click")
+        two.load()                                   # two now holds one's entry
+        two.invalidate("goal one", screen(), "changed")
+        assert MacroCache(path, autosave=False).lookup(
+            "goal one", screen(), "changed") is None
+
+    def test_clear_survives_the_merge_too(self, tmp_path):
+        path = tmp_path / "cu_macros.json"
+        one = MacroCache(path)
+        one.store("goal one", screen(), "changed", "e1", "click")
+        one.clear()
+        assert len(MacroCache(path, autosave=False)) == 0
+
+    def test_the_newer_entry_wins_a_key_both_hold(self, tmp_path):
+        path = tmp_path / "cu_macros.json"
+        one, two = MacroCache(path), MacroCache(path)
+        one.store(GOAL, screen(), "changed", "e1", "click")
+        two.store(GOAL, screen(), "changed", "e2", "click")
+        assert MacroCache(path, autosave=False).lookup(
+            GOAL, screen(), "changed") == ("e2", "click")
+
+    def test_no_temporary_file_is_left_behind(self, tmp_path):
+        path = tmp_path / "cu_macros.json"
+        MacroCache(path).store(GOAL, screen(), "changed", "e1", "click")
+        assert [p.name for p in tmp_path.iterdir()] == ["cu_macros.json"]
+
+    def test_one_unreadable_row_does_not_lose_the_others(self, tmp_path):
+        path = tmp_path / "cu_macros.json"
+        cache = MacroCache(path)
+        key = cache.store(GOAL, screen(), "changed", "e1", "click")
+        data = json.loads(path.read_text(encoding="utf-8"))
+        data["entries"]["junk"] = {"identity": 7}
+        path.write_text(json.dumps(data), encoding="utf-8")
+        assert MacroCache(path, autosave=False).entries.keys() >= {key}
+
+
 class TestEviction:
     def test_the_least_recently_used_entry_goes_first(self, tmp_path):
         cache = MacroCache(tmp_path / "m.json", autosave=False, max_entries=2)

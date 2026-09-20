@@ -19,11 +19,13 @@ import sys
 
 import pytest
 
+from jevskill.cu import act as act_mod
 from jevskill.cu.act import (DESTRUCTIVE_NAMES, SETTLE_CAP_COMBOBOX_MS,
                              SETTLE_CAP_MS, VK_CODES, Action, ActResult,
-                             execute, is_destructive_name, parse_chord,
-                             risky_ids, settle, settle_cap_for, vk_code)
-from jevskill.cu.hashing import tree_hash
+                             chord_for, execute, is_destructive_name,
+                             parse_chord, risky_ids, settle, settle_cap_for,
+                             settle_ignore_for, vk_code)
+from jevskill.cu.hashing import DEFAULT_IGNORE, tree_hash
 from jevskill.cu.types import Snapshot, UIElement
 
 
@@ -176,6 +178,24 @@ class TestExecute:
         result = execute(Action(op="click", target="e1"), snapshot, backend=Recorder())
         assert not result.ok and "no live handle" in result.error
 
+    def test_click_point_runs_without_a_handle_because_it_never_uses_one(self):
+        """The fallback's fallback was refused for a pointer it does not read.
+
+        ``e6`` advertises no pattern, so the only way to press it is a
+        synthetic click at ``element.center`` — and a control with no patterns
+        is also the one most likely to have no live handle.
+        """
+        snapshot = window()
+        snapshot._handles.pop("e6")
+        backend = Recorder()
+        result = execute(Action(op="click", target="e6"), snapshot, backend=backend)
+        assert result.ok and result.method == "click_point"
+        assert backend.calls == [("click_point", (320, 20), {})]
+
+    def test_a_click_with_no_target_at_all_is_still_refused(self):
+        result = execute(Action(op="click"), window(), backend=Recorder())
+        assert not result.ok and "nothing to click at" in result.error
+
     def test_a_com_failure_is_reported_with_its_type(self):
         result = execute(Action(op="click", target="e1"), window(),
                          backend=Recorder(fail_on={"invoke"}))
@@ -251,6 +271,137 @@ class TestSettle:
         combo = UIElement(id="e1", role="combobox", name="Type")
         assert settle_cap_for(combo) == SETTLE_CAP_COMBOBOX_MS == 200.0
         assert settle_cap_for(None) == SETTLE_CAP_MS == 50.0
+
+    def test_it_does_not_start_an_observation_it_cannot_finish(self):
+        """The deadline bounds the call, not the polls inside it.
+
+        Measured before this: ``timeout_ms=800`` with a 400 ms observer
+        returned after **841 ms**, because the loop checked the clock and then
+        began a walk that could not land before it.
+        """
+        clock = [0.0]
+        before = window()
+
+        def observe():
+            clock[0] += 0.400              # a 400 ms accessibility walk
+            return before
+
+        monkey = pytest.MonkeyPatch()
+        monkey.setattr(act_mod.time, "perf_counter", lambda: clock[0])
+        try:
+            _, changed, waited = settle(observe, tree_hash(before.elements),
+                                        timeout_ms=800, poll_ms=40,
+                                        sleep=lambda s: clock.__setitem__(0, clock[0] + s))
+        finally:
+            monkey.undo()
+        assert not changed
+        assert waited <= 800.0, "overshot its own ceiling by %.0f ms" % (waited - 800)
+
+    def test_it_still_polls_more_than_once_when_the_budget_allows(self):
+        """The guard must not turn the poll loop into a single observation."""
+        clock, seen = [0.0], []
+        before = window()
+
+        def observe():
+            clock[0] += 0.010
+            seen.append(1)
+            return before
+
+        monkey = pytest.MonkeyPatch()
+        monkey.setattr(act_mod.time, "perf_counter", lambda: clock[0])
+        try:
+            settle(observe, tree_hash(before.elements), timeout_ms=800, poll_ms=40,
+                   sleep=lambda s: clock.__setitem__(0, clock[0] + s))
+        finally:
+            monkey.undo()
+        assert len(seen) > 10
+
+
+class TestSettleIgnore:
+    """A ``type``'s whole effect is a new ``value``, which the default drops."""
+
+    def test_type_and_select_keep_the_field_they_change(self):
+        assert settle_ignore_for("type") == ("bbox", "focused")
+        assert settle_ignore_for("select") == ("bbox", "focused")
+
+    def test_everything_else_settles_on_the_default(self):
+        for op in ("click", "key", "scroll_down", "wait", None, ""):
+            assert settle_ignore_for(op) == DEFAULT_IGNORE
+
+    def test_the_two_tuples_actually_separate_a_typed_value(self):
+        empty = [UIElement(id="e1", role="edit", name="File name",
+                           patterns=("value",), value="")]
+        typed = [UIElement(id="e1", role="edit", name="File name",
+                           patterns=("value",), value="draft.txt")]
+        assert tree_hash(empty) == tree_hash(typed)          # the default: blind
+        assert (tree_hash(empty, ignore=settle_ignore_for("type"))
+                != tree_hash(typed, ignore=settle_ignore_for("type")))
+
+
+class TestChordFor:
+    """act.md §2 gives the model one `key` option; this is the other half."""
+
+    def button(self, name="OK", focused=True):
+        return UIElement(id="e1", role="button", name=name, focused=focused,
+                         bbox=(10, 10, 60, 30), patterns=("invoke",))
+
+    def dialog_window(self, elements):
+        return window(list(elements) + [
+            UIElement(id="d0", role="dialog", name="Save changes?")])
+
+    def test_a_focused_default_button_is_enter(self):
+        choice = chord_for("Save the document", [self.button()])
+        assert choice.key == "enter" and not choice.requires_confirm
+
+    def test_a_dialog_with_no_focused_default_is_still_enter(self):
+        els = [self.button(focused=False)]
+        choice = chord_for("Save the document", els,
+                           snapshot=self.dialog_window(els))
+        assert choice.key == "enter"
+
+    def test_a_dialog_the_goal_wants_dismissed_is_escape(self):
+        els = [self.button(focused=True)]
+        choice = chord_for("Cancel the save dialog", els,
+                           snapshot=self.dialog_window(els))
+        assert choice.key == "escape"
+
+    def test_a_menu_target_is_alt(self):
+        menu = UIElement(id="e2", role="menuitem", name="File",
+                         bbox=(0, 0, 40, 20), patterns=("invoke",))
+        assert chord_for("Open a file", [menu], target="e2").key == "alt"
+
+    def test_a_focused_menu_with_no_target_is_alt_too(self):
+        menu = UIElement(id="e2", role="menubar", name="Menu", focused=True)
+        assert chord_for("Open a file", [menu]).key == "alt"
+
+    def test_an_ordinary_screen_escalates_rather_than_guessing_ctrl_s(self):
+        """Which accelerator an app binds is not in the tree; guessing sends a
+        keystroke into whatever had focus."""
+        body = UIElement(id="e1", role="document", name="body", focused=True,
+                         patterns=("value",))
+        choice = chord_for("Save the current document", [body])
+        assert choice.key is None and choice.why == "no_chord"
+
+    def test_enter_on_a_destructive_default_asks_the_human(self):
+        choice = chord_for("Confirm", [self.button("Delete all documents")])
+        assert choice.key == "enter" and choice.requires_confirm
+
+    def test_a_dialog_holding_a_destructive_control_asks_too(self):
+        """With no focused default, what Enter fires is unknown — so it gates.
+
+        Over-fires in the documented direction: a needless confirmation costs a
+        second, a missed one costs the data.
+        """
+        els = [self.button("Save", focused=False),
+               UIElement(id="e2", role="button", name="Delete all documents",
+                         bbox=(90, 10, 120, 30), patterns=("invoke",))]
+        choice = chord_for("Save the document", els,
+                           snapshot=self.dialog_window(els))
+        assert choice.key == "enter" and choice.requires_confirm
+
+    def test_every_chord_it_can_return_is_a_key_execute_can_send(self):
+        for key in ("enter", "escape", "alt"):
+            assert parse_chord(key) == [key]
 
 
 class TestImportContract:
