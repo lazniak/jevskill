@@ -104,7 +104,9 @@ def run(goal: str, opts: Optional[RunOptions] = None, *, task_id: str = "",
         macros: Any = None, backend: Any = None,
         thresholds: Mapping[str, float] = THRESHOLDS,
         cap: int = CASCADE_CAP,
-        settle_ms: float = act_module.SETTLE_TIMEOUT_MS) -> RunResult:
+        settle_ms: float = act_module.SETTLE_TIMEOUT_MS,
+        speculation: Any = None, consistency: Any = None,
+        beam_k: int = 1) -> RunResult:
     """Drive one goal to a stop, and record every step on the way.
 
     ``observe`` returns a fresh :class:`jevskill.cu.types.Snapshot`; ``execute``
@@ -118,6 +120,21 @@ def run(goal: str, opts: Optional[RunOptions] = None, *, task_id: str = "",
     hash, which can be a half-painted frame; deciding on it would trade a 40-400 ms
     walk for a class of bug that only appears on a slow machine. ``stages_ms``
     reports both walks separately so the cost is visible rather than argued.
+
+    **Phase 5 hooks** (`skills/jev/references/speculate.md`). All three default
+    to off, and with all three left alone this function's behaviour is what it
+    was before they existed:
+
+    ``speculation``  a :class:`jevskill.cu.speculate.Speculator`. Predicts the
+                     next step while `settle` is idle; a prediction that
+                     survives matching, the guards and `validate()` replaces
+                     the next `decide` call and records ``decided_by =
+                     "speculation"``.
+    ``consistency``  a callable — :class:`jevskill.cu.consistency.ConsistencyGate`
+                     — asked about the chosen target when the destructive
+                     evidence is equivocal. It can only *add* a `confirm`.
+    ``beam_k``       passed to :func:`jevskill.cu.decide.decide_cascade`. ``1``
+                     is the greedy cascade.
     """
     options = opts or RunOptions()
     if observe is None:
@@ -151,7 +168,8 @@ def run(goal: str, opts: Optional[RunOptions] = None, *, task_id: str = "",
                          verify=verify, confirm_gate=confirm_gate,
                          write_text=write_text, escalate=escalate,
                          macros=macros, thresholds=thresholds, cap=cap,
-                         settle_ms=settle_ms)
+                         settle_ms=settle_ms, speculation=speculation,
+                         consistency=consistency, beam_k=beam_k)
             result.steps.append(step.record)
             _record_ledger(ledger, goal, result, step)
             if on_step is not None:
@@ -166,6 +184,17 @@ def run(goal: str, opts: Optional[RunOptions] = None, *, task_id: str = "",
     except Exception as exc:  # a stage raised: the run ends, the records stay
         result.stop_reason = "error"
         result.error = "%s: %s" % (type(exc).__name__, exc)
+    if speculation is not None:
+        # Phase 5 hook: a prediction abandoned by the last step was still sent
+        # and still billed. Recording it on the run rather than dropping it is
+        # the difference between a measured overhead and a flattering one.
+        try:
+            speculation.close()
+            tokens, cost = speculation.drain_spend()
+            result.tokens_in += tokens
+            result.cost_usd += cost
+        except Exception:
+            pass
     result.wall_ms = (time.perf_counter() - started) * 1000.0
     return result
 
@@ -214,7 +243,8 @@ class _StepOutcome:
 
 def _step(index: int, state: _LoopState, result: RunResult, options: RunOptions,
           started: float, *, observe, executor, client, verify, confirm_gate,
-          write_text, escalate, macros, thresholds, cap, settle_ms) -> _StepOutcome:
+          write_text, escalate, macros, thresholds, cap, settle_ms,
+          speculation=None, consistency=None, beam_k: int = 1) -> _StepOutcome:
     """One iteration. Long, because the step *is* the sequence of its checks."""
     stages: Dict[str, float] = {}
     goal = state.goal
@@ -262,10 +292,27 @@ def _step(index: int, state: _LoopState, result: RunResult, options: RunOptions,
     macro_hit = None
     if macros is not None:
         macro_hit = macros.lookup(goal, cands, keyed_outcome)
+    # Phase 5 hook (speculate.py): a prediction made while the *previous* step
+    # was settling. The macro cache still wins — a macro replay costs nothing at
+    # all, and a speculation has already been paid for either way.
+    spec_hit = None
+    if macro_hit is None and speculation is not None:
+        try:
+            spec_hit = speculation.consume(goal, cands, risky_ids=risky,
+                                           thresholds=thresholds)
+        except Exception as exc:
+            record.note = "speculation raised: %s" % type(exc).__name__
     if macro_hit is not None:
         decision = Decision(target=macro_hit[0], op=macro_hit[1], source="macro",
                             note="macro replay")
         record.decided_by = "macro"
+    elif spec_hit is not None:
+        decision = spec_hit.decision
+        record.decided_by = "speculation"
+        record.tokens_in = decision.tokens_in
+        record.cost_usd = decision.cost_usd
+        result.tokens_in += decision.tokens_in
+        result.cost_usd += decision.cost_usd
     else:
         if client is None:
             return finish("error", "no client and no macro for step %d" % index)
@@ -274,7 +321,7 @@ def _step(index: int, state: _LoopState, result: RunResult, options: RunOptions,
             # second, which keeps both calls inside the measured option range.
             decision = decide_cascade(client, goal, snapshot.elements,
                                       state.last_action, cap=cap, risky_ids=risky,
-                                      snapshot=snapshot)
+                                      snapshot=snapshot, beam_k=beam_k)
             if decision.scope_ids:
                 # Every later check runs against what the Choice actually ranged
                 # over, which after a cascade is one region, not the screen.
@@ -293,6 +340,16 @@ def _step(index: int, state: _LoopState, result: RunResult, options: RunOptions,
         record.cost_usd = decision.cost_usd
         bookkeeping["questions"] = decision.questions
         bookkeeping["state_tokens"] = decision.state_tokens
+    if speculation is not None:
+        # Phase 5: predictions nobody used were still sent and still billed.
+        # They land on whichever step is running when they do — the attribution
+        # is rough, the total is exact, and the total is what any "+N% tokens"
+        # claim about speculation rests on.
+        wasted_tokens, wasted_cost = speculation.drain_spend()
+        record.tokens_in += wasted_tokens
+        record.cost_usd += wasted_cost
+        result.tokens_in += wasted_tokens
+        result.cost_usd += wasted_cost
     stages["decide"] = (time.perf_counter() - mark) * 1000.0
 
     record.target, record.op = decision.target, decision.op
@@ -396,6 +453,26 @@ def _step(index: int, state: _LoopState, result: RunResult, options: RunOptions,
         action.op = "type"
         record.op = "type"
 
+    # Phase 5 hook (consistency.py): three formulations in one call, consulted
+    # when the destructive evidence is equivocal — the name list said nothing
+    # and the single Noul landed between "probably fine" and the 0.85 gate,
+    # which is exactly where act.md §9 measured 0.78 for "Delete all documents".
+    # It can only *add* a confirmation; `requires_confirm` is never cleared.
+    if consistency is not None and element is not None and not verdict.requires_confirm:
+        single = decision.destructive_for(action.target)
+        gate = float(thresholds.get("destructive_noul", THRESHOLDS["destructive_noul"]))
+        if 0.5 <= single < gate:
+            try:
+                agreed = consistency(goal, cands, element,
+                                     last_action=state.last_action, snapshot=snapshot)
+            except Exception as exc:
+                agreed = None
+                record.note = "consistency raised: %s" % type(exc).__name__
+            if agreed is not None and getattr(agreed, "destructive", False):
+                verdict.requires_confirm = True
+                record.note = (record.note + "; consistency %d/3 raised confirm"
+                               % agreed.agree).strip("; ")
+
     # ---- the destructive gate: the name list first, the model second ------
     if verdict.requires_confirm:
         result.destructive_gates += 1
@@ -428,6 +505,18 @@ def _step(index: int, state: _LoopState, result: RunResult, options: RunOptions,
                              options, "act_failed")
         return finish("", note)
     state.act_failures = 0
+
+    # Phase 5 hook (speculate.py): the settle below is 40-800 ms of polling a
+    # hash. Start the prediction *now*, on a thread, so it runs inside that idle
+    # rather than after it; `consume` at the top of the next step abandons it if
+    # settle won the race.
+    if speculation is not None:
+        try:
+            speculation.start(goal, cands, action, snapshot=snapshot,
+                              asked_over=current_hash)
+        except Exception as exc:
+            record.note = (record.note + "; speculation start failed: %s"
+                           % type(exc).__name__).strip("; ")
 
     # ---- settle: the code-side `stuck` detector ---------------------------
     mark = time.perf_counter()

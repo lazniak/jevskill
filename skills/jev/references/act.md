@@ -531,3 +531,20 @@ docstring says so.
 | A fixed `sleep` after each action | settle on the UIA event or the hash, capped at 50 ms (200 ms for a combobox) |
 | Cascading below 60 candidates | one call is ~300 ms; two are ~600 ms for no measured gain |
 | A loop with no step or time budget | hard caps, stop on two `unchanged`, count escalations |
+
+---
+
+## 11. Phase 5 hooks — implemented, measured, off
+
+Three optional hooks on `loop.run()`, all defaulting to off so the loop above is
+unchanged when they are not passed. `references/speculate.md` has the numbers.
+
+| Hook | Module | What it does | Verdict |
+|---|---|---|---|
+| `speculation=Speculator(jev)` | `speculate.py` | one call during `settle` predicts the next step; a surviving prediction replaces the next `decide` and records `decided_by="speculation"` | **off** — 1/8 predictions saved a call, +47.9 % tokens, and 0/8 finished inside the 50 ms settle cap |
+| `consistency=ConsistencyGate(jev)` | `consistency.py` | asks the destructive question three ways in one call when the single Noul is equivocal; can only *add* a `confirm` | **off** — the negation breaks `P(x)=1−P(¬x)` on 24/28 controls and the two phrasings are r=0.90 correlated |
+| `beam_k=2` | `beam.py` | `decide_cascade` keeps the runner-up region and scores by `P(region)×P(element)` | **off** (`beam_k=1`) — 0/12 changed the chosen target, at +7.3 % to +15.1 % tokens |
+
+A speculation hit skips the bundle, hence the safety Nouls: `type`, `done`,
+`blocked` and any target on `DESTRUCTIVE_NAMES` fall through to a real `decide`,
+and matching is on `(role, name)`, never on a positional id.

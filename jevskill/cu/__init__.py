@@ -49,22 +49,33 @@ from .types import (CONTROL_TYPES, INTERACTIVE_ROLES, PATTERN_KEYS,
                     REGION_ROLES, Region, Snapshot, UIElement)
 
 __all__ = [
-    "CONTROL_TYPES", "DESTRUCTIVE_NAMES", "INTERACTIVE_ROLES", "OPS",
-    "PATTERN_KEYS", "REGION_ROLES", "THRESHOLDS", "Action", "ActResult",
-    "Decision", "MacroCache", "Region", "RunOptions", "RunResult", "Snapshot",
+    "BEAM_MARGIN", "CONTROL_TYPES", "DESTRUCTIVE_NAMES", "INTERACTIVE_ROLES",
+    "OPS", "PATTERN_KEYS", "REGION_ROLES", "THRESHOLDS", "Action", "ActResult",
+    "Consistency", "ConsistencyGate", "Decision", "MacroCache", "Region",
+    "RunOptions", "RunResult", "Snapshot", "Speculation", "Speculator",
     "StepRecord", "TreeDiff", "UIElement", "Verdict", "build_bundle",
-    "build_state", "candidates", "decide_cascade", "decide_step", "dedupe",
-    "diff", "execute", "foreground_hwnd", "interactive", "is_destructive_name",
-    "normalise", "prioritise", "region_state", "regions", "run_loop", "settle",
-    "snapshot", "state_tokens", "to_state", "tree_hash", "validate",
-    "visible_enabled",
+    "build_state", "candidates", "decide_beam", "decide_cascade", "decide_step",
+    "dedupe", "diff", "execute", "foreground_hwnd", "interactive",
+    "is_destructive_name", "normalise", "prioritise", "region_state", "regions",
+    "run_loop", "settle", "snapshot", "state_tokens", "to_state", "top_regions",
+    "tree_hash", "validate", "visible_enabled",
 ]
 
-_LAZY = {"snapshot", "to_state", "state_tokens", "foreground_hwnd"}
+_LAZY = {"snapshot": "observe", "to_state": "observe",
+         "state_tokens": "observe", "foreground_hwnd": "observe",
+         # Phase 5 (plan items 5.1-5.3). All three ship off by default and
+         # nothing in the eager graph imports them — `decide_cascade` reaches
+         # for `beam` inside the `beam_k > 1` branch, and the other two are
+         # injected into `run()` or not at all. Importing them here anyway cost
+         # 7 ms of the package's ~106 ms import for a feature most callers never
+         # switch on, which is the same trade `observe` is deferred for.
+         "Speculation": "speculate", "Speculator": "speculate",
+         "Consistency": "consistency", "ConsistencyGate": "consistency",
+         "BEAM_MARGIN": "beam", "decide_beam": "beam", "top_regions": "beam"}
 
 
 def __getattr__(name: str) -> Any:
-    """Defer the Windows-only half until it is actually called (PEP 562).
+    """Defer the Windows-only half and the Phase 5 hooks (PEP 562).
 
     Importing :mod:`jevskill.cu.observe` is itself harmless — it only touches
     ctypes and comtypes inside functions — but going through ``__getattr__``
@@ -79,9 +90,9 @@ def __getattr__(name: str) -> Any:
     ``tests/test_cu_observe.py::TestImportContract`` proves it in a subprocess.
     """
     if name in _LAZY:
-        from . import observe
+        from importlib import import_module
 
-        return getattr(observe, name)
+        return getattr(import_module("." + _LAZY[name], __name__), name)
     raise AttributeError("module %r has no attribute %r" % (__name__, name))
 
 

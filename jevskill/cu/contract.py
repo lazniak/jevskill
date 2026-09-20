@@ -61,6 +61,15 @@ STAGES: Tuple[str, ...] = ("observe", "reduce", "decide", "validate", "act", "se
 #: decisions are counted separately); ``code`` is a deterministic override (the
 #: destructive name list, a liveness failure, a forced stop); ``escalation`` is the
 #: step handed to a VLM or a human (plan item 4.8).
+#:
+#: A sixth value exists in the code and deliberately **not** in this tuple yet:
+#: ``speculation`` — a step filled from a prediction made during the previous
+#: step's settle (plan item 5.1, :mod:`jevskill.cu.speculate`). It ships off by
+#: default because the measurement in `references/speculate.md` did not earn it
+#: one, and adding it here while no shipped configuration can produce it would
+#: widen the contract `bench/cu_report.py` validates against for nothing. Add it
+#: — here and in ``tests/test_cu_contract.py`` — in the same change that turns
+#: speculation on.
 DECIDED_BY: Tuple[str, ...] = ("jev", "macro", "code", "escalation")
 
 #: How a run ended. ``done`` means the *agent* stopped believing it was finished —
@@ -118,7 +127,8 @@ class StepRecord:
     goal_reached: float = 0.0
     needs_text: float = 0.0
     is_destructive: float = 0.0
-    #: One of :data:`DECIDED_BY`.
+    #: One of :data:`DECIDED_BY`, or ``"speculation"`` when the optional Phase 5
+    #: hook filled the step from a prediction made during the previous settle.
     decided_by: str = ""
     #: Whether an action was actually performed. A validated-away step (stale
     #: element, illegal op for the role) is ``False`` and still costs a step.
