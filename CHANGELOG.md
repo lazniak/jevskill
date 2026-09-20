@@ -8,91 +8,97 @@ Because this project's value is its *measurements*, entries that change publishe
 numbers say so explicitly, and superseded figures are named rather than quietly
 replaced.
 
-## [0.7.0] — 2026-09-21
+## [Unreleased]
 
-Safety and contract work, prompted by reading three competing Jev skills
-(`oomol-lab/skills`, `wuyoscar/jev-skill`, `reachjalil/jevlogs`). Two of them were
-doing something this skill was not, and both were right.
+### Planned
+- A genuinely ambiguous case for the `shortlist` pattern, so narrowing can be
+  demonstrated rather than only unit-tested.
+- Block-level REDUCE, so a gate can keep a parent key together with its values.
+  The `yaml_drift` loss in the A/B suite is exactly this gap.
+- Per-repository ledger merging (`jevskill stats --merge`).
+- Live verification of the vendor endpoint. It is verified by 51 unit tests plus
+  endpoint existence, but not by a real call — no TypeSafe key was available.
+- A `doctor` contract probe and further providers (Cloudflare Workers AI, Vercel AI
+  Gateway). Both need a schema or an account to verify against, so neither is
+  shipped as a guess — see the note in 0.9.0.
 
-### Changed — **breaking-ish: redaction is now on by default**
+## [0.9.0] — 2026-09-21
 
-`ask`, `batch` and the bundled `jev_query.py` now scrub credential-shaped strings
-from the state before it is sent, and report what they scrubbed:
+One more measurable token saving, and the distribution work this repo was worst at.
 
+### Added — `batch --dedupe`: identical items, one answer, every copy
+
+Log files repeat themselves. `--dedupe` sends identical items once and gives every
+copy the answer their original received. Measured live on 8 lines of which 3 were
+unique:
+
+| | items decided | input tokens |
+|---|---|---|
+| plain | 8 | 1,029 |
+| `--dedupe` | 8 | **545** (−47%) |
+
+All 8 still come back decided — this is the opposite of `--skip-regex`: nothing is
+dropped, it just is not paid for twice. Items are compared as **canonical JSON**,
+not `str()`, so two dicts with the same content in a different key order count as
+the same item; and a representative that produced no outcome never donates one, so
+a failed item cannot silently inherit a neighbour's answer.
+
+Documented caveat: do not use it when a question depends on an item's **position**
+("does `item` differ from the previous line?"). Identical text getting an identical
+judgement is precisely the assumption that breaks there.
+
+### Added — `docs/install.md`, an install guide written for an agent
+
+The pattern is borrowed from a competing skill that distributes better than this
+one: instead of asking a human to follow install steps, hand the agent a document
+to *read and execute*. It covers which agent you are, checking the environment,
+finding a key **without printing it**, a free offline verification step, what to
+report back, and a symptom → cause → fix table for the six ways this actually fails.
+
+The README now leads with the prompt:
+
+```text
+Install jevskill for my current agent. Read and follow
+https://raw.githubusercontent.com/lazniak/jevskill/main/docs/install.md
 ```
-$ jevskill ask --state "ERROR auth failed; key sk-or-v1-0123…; password=hunter2"
-  redacted: openrouter_key, password_param
-```
 
-This is a **behaviour change**: the state that leaves the machine is no longer
-byte-identical to the state you passed. It is also the right default — this skill
-sends your logs, diffs and tickets to a third party by design, and a decision
-rarely needs live credentials. `--no-redact` restores the old behaviour, and is
-tested.
+### Fixed — a stale published number in the README badge
 
-Patterns cover private keys, OpenRouter/`sk-`/AWS/GitHub/Slack tokens, JWTs,
-`Bearer` headers and `password=`/`token=`-style parameters. Email addresses are
-**not** redacted by default (`--redact-emails` opts in) because for triage the
-address is often the signal. What fired is recorded under `"redactions"` in the
-output and in the ledger row, so a redacted run stays interpretable.
+The tests badge said **344 passing**. It is 474. A badge is a published number and
+this one had been wrong for five releases, which is exactly what the repo's "every
+published number must be reproducible" rule exists to prevent. The count is now
+taken from `pytest --collect-only` before each release.
 
-This is not a general PII policy, and the docs say so.
+### Fixed — the changelog's section order
 
-### Added — exit code 2 means "the model hesitated"
+`## [Unreleased]` had drifted down between 0.8.0 and 0.6.2, and 0.7.0 sat above
+0.8.0. Both were introduced by anchoring each new release entry on the *first*
+`## [Unreleased]` heading, which moved the heading instead of leaving it at the top.
+Keep a Changelog wants Unreleased first and releases newest-first; it now is.
 
-`ask` and `batch` now return the review contract: `0` decided, `2` at least one
-answer needs review, `3` over budget, `1` error. `2` is deliberately distinct from
-`1` so a harness can tell *"not confident enough to automate"* from *"the call
-failed"* without parsing output. `--needs-review` (per answer) is reported in JSON
-and in the ledger.
+### Note — a provider was deliberately **not** added
 
-The rules: a `noul` inside `(1-below, below)`, a `choice` whose top probability is
-below the floor **or** whose top-two margin is under `--review-margin`, a `score`
-whose reported confidence is below the floor. Defaults `0.75` / `0.10` are
-documented as **illustrative heuristics, not calibrated guarantees** — tune them
-on held-out data, which is what `outcome` and `stats` exist for.
+Cloudflare Workers AI and Vercel AI Gateway also serve this model, and adding
+Cloudflare was on the list. It is not here, on purpose: there is no account to test
+against, so the provider would have shipped as untested code that a user might hit —
+and the vendor's own endpoint already carries that caveat once. The reasoning and the
+steps for adding a provider are in `AGENTS.md`, so it stays a documented task rather
+than an untested guess.
 
-### Added — keyless choreography in `SKILL.md`
-
-Lifted from `wuyoscar/jev-skill`, which handles the no-key case better than we did:
-the skill now tells the agent to check only the *presence* of a key, ask the user
-A (get a key) or B (judge it yourself) in their language, and wait. Consent is
-per-task, a key appearing later does **not** authorise switching an approved B task
-to A, API errors are not consent to simulate, and simulation must be labelled
-`mode: agent_simulation` / `jev_called: false` with `probability` and `confidence`
-set to `null` rather than invented.
-
-### Added — frontmatter metadata
-
-`allowed-tools: Bash(python:*)`, `metadata.version`, and `metadata.requirements`
-(Python 3.9+ and stdlib only, which endpoints, which key variables, that calls are
-billed, that redaction is on, and the keyless rule). The description now also says
-Jev is **advisory, never an authorization boundary**.
-
-### Changed — `SKILL.md` restructured to stay under 500 lines
-
-It had reached 492 lines with the additions, against a hard 500-line ceiling. The
-command reference moved to the new `references/commands.md`; the confidence-threshold
-method moved to `references/prompting.md`; the failure-mode table was merged into
-the one already in `references/patterns.md`; and §10 is now a "read only the slice
-you need" router. Nothing was dropped — the detail moved, and every pointer is
-checked to resolve. `AGENTS.md`'s claim that the file was "~300" lines was stale and
-is corrected.
-
-### Fixed — stale documentation
-
-`AGENTS.md` said 344 tests (424 now) and "~300 lines" (499 now).
+The same logic deferred the `doctor` contract probe: it needs the provider's models
+schema, which is not documented for either endpoint, so it would have been a parser
+written against a guess.
 
 ### Verified
 
-- 424 tests green, from 361. New: `test_redact.py`, `test_review.py`, plus CLI
-  contract tests, plus drift guards asserting the bundled zero-install script's
-  *copies* of the redaction and review rules still match the package.
-- Live: state containing a real-shaped key and `password=hunter2` went out with both
-  scrubbed and the model still answered (p=0.87); a genuinely borderline item
-  (p=0.36) exited `2` while p=0.10 and p=0.77 exited `0`; tightening the floor
-  flagged an otherwise-confident answer, proving the band is live and not inert.
-- No published number changes.
+- 474 tests green, from 467. New: seven `--dedupe` tests, including the canonical-JSON
+  comparison and the "a failed representative donates nothing" case.
+- Live: 1,029 → 545 tokens on a file with 5 duplicates, with all 8 items returning
+  values and every duplicate agreeing with its original.
+- The README's batch section documents both `--dedupe` and `--skip-regex` with the
+  measured figures above.
+
+No published number changes other than the corrected badge.
 
 ## [0.8.0] — 2026-09-21
 
@@ -192,16 +198,92 @@ no empirical demonstration.
 
 No published number changes.
 
-## [Unreleased]
+## [0.7.0] — 2026-09-21
 
-### Planned
-- A genuinely ambiguous case for the `shortlist` pattern, so narrowing can be
-  demonstrated rather than only unit-tested.
-- Block-level REDUCE, so a gate can keep a parent key together with its values.
-  The `yaml_drift` loss in the A/B suite is exactly this gap.
-- Per-repository ledger merging (`jevskill stats --merge`).
-- Live verification of the vendor endpoint. It is verified by 51 unit tests plus
-  endpoint existence, but not by a real call — no TypeSafe key was available.
+Safety and contract work, prompted by reading three competing Jev skills
+(`oomol-lab/skills`, `wuyoscar/jev-skill`, `reachjalil/jevlogs`). Two of them were
+doing something this skill was not, and both were right.
+
+### Changed — **breaking-ish: redaction is now on by default**
+
+`ask`, `batch` and the bundled `jev_query.py` now scrub credential-shaped strings
+from the state before it is sent, and report what they scrubbed:
+
+```
+$ jevskill ask --state "ERROR auth failed; key sk-or-v1-0123…; password=hunter2"
+  redacted: openrouter_key, password_param
+```
+
+This is a **behaviour change**: the state that leaves the machine is no longer
+byte-identical to the state you passed. It is also the right default — this skill
+sends your logs, diffs and tickets to a third party by design, and a decision
+rarely needs live credentials. `--no-redact` restores the old behaviour, and is
+tested.
+
+Patterns cover private keys, OpenRouter/`sk-`/AWS/GitHub/Slack tokens, JWTs,
+`Bearer` headers and `password=`/`token=`-style parameters. Email addresses are
+**not** redacted by default (`--redact-emails` opts in) because for triage the
+address is often the signal. What fired is recorded under `"redactions"` in the
+output and in the ledger row, so a redacted run stays interpretable.
+
+This is not a general PII policy, and the docs say so.
+
+### Added — exit code 2 means "the model hesitated"
+
+`ask` and `batch` now return the review contract: `0` decided, `2` at least one
+answer needs review, `3` over budget, `1` error. `2` is deliberately distinct from
+`1` so a harness can tell *"not confident enough to automate"* from *"the call
+failed"* without parsing output. `--needs-review` (per answer) is reported in JSON
+and in the ledger.
+
+The rules: a `noul` inside `(1-below, below)`, a `choice` whose top probability is
+below the floor **or** whose top-two margin is under `--review-margin`, a `score`
+whose reported confidence is below the floor. Defaults `0.75` / `0.10` are
+documented as **illustrative heuristics, not calibrated guarantees** — tune them
+on held-out data, which is what `outcome` and `stats` exist for.
+
+### Added — keyless choreography in `SKILL.md`
+
+Lifted from `wuyoscar/jev-skill`, which handles the no-key case better than we did:
+the skill now tells the agent to check only the *presence* of a key, ask the user
+A (get a key) or B (judge it yourself) in their language, and wait. Consent is
+per-task, a key appearing later does **not** authorise switching an approved B task
+to A, API errors are not consent to simulate, and simulation must be labelled
+`mode: agent_simulation` / `jev_called: false` with `probability` and `confidence`
+set to `null` rather than invented.
+
+### Added — frontmatter metadata
+
+`allowed-tools: Bash(python:*)`, `metadata.version`, and `metadata.requirements`
+(Python 3.9+ and stdlib only, which endpoints, which key variables, that calls are
+billed, that redaction is on, and the keyless rule). The description now also says
+Jev is **advisory, never an authorization boundary**.
+
+### Changed — `SKILL.md` restructured to stay under 500 lines
+
+It had reached 492 lines with the additions, against a hard 500-line ceiling. The
+command reference moved to the new `references/commands.md`; the confidence-threshold
+method moved to `references/prompting.md`; the failure-mode table was merged into
+the one already in `references/patterns.md`; and §10 is now a "read only the slice
+you need" router. Nothing was dropped — the detail moved, and every pointer is
+checked to resolve. `AGENTS.md`'s claim that the file was "~300" lines was stale and
+is corrected.
+
+### Fixed — stale documentation
+
+`AGENTS.md` said 344 tests (424 now) and "~300 lines" (499 now).
+
+### Verified
+
+- 424 tests green, from 361. New: `test_redact.py`, `test_review.py`, plus CLI
+  contract tests, plus drift guards asserting the bundled zero-install script's
+  *copies* of the redaction and review rules still match the package.
+- Live: state containing a real-shaped key and `password=hunter2` went out with both
+  scrubbed and the model still answered (p=0.87); a genuinely borderline item
+  (p=0.36) exited `2` while p=0.10 and p=0.77 exited `0`; tightening the floor
+  flagged an otherwise-confident answer, proving the band is live and not inert.
+- No published number changes.
+
 
 ## [0.6.2] — 2026-09-21
 

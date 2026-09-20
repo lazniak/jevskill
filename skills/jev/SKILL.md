@@ -17,7 +17,7 @@ description: >-
 license: MIT
 allowed-tools: Bash(python:*)
 metadata:
-  version: "0.8.0"
+  version: "0.9.0"
   requirements: >-
     Python 3.9+ (standard library only — no install, no dependencies) and network
     access to OpenRouter or api.typesafe.ai. Needs OPENROUTER_API_KEY or

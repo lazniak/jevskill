@@ -38,10 +38,34 @@ treatment.
 Model names are translated per provider (`typesafe/jev-1.13` ↔ `jev-latest`)
 because passing the wrong one is a 404 or a 422.
 
+### Adding a third provider
+
+The model is also served by Cloudflare Workers AI (`typesafe/jev`), Vercel AI
+Gateway (`typesafe-ai/jev`) and two resellers. Adding one is a documented task, and
+it was deliberately **not** done speculatively — see 0.9.0 in the CHANGELOG. To add
+one honestly:
+
+1. **Make a real call first**, with a real account. The exact body shape, whether the
+   endpoint wraps the response, whether `cost` is reported, what the model field is
+   called — all of it is only knowable from a live response. Both existing providers
+   were written against live calls; do not add a third from documentation alone.
+2. Add the entry to `PROVIDERS` in `jevskill/config.py` **and** the compiled copy in
+   `skills/jev/scripts/jev_query.py` (the Skill must run with nothing installed).
+3. If the endpoint does not report `cost`, set `reports_cost: False` — the client
+   computes it from `INPUT_PRICE_PER_MTOK` and marks `usage.cost_source`. Recording
+   a missing cost as zero makes every decision look free and inflates every saving
+   figure in the README.
+4. If the response is wrapped (`{"result": {...}}`) or the request omits `model`,
+   that is a client change, not a config entry. Keep the branch in the client's
+   normalisation rather than scattered through the CLI.
+5. Add the provider to `tests/test_providers.py`, and a row to the provider tables in
+   `README.md` and `references/api.md`.
+6. Only then claim support in the README. An unverified provider is a claim.
+
 ## Running things
 
 ```bash
-python -m pytest -q                       # 467 tests, offline, must stay green
+python -m pytest -q                       # 474 tests, offline, must stay green
 python bench/run.py --legacy-reduce       # live API: E1-E7, writes bench/results.json
 python bench/ab.py --runs 3               # live API: the A/B evaluation, writes bench/ab_results.json
 

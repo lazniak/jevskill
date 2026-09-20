@@ -21,6 +21,7 @@ import json
 import re
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 
 # Captured at import: the earliest honest timestamp for "the harness decided to
@@ -132,6 +133,51 @@ def _ledger_extra(redactions: list[str], hesitant: list[str],
         # decision the model made for free.
         extra["cache"] = "hit"
     return extra or None
+
+
+def _group_duplicates(items: list) -> tuple[list, dict, list[int]]:
+    """Collapse items with identical content. Returns `(representatives, groups, dupes)`.
+
+    Identical text gets an identical answer, so there is no reason to send it
+    twice — the same reasoning as `--skip-regex`, but the items are still decided
+    rather than dropped. `groups` maps a representative's index to every
+    `(index, label)` it stands for, so the answer can be replicated afterwards.
+
+    Data is compared as canonical JSON, not as `str()`, so two dicts with the same
+    keys in a different order are recognised as the same item.
+    """
+    seen: dict[str, object] = {}
+    representatives: list = []
+    groups: dict[int, list[tuple[int, str]]] = {}
+    dupes: list[int] = []
+    for item in items:
+        key = (item.data if isinstance(item.data, str)
+               else json.dumps(item.data, sort_keys=True, ensure_ascii=False))
+        representative = seen.get(key)
+        if representative is None:
+            seen[key] = item
+            representatives.append(item)
+            groups[item.index] = [(item.index, item.label)]
+        else:
+            groups[representative.index].append((item.index, item.label))
+            dupes.append(item.index)
+    return representatives, groups, dupes
+
+
+def _expand_duplicates(outcomes: list, groups: dict) -> list:
+    """Give every duplicate the outcome its representative received."""
+    by_index = {outcome.index: outcome for outcome in outcomes}
+    expanded: list = []
+    for representative_index, members in groups.items():
+        template = by_index.get(representative_index)
+        if template is None:
+            continue  # the representative failed to produce an outcome; do not invent one
+        for member_index, member_label in members:
+            clone = replace(template, index=member_index,
+                            label=member_label or template.label)
+            expanded.append(clone)
+    expanded.sort(key=lambda outcome: outcome.index)
+    return expanded
 
 
 def add_cache_flags(p: argparse.ArgumentParser) -> None:
@@ -640,6 +686,13 @@ def cmd_batch(args: argparse.Namespace) -> int:
             item.data = scrubbed
             redactions.extend(hit)
         redactions = sorted(set(redactions))
+
+    duplicate_groups: dict = {}
+    deduped_items: list[int] = []
+    if args.dedupe:
+        # Redaction runs first on purpose: two lines that differ only by a secret
+        # become identical afterwards, and that is the pair worth collapsing.
+        items, duplicate_groups, deduped_items = _group_duplicates(items)
     stages.mark("profile")
 
     config = Config.from_env(provider=getattr(args, "provider", None),
@@ -712,6 +765,15 @@ def cmd_batch(args: argparse.Namespace) -> int:
         )
         stages.mark("http")
 
+    if deduped_items:
+        # One answer, many identical items: replicate after the run, so the
+        # duplicates are decided rather than dropped — the opposite of --skip-regex.
+        result.outcomes = _expand_duplicates(result.outcomes, duplicate_groups)
+        # A verdict on the representative is a verdict on every copy of it.
+        hesitant_items = [member
+                          for rep in hesitant_items
+                          for member, _ in duplicate_groups.get(rep, [(rep, "")])]
+
     if measured:
         result.separate_tokens, result.separate_cost_usd, probed = measured
         result.baseline_measured = True
@@ -734,6 +796,8 @@ def cmd_batch(args: argparse.Namespace) -> int:
         "review": sorted(set(hesitant_items)),
         "skipped": sorted(skipped_items),
         "skipped_count": len(skipped_items),
+        "deduped": sorted(deduped_items),
+        "deduped_count": len(deduped_items),
     })
 
     if args.out:
@@ -743,7 +807,8 @@ def cmd_batch(args: argparse.Namespace) -> int:
     if args.json:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
     else:
-        print(_render_batch(result, payload["tally"], args.quiet))
+        print(_render_batch(result, payload["tally"], args.quiet,
+                            skipped=len(skipped_items), deduped=len(deduped_items)))
     # Same review contract as `ask`: 2 = items need a look, not an error.
     return 2 if hesitant_items else 0
 
@@ -756,7 +821,8 @@ def _confidences(result) -> dict:
     return out
 
 
-def _render_batch(result, tally: dict, quiet: bool) -> str:
+def _render_batch(result, tally: dict, quiet: bool, *,
+                  skipped: int = 0, deduped: int = 0) -> str:
     lines = [
         f"Jev batch [{result.strategy}] — {len(result.outcomes)} items "
         f"in {result.calls} call(s)",
@@ -779,6 +845,12 @@ def _render_batch(result, tally: dict, quiet: bool) -> str:
     else:
         lines.append(f"  cost     ${result.cost_usd:.8f}   {result.calls} call(s)")
     lines.append(f"  wall     {result.wall_ms:.0f} ms")
+    if skipped:
+        # Named as the caller's rule, not a judgement, so the saving is not
+        # mistaken for something the model earned.
+        lines.append(f"  skipped  {skipped} item(s) by --skip-regex (your rule, not a verdict)")
+    if deduped:
+        lines.append(f"  deduped  {deduped} duplicate item(s) answered from an identical one")
     if result.errors:
         lines.append(f"  errors   {result.errors}")
     if not quiet:
@@ -947,6 +1019,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="drop items matching this regex before sending — a known-noise "
                         "rule costs nothing, and the dropped items are reported as "
                         "skipped, not as ones Jev judged")
+    p.add_argument("--dedupe", action="store_true",
+                   help="send identical items once and give every copy the same answer. "
+                        "Do not use it if a question depends on an item's position")
     p.add_argument("--pattern", help="pattern label for the ledger (default triage)")
     p.add_argument("--intent", help="intent label for the ledger (default batch)")
     p.add_argument("--session-id")

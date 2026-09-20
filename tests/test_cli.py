@@ -350,6 +350,88 @@ class TestBatchSkipRegex:
         assert "not a valid regex" in err
 
 
+class TestBatchDedupe:
+    """Identical items get one answer and every copy receives it — the opposite
+    of --skip-regex: nothing is dropped, it just is not paid for twice."""
+
+    def fixture(self, tmp_path, lines):
+        path = tmp_path / "dupes.jsonl"
+        path.write_text("".join(
+            json.dumps({"id": f"L{i}", "line": line}) + "\n"
+            for i, line in enumerate(lines)), encoding="utf-8")
+        return path
+
+    def run_batch(self, capsys, path, extra=None):
+        return run(capsys, ["batch", str(path), "--text-key", "line",
+                            "--question-type", "choice", "--name", "kind",
+                            "--options", "routine", "problem",
+                            "--json", "--no-ledger", "--no-measure-baseline",
+                            *(extra or [])])
+
+    def test_duplicates_are_reported(self, capsys, tmp_path):
+        path = self.fixture(tmp_path, ["ERROR disk full", "ERROR disk full",
+                                       "INFO ok", "ERROR disk full"])
+        code, out, _ = self.run_batch(capsys, path, ["--dedupe"])
+        payload = json.loads(out)
+        assert code == 0
+        assert payload["deduped_count"] == 2
+        assert payload["deduped"] == [1, 3]
+
+    def test_every_item_still_gets_an_outcome(self, capsys, tmp_path):
+        path = self.fixture(tmp_path, ["ERROR disk full", "ERROR disk full",
+                                       "INFO ok"])
+        _, out, _ = self.run_batch(capsys, path, ["--dedupe"])
+        payload = json.loads(out)
+        # Three items in, three outcomes out: dedupe must not shorten the result.
+        assert payload["items"] == 3
+        assert len(payload["results"]) == 3
+        assert [row["index"] for row in payload["results"]] == [0, 1, 2]
+
+    def test_duplicates_receive_the_same_values_as_their_original(self, capsys, tmp_path):
+        path = self.fixture(tmp_path, ["ERROR disk full", "ERROR disk full"])
+        _, out, _ = self.run_batch(capsys, path, ["--dedupe"])
+        rows = json.loads(out)["results"]
+        assert rows[0]["values"] == rows[1]["values"]
+
+    def test_without_the_flag_nothing_is_collapsed(self, capsys, tmp_path):
+        path = self.fixture(tmp_path, ["ERROR disk full", "ERROR disk full"])
+        _, out, _ = self.run_batch(capsys, path)
+        assert json.loads(out)["deduped_count"] == 0
+
+    def test_the_human_path_says_what_was_collapsed(self, capsys, tmp_path):
+        path = self.fixture(tmp_path, ["ERROR disk full", "ERROR disk full"])
+        _, out, _ = run(capsys, ["batch", str(path), "--text-key", "line",
+                                 "--question-type", "choice", "--name", "kind",
+                                 "--options", "routine", "problem",
+                                 "--no-ledger", "--no-measure-baseline", "--dedupe"])
+        assert "deduped" in out and "1 duplicate" in out
+
+    def test_dict_items_compare_by_content_not_key_order(self):
+        # Two dicts with the same content in a different key order are the same
+        # item; comparing str() would treat them as different and pay twice.
+        from jevskill.cli import _group_duplicates
+        from jevskill.jevtask import BatchItem
+
+        items = [BatchItem(index=0, data={"a": 1, "b": 2}),
+                 BatchItem(index=1, data={"b": 2, "a": 1})]
+        representatives, groups, dupes = _group_duplicates(items)
+        assert len(representatives) == 1 and dupes == [1]
+        assert groups[0] == [(0, ""), (1, "")]
+
+    def test_a_failed_representative_does_not_invent_answers(self):
+        from jevskill.cli import _expand_duplicates
+        from jevskill.jevtask import ItemOutcome
+
+        # No outcome for index 0, so index 1 must not inherit a fabricated one.
+        assert _expand_duplicates([], {0: [(0, ""), (1, "")]}) == []
+        outcome = ItemOutcome(index=0, label="", values={"kind": "problem"},
+                              confidence={"kind": 0.9})
+        expanded = _expand_duplicates([outcome], {0: [(0, ""), (1, "L1")]})
+        assert [row.index for row in expanded] == [0, 1]
+        assert expanded[1].values == {"kind": "problem"}
+        assert expanded[1].label == "L1", "each copy keeps its own label"
+
+
 def _items(tmp_path, n=6):
     path = tmp_path / "items.jsonl"
     path.write_text("".join(

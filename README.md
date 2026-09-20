@@ -9,14 +9,23 @@ tokens on decisions — and start making them for **$0.000013** in **325 ms**.
 
 **A/B tested: 99.3% fewer input tokens, and accuracy went *up* (12/18 → 15/18).**
 
-[![tests](https://img.shields.io/badge/tests-344%20passing-brightgreen)](#-does-it-actually-help-ab-tested)
+[![tests](https://img.shields.io/badge/tests-474%20passing-brightgreen)](#-does-it-actually-help-ab-tested)
 [![A/B](https://img.shields.io/badge/A%2FB-99.3%25%20fewer%20tokens-blue)](#-does-it-actually-help-ab-tested)
 [![cost](https://img.shields.io/badge/decision-%240.000013-success)](#-cost-per-decision)
 [![license](https://img.shields.io/badge/license-MIT-informational)](LICENSE)
 [![python](https://img.shields.io/badge/python-3.9%2B-blue)](pyproject.toml)
+[![skills.sh](https://img.shields.io/badge/skills.sh-install-7c3aed)](https://skills.sh/lazniak/jevskill)
 
 ```bash
 npx skills add lazniak/jevskill -g     # nothing to compile, no account
+```
+
+**Or let your agent install it** — paste this and it will follow
+[`docs/install.md`](docs/install.md), check its own environment, and verify offline:
+
+```text
+Install jevskill for my current agent. Read and follow
+https://raw.githubusercontent.com/lazniak/jevskill/main/docs/install.md
 ```
 
 </div>
@@ -397,6 +406,35 @@ Three things worth knowing:
   common input in practice is a file of log lines, so anything that is not JSON is
   treated as a string.
 
+### Two ways to send less, without asking a worse question
+
+Log files repeat themselves. Both flags below were measured on the live API, and
+both report exactly what they did so the saving is never mistaken for a judgement.
+
+**`--dedupe`** sends identical items once and gives every copy the same answer.
+On 8 lines of which 3 were unique:
+
+| | items decided | input tokens |
+|---|---|---|
+| plain | 8 | 1,029 |
+| `--dedupe` | 8 | **545** (−47%) |
+
+All 8 still come back with an answer — nothing is dropped, it just is not paid for
+twice. **Caveat:** do not use it if a question depends on an item's *position*
+("does `item` differ from the previous line?"). Identical text gets an identical
+judgement, which is exactly the assumption that breaks there.
+
+**`--skip-regex '^DEBUG'`** drops items matching a rule before anything is sent.
+On 8 lines of which 4 were `DEBUG`: **990 → 626 tokens (−36.8%)**. Those items are
+reported as `skipped`, never as items Jev judged — the rule is yours, and
+presenting it as a model decision would inflate the saving.
+
+```bash
+jevskill batch build.log --text-key line --question-type choice --name owner \
+  --options backend frontend infra unclear \
+  --skip-regex '^DEBUG' --dedupe
+```
+
 ---
 
 ## 🧪 Measured, not marketed
@@ -579,14 +617,15 @@ jevskill/              the Python package — the measurement half
 bench/
   run.py               E1–E7 microbenchmarks (latency, fan-out, REDUCE, guards)
   ab.py                the A/B evaluation vs the model doing it alone
-tests/                 467 tests, offline, green
+tests/                 474 tests, offline, green
+docs/install.md        install guide an agent reads and executes
 docs/DESIGN.md         architecture + the mistakes that shaped it
 AGENTS.md              conventions for agents working on this repo
 ```
 
 ## 🧭 Status & known limits — `v0.7.0`
 
-CLI, skill, bundled scripts, ledger and reference docs (467 offline tests) are
+CLI, skill, bundled scripts, ledger and reference docs (474 offline tests) are
 complete, and there are now two benchmark suites. What is **not** proven:
 
 * **Redaction is not a PII policy.** It catches credential-shaped strings, not
@@ -625,6 +664,7 @@ complete, and there are now two benchmark suites. What is **not** proven:
 | [`skills/jev/references/commands.md`](skills/jev/references/commands.md) | every command, flag and script invocation |
 | [`skills/jev/references/benchmarks.md`](skills/jev/references/benchmarks.md) | every number + threats to validity |
 | [`CHANGELOG.md`](CHANGELOG.md) | versioned history |
+| [`docs/install.md`](docs/install.md) | install guide written for an **agent** to read and execute |
 | [`docs/DESIGN.md`](docs/DESIGN.md) | why it's built this way |
 
 ## 🔗 Related — install both
