@@ -229,6 +229,48 @@ teardown confined to `%TEMP%\jevcu`; success is graded by the oracle alone, neve
 by the agent's own `done`/`goal_reached`. Method, metrics and threats to validity
 in `bench/cu_tasks.md`.
 
+### Added — the decision, action and loop half of `jevskill.cu`
+
+`decide.build_bundle()` is the one-call bundle from `act.md` (target over the
+candidates plus `none`, nine ops, `goal_reached` / `needs_text` / `is_destructive`,
+and a per-element destructive noul for every *command* control up to a cap of 12 —
+no `stuck` question, hashing does that); `decide.validate()` is the code-side
+check (target exists, op fits the role, per-op floors, irreversible **always**
+gated by the deterministic name list plus an injected `confirm`, margin floor,
+`goal_reached` never ends a run alone); `decide_cascade()` does the region round
+then the element round. `act.execute()` drives UIA patterns (Invoke, Toggle,
+SelectionItem, Value, ScrollItem) with a `SendInput` fallback behind an injectable
+backend; `act.settle()` polls `tree_hash` until the screen changes — the code-side
+stuck detector. `macros.MacroCache` skips the call when the same goal has met the
+same reduced screen before, and invalidates an entry whose action did not change
+the tree. `loop.run()` wires it: warm → observe → reduce → macro or decide →
+validate → gate → act → settle → a `StepRecord` per step and a `Ledger` row, with
+stop reasons `done` (an injected oracle or two agreeing `done` steps), `max_steps`,
+`budget`, `blocked`, `escalated`, `error`; escalation is an injected callable and
+every escalation is counted; `needs_text` hands off to an injected
+`compose_text`, and the default refuses rather than fabricates.
+
+Measured on the committed fixtures (`bench/cu_decide_live.py`,
+`bench/cu_decide_results.json`, four vendor calls, $0.001355): Notepad "Open the
+File menu" → `target = none` 0.99 — correct, a closed menu bar has no items in the
+tree — with `op = key` at **0.46**, under the 0.60 floor, so the step escalates
+exactly where it is right; Calculator "Compute 7 times 8" → the button named
+"Siedem" at 0.93 (cross-lingual). Asking the destructive noul of every command
+control instead of only name-matched ones costs **+6.6 % tokens, +$0.000027 per
+step** on a 500-node screen. Two findings kept as findings: the destructive name
+list is **English-only** (on the Polish Calculator no name matched while the nouls
+put the three "Wyczyść" controls at 0.42–0.51, far under 0.85), and the
+loop's live UIA execution path has **never been run against a desktop** — the
+user was streaming on the only Windows machine available; every test drives it
+through fakes and both docstrings say so.
+
+`act.md` was reconciled with the code after a reviewer built the loop from the
+document alone: §8 now reads `goal_reached` and `is_destructive` and re-checks text
+after `type`; the per-element destructive noul covers command controls, not only
+name matches; irreversible ops always gate regardless of confidence; `type` and
+`select` have a band; noul "confidence" is the probability's distance from 0.5,
+never `.confidence()`; region ids are `region_state()`'s `r0…rN`.
+
 ### Added — the benchmark harness and the loop contract (`bench/cu_run.py`)
 
 `jevskill/cu/contract.py` fixes the shape a loop must return — `StepRecord`
