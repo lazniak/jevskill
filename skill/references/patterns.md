@@ -81,32 +81,77 @@ do not accept `backend`. Narrow to those two and re-ask — see pattern 8.
 ## 3. reduce — a large sequence to a small shortlist
 
 **Shape:** the data is far too big and mostly irrelevant.
-**Layers:** two-stage — chunk-score, then a line-level gate on the hot chunks.
+**Layers:** two-stage — a chunk-level pass to find where activity is, then a
+line-level gate that actually discriminates.
 
 This is the pattern where the token savings live, and the one most likely to be
 implemented wrongly.
 
-**The wrong way (measured, and it failed).** Score each chunk, then attribute the
-chunk's score to all of its lines, sort, keep the top 8. Because a genuinely hot
-chunk contains one salient line and 59 noise lines, the shortlist is mostly
-noise. Measured on 900 log lines: **99.1% context reduction, but only 1 of 8 kept
-lines was actually salient** — 87% of the signal thrown away to buy the
-reduction. A reduction that discards what you were looking for is worse than no
-reduction at all, because it looks like it worked.
+### The wrong way (measured, and it failed)
+
+Score each chunk, then attribute the chunk's score to all of its lines, sort, keep
+the top 8. Because a genuinely hot chunk contains one salient line and 59 noise
+lines, the shortlist is mostly noise. Measured on 900 log lines: **99.1% context
+reduction, but only 1 of 8 kept lines was actually salient.** A reduction that
+discards what you were looking for is worse than no reduction, because it looks
+like it worked.
 
 ```bash
 python bench/run.py --legacy-reduce   # reproduces this failure on demand
 ```
 
-**The right way — a real cascade.**
+### The right way — and the trade you are choosing
 
 ```
 stage 1  COARSE   score each chunk for where activity is
-                 900 lines -> 15 chunks -> top 3 chunks (180 lines)
-stage 2  FINE     a line-level gate inside those chunks
-                 180 lines -> ~8 candidates, sorted by P(salient)
-keep     the top-k, hand only those to the LLM
+                 900 lines / 15 chunks
+stage 2  FINE     a line-level gate (see the warning below)
+
+Then pick a configuration:
+  A) gate every line      98.8% reduction, 8/14 salient found, $0.0061
+  B) chunk-prefilter first 99.6% reduction, 3/14 salient found, $0.0029
 ```
+
+**Measured, on 900 synthetic log lines with 14 genuinely salient events:**
+
+| Configuration | Reduction | Recall | Cost |
+|---|---|---|---|
+| **A** — gate every line | 98.8% (→201 tok) | **8/14 (57%)** | $0.0061 |
+| **B** — chunk-prefilter, then gate | 99.6% (→67 tok) | 3/14 (21%) | $0.0029 |
+| ✗ legacy single-stage chunk scoring | 99.0% (→156 tok) | **1/8** | $0.0017 |
+
+Configuration B is 2.1× cheaper and reduces slightly more, but finds **five fewer**
+lines. Pre-filtering chunks is a genuine cost/recall trade, **not a free win**:
+when salient events are spread thinly, every chunk looks somewhat hot, so "keep
+the hot chunks" mostly keeps everything's neighbours.
+
+**Choose by what a miss costs you**, not by the reduction percentage. Gate every
+line when a miss is unacceptable; pre-filter when the corpus is homogeneous and
+the call budget matters.
+
+### The stage-2 question must name its target
+
+This is the defect that made the first two-stage attempt *worse* (0 of 8):
+
+```jsonc
+// ❌ ambiguous — which of the 20 lines?
+{"keep_L7": {"type": "noul", "instructions": "Does this single log line report an error?"}}
+
+// ✅ exactly one line, named in instructions and criteria
+{"keep_L7": {"type": "noul",
+  "instructions": "Does the log line at `L7` report an error?",
+  "criteria": {
+    "true":  "`L7` reports an error or failure. Lines other than `L7` are irrelevant.",
+    "false": "`L7` is routine telemetry. Lines other than `L7` are irrelevant."
+  }}}
+```
+
+Measured on one 20-line window with a single real `ERROR`: the ambiguous form
+scored the error line 0.72 and its neighbours 0.75 — plausible numbers that
+discriminate nothing. The named form scored **0.96 vs 0.03**. Full detail:
+`prompting.md` §1.
+
+### Worked example
 
 ```jsonc
 // stage 1 — one call per chunk
@@ -117,15 +162,16 @@ keep     the top-k, hand only those to the LLM
                "Serious: errors affecting requests or data.",
                "Critical: outage, data loss, or security failure."]}}
 
-// stage 2 — one call per window of ~20 lines, many questions
+// stage 2 — one call per window of ~20 lines, each line named and pointed at
 {"keep_L0": {"type": "noul",
-  "instructions": "Does this single log line report an operational problem a human should investigate?",
-  "criteria": {"true":  "Reports an error, a fatal condition, a warning about degraded service, or a failed operation.",
-               "false": "Routine telemetry: debug, info, heartbeat, cache, metrics."}}}
+  "instructions": "Does the log line at `L0` report an operational problem a human should investigate?",
+  "criteria": {"true":  "`L0` reports an error, a fatal condition, or a failed operation. Lines other than `L0` are irrelevant.",
+               "false": "`L0` is routine telemetry. Lines other than `L0` are irrelevant."}},
+ "keep_L1": {"type": "noul", "instructions": "Does the log line at `L1` report an operational problem a human should investigate?"}}
 ```
 
-The stage-2 gate is the discriminator, and it is cheap: twenty `noul` questions
-over one window is **one** call, because questions share a state.
+Twenty `noul` questions over one window is **one** call, because questions share a
+state — which is what makes the fine-grained stage affordable.
 
 **When to use reduce:**
 
@@ -299,16 +345,26 @@ escalation is cheaper and more honest.
 **Layers:** two-stage — presence gate per field, then a Choice over candidates.
 
 Jev cannot produce free text, so extraction is done by asking *closed* questions
-about each field. For a stack trace:
+about each field. State is `{"trace": "<the raw traceback>"}`, and every question
+names that key with a backticked path — the rule from `prompting.md` §1:
 
 ```jsonc
-{"lang_is_python":  {"type": "noul",   "instructions": "Is this a Python traceback?"},
- "has_exception":   {"type": "noul",   "instructions": "Does it name an exception type?"},
- "exc_type":        {"type": "choice", "instructions": "Which exception type is raised?",
-                     "criteria": {"ValueError": "...", "KeyError": "...",
-                                  "TypeError": "...", "other": "None of these."}},
- "is_timeout":      {"type": "noul",   "instructions": "Is a timeout implicated?"},
- "user_code_frame": {"type": "noul",   "instructions": "Does the trace include a frame in application code rather than a library?"}}
+{"lang_is_python":  {"type": "noul",
+   "instructions": "Is `trace` a Python traceback?",
+   "criteria": {"true": "`trace` contains Python traceback lines (File \"…\", line N).",
+                "false": "`trace` is not a Python traceback."}},
+ "has_exception":   {"type": "noul",
+   "instructions": "Does `trace` name an exception type on its final line?"},
+ "exc_type":        {"type": "choice",
+   "instructions": "Which exception type does `trace` raise?",
+   "criteria": {"ValueError": "`trace` ends in ValueError.",
+                "KeyError": "`trace` ends in KeyError.",
+                "TypeError": "`trace` ends in TypeError.",
+                "other": "`trace` ends in a different exception type, or none is named."}},
+ "is_timeout":      {"type": "noul",
+   "instructions": "Does `trace` implicate a timeout or a deadline being exceeded?"},
+ "user_code_frame": {"type": "noul",
+   "instructions": "Does `trace` include a frame in application code rather than only library or framework code?"}}
 ```
 
 **For genuinely open-ended values** (a filename, a numeric id), do not use Jev —
@@ -356,7 +412,9 @@ jevskill plan "keep the 8 lines that matter from this log" --state-file build.lo
 |---|---|
 | One question per call in a loop | one call, many questions |
 | One broad "analyse this" question | atomic signals, combine in code |
-| Chunk score attributed to every line | real two-stage cascade |
+| Chunk score attributed to every line | real two-stage cascade with a line-level gate |
+| A line-gate question that does not name its line | point at it with a backticked path |
+| Assuming pre-filtering is free | measure recall, not just reduction |
 | Ranking N items in one question | one `score` per item, sort in code |
 | Accepting a 0.51 winner | narrow and re-ask |
 | No `unclear`/`none` option | always include an escape hatch |

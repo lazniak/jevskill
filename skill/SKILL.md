@@ -18,12 +18,18 @@ license: MIT
 
 Jev is a **System One** model. You give it one *state* (the data) and any number
 of typed *questions*, and it returns typed decisions with real probability
-distributions — in about 300 ms, for about $0.00002.
+distributions — in ~325 ms (p50), for about **$0.000013**.
 
 It cannot write. Not a summary, not a line of code, not an explanation. What it
 does instead is answer **"which of these N things is it?"**, **"is this true?"**,
-and **"how much, on this scale?"** — faster and cheaper than any chat model, and
-with a calibrated confidence you can branch on.
+and **"how much, on this scale?"** — with a calibrated confidence you can branch
+on, and with a **full probability distribution** no chat model hands you.
+
+It is cheap because output is free and questions to one state run in parallel —
+one call with eight questions cost $0.0000279, while the same eight questions
+asked separately cost 4× that. It is **not** universally cheaper than a small chat
+model on a single trivial question; it wins on *structure*, on *fan-out*, and on
+decisions where the alternative is pasting a large corpus into a chat context.
 
 That is the whole trade. Use it where the answer is a decision. Use the LLM where
 the answer is text.
@@ -31,6 +37,29 @@ the answer is text.
 > Measured, not estimated. Every number in this skill comes from
 > `bench/run.py` against the live API and is recorded in the effectiveness
 > ledger. Run `jevskill stats` to see this machine's own record.
+
+---
+
+## 0. Run this first
+
+```bash
+jevskill doctor                     # key, endpoint, warm latency, live cost
+jevskill plan "<what you are about to do>"   # free: is Jev even right here?
+```
+
+If `doctor` fails, the key is missing — every command needs one:
+
+```bash
+export OPENROUTER_API_KEY=sk-or-v1-...   # Windows: setx OPENROUTER_API_KEY "..."
+python -m pip install -e .               # or: pip install -e ".[fast]"
+```
+
+`setx` does not affect shells that are already open. On Windows the client also
+reads the user registry, so a key set yesterday works in a terminal opened before
+it.
+
+Do **not** reach for Jev before reading §2. The most common way to waste a round
+trip is using it on a task whose answer is text.
 
 ---
 
@@ -258,20 +287,29 @@ therefore whether the threshold you chose is the correct one.
 Reports carry a full per-stage breakdown so the timing claim is auditable:
 
 ```
-  t_decision     12.4 ms    3.1%  #      <- deciding to use the skill
-  profile         0.3 ms    0.1%
-  plan            0.1 ms    0.0%
-  build           8.9 ms    2.2%         <- building state and questions
-  http          371.0 ms   92.4%  #######################  <- network + inference
-  act             7.2 ms    1.8%
-  report          1.4 ms    0.3%
-  TOTAL         401.3 ms  100.0%
-  (serialize)     0.2 ms  (inside build)
+  t_decision      0.0 ms    0.0%
+  profile         6.7 ms    0.5%         <- inspecting the data
+  plan            0.0 ms    0.0%         <- choosing the pattern
+  build           0.3 ms    0.0%         <- building state and questions
+  warm           74.0 ms    5.4%         <- connection handshake (first call only)
+  http          386.5 ms   93.6%  #######################  <- network + inference
+  act             0.2 ms    0.0%         <- applying thresholds, writing the ledger
+  report          1.6 ms    0.1%
+  TOTAL         469.3 ms  100.0%
+  (serialize)     0.0 ms  (inside a stage above)
+  (client_total) 386.5 ms  (inside a stage above)
 ```
 
-`http` is normally 92–96% of the wall clock. That is the point: the skill's own
-overhead is ~3%, so there is no client-side optimisation left worth chasing —
-effort belongs in *choosing good questions* and *reducing the state*.
+`http` is normally 92–96% of the wall clock — the client's own measured
+`http_ms` matches the `http` stage, which is how you can tell the breakdown is
+not inflated. The skill's own overhead is ~4%, so there is no client-side
+optimisation left worth chasing: effort belongs in *choosing good questions* and
+*reducing the state*.
+
+`warm` appears only on the first call of a process (and is ~0 when the connection
+is already open). It is kept on by default because it is a net win: on the
+measurement machine the handshake costs 74–100 ms and saves ~100 ms on the first
+real call (437 ms cold vs 340 ms warm).
 
 ## 7. Choosing a confidence threshold
 
