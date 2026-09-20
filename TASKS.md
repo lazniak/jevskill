@@ -32,8 +32,8 @@ Uzasadnienie każdego zadania: [docs/research-2026-09-20-jev-cu.md](docs/researc
 | T3.4 | 3 | Koszt redakcji na 6k tokenów | done 2026-09-20 | opus5/A3 | `agent/fable/vendor-key-and-plan` |
 | T3.5 | 3 | `references/act.md` | done 2026-09-20 | opus5/A4 | `agent/fable/vendor-key-and-plan` |
 | T3.6 | 3 | `cu_bench.py`: `--provider`, `--hedge`, N do 240, JSON | done 2026-09-20 | opus5/A3 | `agent/fable/vendor-key-and-plan` |
-| T4.1 | 4 | `cu/observe.py` UIA + pomiar per aplikacja | in progress | opus5/A5 | worktree (wave A) |
-| T4.2 | 4 | `cu/reduce.py` filtr + kaskada | in progress | opus5/A5 | worktree (wave A) |
+| T4.1 | 4 | `cu/observe.py` UIA + pomiar per aplikacja | done 2026-09-20 | opus5/A5 | `agent/fable/vendor-key-and-plan` |
+| T4.2 | 4 | `cu/reduce.py` filtr + kaskada | done 2026-09-20 | opus5/A5 | `agent/fable/vendor-key-and-plan` |
 | T4.3 | 4 | `cu/decide.py` bundle + progi + hedging | todo | | |
 | T4.4 | 4 | `cu/act.py` UIA patterns / SendInput + lista nieodwracalnych | todo | | |
 | T4.5 | 4 | `cu/loop.py` stop-warunki + log kroku | todo | | |
