@@ -22,14 +22,16 @@ write to the same file without coordination.
 
 from __future__ import annotations
 
+import atexit
 import json
 import os
 import statistics
+import threading
 import time
 import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 from .config import INPUT_PRICE_PER_MTOK as JEV_INPUT_PRICE_PER_MTOK
 
@@ -202,8 +204,54 @@ def record_decision(
     root: Path | str | None = None,
 ) -> str:
     """Append one decision. Returns its ``decision_id`` for later pairing."""
+    return _append(
+        build_record(
+            which=which,
+            intent=intent,
+            stages_ms=stages_ms,
+            latency_ms=latency_ms,
+            tokens_in=tokens_in,
+            tokens_out=tokens_out,
+            cost_usd=cost_usd,
+            questions=questions,
+            state_tokens=state_tokens,
+            confidence=confidence,
+            baseline_tokens=baseline_tokens,
+            baseline=baseline,
+            session_id=session_id,
+            version=version,
+            extra=extra,
+        ),
+        root=root,
+    )
+
+
+def build_record(
+    *,
+    which: str,
+    intent: str = "",
+    stages_ms: dict[str, float] | None = None,
+    latency_ms: float = 0.0,
+    tokens_in: int = 0,
+    tokens_out: int = 0,
+    cost_usd: float = 0.0,
+    questions: int = 0,
+    state_tokens: int = 0,
+    confidence: dict[str, float] | None = None,
+    baseline_tokens: int = 0,
+    baseline: dict | None = None,
+    session_id: str = "",
+    version: str = "",
+    extra: dict | None = None,
+) -> Record:
+    """One ledger row, unwritten.
+
+    Split out of :func:`record_decision` so the buffered :class:`Ledger` can
+    produce **the same row** rather than a second row format that would drift
+    from this one the first time a field was added.
+    """
     baseline_cost, baseline_data_cost, data_at_jev = _baseline_costs(baseline_tokens, baseline)
-    record = Record(
+    return Record(
         decision_id=new_decision_id(),
         ts=time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime()),
         which=which,
@@ -224,7 +272,6 @@ def record_decision(
         version=version,
         extra=extra or {},
     )
-    return _append(record, root=root)
 
 
 def record_outcome(decision_id: str, outcome: str, detail: str = "", *, root: Path | str | None = None) -> bool:
@@ -248,6 +295,179 @@ def record_outcome(decision_id: str, outcome: str, detail: str = "", *, root: Pa
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(patch, ensure_ascii=False) + "\n")
     return True
+
+
+# --------------------------------------------------------------------------- #
+# Buffered writing: the ledger must not be part of the step budget
+# --------------------------------------------------------------------------- #
+
+#: Flush after this many buffered rows, whichever comes first with the interval.
+#: 64 rows is ~25 seconds of a 400 ms agent loop and a few KB of text — small
+#: enough to lose little to a kill -9, large enough that the file is opened
+#: roughly once per minute instead of once per step.
+DEFAULT_FLUSH_EVERY = 64
+#: ...or after this long, so a loop that stops deciding still gets its rows on
+#: disk promptly rather than at exit.
+DEFAULT_FLUSH_INTERVAL_S = 1.0
+
+
+class Ledger:
+    """An append-only ledger writer that keeps the file I/O off the hot path.
+
+    :func:`record_decision` opens the file, writes one line, and closes it, once
+    per decision. That is right for a CLI run and wrong for an agent loop that
+    decides every few hundred milliseconds: the open/write/close lands inside the
+    ``act`` stage, between the model answering and the agent moving, and on
+    Windows it is the slowest thing in that stage by a wide margin.
+
+    :meth:`write` serialises the row and appends the *text* to an in-memory
+    buffer, then returns. A background thread drains the buffer every
+    ``flush_every`` rows or ``flush_interval_s`` seconds, and :meth:`close` —
+    also registered with :mod:`atexit` — drains whatever is left.
+
+    Three properties are preserved exactly as the unbuffered path has them:
+
+    * **append-only** — rows are appended, never rewritten, so several processes
+      can share one file;
+    * **order** — one lock, one list, written in hand-over order;
+    * **no loss** — every accepted row reaches the file, including on a normal
+      interpreter exit. A SIGKILL loses the buffer, which is the same guarantee
+      any buffered writer gives, and is why ``flush_every`` is not large.
+
+    The row text is built in :meth:`write`, not in the background thread, on
+    purpose: a caller that mutates its ``Record`` after handing it over cannot
+    then change what was recorded. Serialising costs a few microseconds — see
+    ``python bench/cu_bench.py --micro`` for the measured number.
+
+    ::
+
+        with Ledger(root=Path.cwd()) as ledger:
+            for step in loop:
+                ledger.record(which="act", latency_ms=..., tokens_in=...)
+    """
+
+    def __init__(
+        self,
+        root: Path | str | None = None,
+        *,
+        path: Path | str | None = None,
+        flush_every: int = DEFAULT_FLUSH_EVERY,
+        flush_interval_s: float = DEFAULT_FLUSH_INTERVAL_S,
+        start_thread: bool = True,
+    ) -> None:
+        self.path = Path(path) if path is not None else ledger_path(root)
+        self.flush_every = max(1, int(flush_every))
+        self.flush_interval_s = max(0.0, float(flush_interval_s))
+        self._buffer: list[str] = []
+        self._lock = threading.Lock()
+        self._file_lock = threading.Lock()
+        self._wake = threading.Event()
+        self._closed = False
+        self.written = 0
+        self.flushes = 0
+        self._thread: threading.Thread | None = None
+        atexit.register(self.close)
+        if start_thread and self.flush_interval_s > 0:
+            self._thread = threading.Thread(
+                target=self._run, name="jevskill-ledger", daemon=True
+            )
+            self._thread.start()
+
+    # ---- hot path ---------------------------------------------------------
+    def write(self, record: "Record | Mapping[str, Any]") -> str:
+        """Buffer one row. Returns its ``decision_id`` (``""`` for a patch row).
+
+        Accepts a :class:`Record` or a plain mapping; a mapping is how an outcome
+        patch (``{"kind": "outcome", ...}``) is appended, so the append-only
+        outcome mechanism works here too.
+        """
+        if self._closed:
+            raise RuntimeError("ledger is closed")
+        if isinstance(record, Record):
+            line = record.to_json()
+            decision_id = record.decision_id
+        else:
+            line = json.dumps(dict(record), ensure_ascii=False)
+            decision_id = str(record.get("decision_id", "") or "")
+        with self._lock:
+            self._buffer.append(line)
+            full = len(self._buffer) >= self.flush_every
+        if full:
+            self._wake.set()
+        return decision_id
+
+    def record(self, **fields: Any) -> str:
+        """:func:`record_decision`'s arguments, buffered instead of written."""
+        return self.write(build_record(**fields))
+
+    def outcome(self, decision_id: str, outcome: str, detail: str = "") -> str:
+        """Buffer an outcome patch — same shape as :func:`record_outcome`."""
+        return self.write(
+            {
+                "kind": "outcome",
+                "decision_id": decision_id,
+                "ts": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime()),
+                "outcome": outcome,
+                "outcome_detail": detail,
+            }
+        )
+
+    @property
+    def pending(self) -> int:
+        with self._lock:
+            return len(self._buffer)
+
+    # ---- draining ---------------------------------------------------------
+    def flush(self) -> int:
+        """Write everything buffered so far. Returns the number of rows written."""
+        with self._lock:
+            batch, self._buffer = self._buffer, []
+        if not batch:
+            return 0
+        # One `open` per batch, and one lock so a manual flush cannot interleave
+        # its lines with the background thread's.
+        with self._file_lock:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            with self.path.open("a", encoding="utf-8") as handle:
+                handle.write("\n".join(batch) + "\n")
+        self.written += len(batch)
+        self.flushes += 1
+        return len(batch)
+
+    def _run(self) -> None:
+        while not self._closed:
+            self._wake.wait(self.flush_interval_s)
+            self._wake.clear()
+            try:
+                self.flush()
+            except Exception:
+                # A background writer that raises kills the thread and silently
+                # stops recording. Losing one batch is bad; losing every later
+                # batch without a word is worse, so keep the loop alive and let
+                # `close()` try again.
+                pass
+
+    def close(self) -> None:
+        """Stop the thread and flush what is left. Safe to call twice."""
+        if self._closed:
+            self.flush()
+            return
+        self._closed = True
+        self._wake.set()
+        thread, self._thread = self._thread, None
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=2.0)
+        self.flush()
+        try:
+            atexit.unregister(self.close)
+        except Exception:  # pragma: no cover - only on exotic interpreters
+            pass
+
+    def __enter__(self) -> "Ledger":
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.close()
 
 
 def _apply_outcomes(records: list[dict], patches: list[dict]) -> list[dict]:
