@@ -142,8 +142,10 @@ the global ledger; that silently contaminated a per-project report once.
 - Tests derive from constants rather than hard-coding them, so re-tuning a
   constant does not require editing assertions.
 - `SKILL.md` is a decision guide for an agent, not documentation for a human. Keep
-  it imperative and under 500 lines (it is at the ceiling: move detail into
-  `references/` instead of adding to it, and update the §10 router when you do).
+  it imperative and under 250 lines: every paragraph must change what an agent does
+  next. Measurement prose, ledger reports and provider history belong in
+  `references/` — move detail there instead of adding to it, and add the file to
+  the §7 router when you do (a test fails if a reference is left unrouted).
 - Commit messages: conventional commits, and explain the reasoning and the
   measurement, not just the change.
 
