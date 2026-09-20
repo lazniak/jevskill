@@ -245,7 +245,11 @@ fake agent and a fake oracle, and marks every row and every report title
 requires `--i-am-not-streaming`, because a live run steals focus and flips
 Settings. `bench/cu_report.py` renders the six per-task metrics from
 `bench/cu_tasks.md` plus escalation counts, and `--compare` puts a second
-results file side by side. No live run has been made yet.
+results file side by side. The `uia_value` and `window_title_contains` oracles read
+the foreground window through `jevskill.cu.observe` (value, falling back to name —
+Calculator's result is a `text` node without a ValuePattern); `clipboard_equals` is
+refused, and the one task that used it as a fallback no longer does. **No live run
+has been made yet.**
 
 ## [0.11.0] — 2026-09-20
 
