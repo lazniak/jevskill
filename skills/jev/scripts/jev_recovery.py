@@ -130,7 +130,21 @@ def main(argv=None) -> int:
         return 0
 
     if args.index:
-        selected = [row for row in rejected if row["index"] in set(args.index)]
+        wanted = set(args.index)
+        selected = [row for row in rejected if row["index"] in wanted]
+        # An index the caller asked for that is not here was *kept*, not lost.
+        # Saying nothing (or a bare "no match") reads as data loss, which is the
+        # one fear this handle exists to remove. Report it on stderr so stdout
+        # stays purely data for --json and --out consumers.
+        rejected_indexes = {row["index"] for row in rejected}
+        kept_indexes = {row["index"] for row in record.get("kept", [])}
+        not_here = sorted(wanted - rejected_indexes)
+        if not_here:
+            where = ", ".join(
+                f"{i}=kept" if i in kept_indexes else f"{i}=out of range"
+                for i in not_here
+            )
+            print(f"note: {where}; only rejected items are retrievable", file=sys.stderr)
     elif args.grep:
         try:
             pattern = re.compile(args.grep, re.IGNORECASE)

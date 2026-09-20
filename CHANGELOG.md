@@ -19,6 +19,40 @@ replaced.
 - Live verification of the vendor endpoint. It is verified by 51 unit tests plus
   endpoint existence, but not by a real call — no TypeSafe key was available.
 
+## [0.6.2] — 2026-09-21
+
+Auditing the recovery handle end to end — the one feature whose entire promise is
+that a reduction is reversible — found that it had **no tests at all**, and one
+message that undermined the promise it was making.
+
+### Fixed
+
+**`jev_recovery.py --index` reported a kept item as missing.** Asking for an index
+that the gate *kept* printed `no rejected items matched`, which reads as data loss.
+That is precisely the fear the handle exists to remove, so the one case where the
+user most needs reassurance was the case that lied. Requested indices that are not
+in the rejected set are now labelled on **stderr**, so `--json` and `--out` stdout
+stays purely data:
+
+```
+$ jev_recovery.py rc_45ea207c8ca1 --index 0 2 99
+note: 2=kept, 99=out of range; only rejected items are retrievable
+[     0] INFO  healthcheck ok in 2ms
+```
+
+### Added
+
+**`tests/test_recovery.py`** — 14 tests, including a partition check that the kept
+and rejected index sets together equal the original input, so "nothing was lost" is
+asserted rather than assumed. Four of them fail on 0.6.1.
+
+### Verified
+
+A live REDUCE over 10 log lines (3 genuinely salient) kept exactly those 3 and
+issued a handle; the rejected 7 came back with indices `[0,1,3,4,6,7,9]`, leaving
+`{2,5,8}` kept — 10 of 10 accounted for. `--list`, `--summary`, `--grep`, `--index`,
+`--all`, `--out` and `--json` all round-tripped. No published number changes.
+
 ## [0.6.1] — 2026-09-21
 
 A measurement bug in `jevskill doctor`, found by running the released 0.6.0
