@@ -296,6 +296,22 @@ tests/             211 tests, offline, green
 docs/DESIGN.md     architecture + the mistakes that shaped it
 ```
 
+## 🧭 Status & known limits — `v0.2.0`
+
+CLI, ledger, Skill, reference docs (211 offline tests) and the benchmark suite are
+complete. What is **not** proven, so you can judge for yourself:
+
+* **Latency is one location.** Measured from Poland. TypeSafe quotes 70–500 ms
+  depending on distance from the provider — measure your own RTT.
+* **The `shortlist` narrowing loop never fired** in testing; both cases resolved at
+  ≥0.92 confidence. Logic tested, empirical value unproven.
+* **REDUCE recall depends on signal distribution.** 8/14 vs 3/14 comes from a
+  synthetic corpus with evenly scattered signal. Real logs may be better or worse.
+* **`gate` / `verify` / fan-out are measured** (see tables above). `triage`,
+  `rank`, `route` and `extract` are **structural inferences**, not separately
+  benchmarked here.
+* **Savings are modelled from list prices**, not billed.
+
 ## 📚 Docs
 
 | | |

@@ -18,6 +18,55 @@ replaced.
 - Per-repository ledger merging (`jevskill stats --merge`).
 - MCP wrapper, if harnesses turn out to want one.
 
+## [0.2.0] — 2026-09-20
+
+A measurement fix with a version bump, because it changed published numbers: the
+token estimator was under-counting by **2.15×**, which had inflated every
+savings figure in the ledger and could let an oversized state past the budget
+check silently.
+
+### Fixed
+- **`CHARS_PER_TOKEN` was a prose rule of thumb (3.6) applied to logs and code.**
+  Measured against the live API, a state estimated at 3 896 tokens really cost
+  11 484 at one size and 22 861 at another — under-counting by 2.114–2.196×,
+  because log lines and code tokenise far less efficiently than prose. The
+  constant is now derived from that measurement (3.6 / 2.148 = **1.68**), with
+  the measurement table preserved in the docstring so it can be re-derived.
+  Post-fix check: 200 log lines estimate 7 669 vs 7 685 actual — **ratio 1.00**.
+- **`cli._baseline_tokens` open-coded its own `/ 3.6` division** while the rest of
+  the codebase used the constant, so the ledger and the state-budget check could
+  disagree about the size of the same data. It now routes through the single
+  `count_tokens` helper. Every `baseline_tokens` figure recorded before this
+  release was roughly half its true value.
+- Tests no longer hard-code the constant; they derive from it, and one asserts it
+  stays conservative (≤ 2.0) so an under-counting regression fails loudly.
+
+### Added
+- README rewritten around the benefit a harness user actually feels — context
+  growth — rather than the API surface: the 900-line CI log (34 989 tokens into
+  the harness vs 320 after Jev), a session context-growth table at 1/3/5/10 large
+  logs (**73.8%–95.8% less**), per-session and extrapolated savings at published
+  list rates for Sonnet-, GPT-5- and Opus-class models, a head-to-head table
+  against a frontier chat model, the nine patterns as reflexes, and an inline cost
+  sanity check (50 000 decisions = $0.66).
+- An explicit **honesty section** in the README: the flash-lite cost result, Jev's
+  published 67.8% accuracy, the failed first REDUCE design, and the fact that
+  savings figures are modelled from list prices rather than billed.
+- Repository description and 20 GitHub topics for discoverability
+  (`agentic-ai`, `claude-code`, `codex`, `context-window`, `token-efficiency`,
+  `cost-optimization`, `decision-model`, `jev`, `typesafe`, `openrouter`, …).
+
+### Measured
+- Token-reduction basis re-derived: 900 log lines = **34 989 tokens** raw
+  (16289 chars-estimate × 2.148) reduced to **320 tokens** = **99.1%**.
+- Jev's own cost for the 5-log REDUCE pipeline: **$0.0061** — counted against the
+  modelled savings rather than ignored.
+
+### Notes
+- The published savings are **modelled**, not billed: they assume published list
+  prices and a 12 000-token baseline session. The token reduction (99.1%) and all
+  Jev costs are measured. The README labels the difference rather than blurring it.
+
 ## [0.1.0] — 2026-09-20
 
 First complete release: CLI, ledger, Skill, reference docs, 211 tests, and a
