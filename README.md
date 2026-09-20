@@ -708,7 +708,7 @@ jevskill/              the Python package — the measurement half
   stats.py             the effectiveness ledger
   cli.py               doctor · plan · patterns · ask · batch · outcome · stats · advice
   jevtask.py           batching: N items, one question set, measured saving
-  cu/                  computer use: observe (Windows UIA, `[cu]` extra) · reduce · hashing — pure Python otherwise
+  cu/                  computer use: observe (Windows UIA, `[cu]` extra) · reduce · hashing · contract — pure Python otherwise
 bench/
   run.py               E1–E7 microbenchmarks (latency, fan-out, REDUCE, guards)
   ab.py                the A/B evaluation vs the model doing it alone
@@ -716,6 +716,7 @@ bench/
   act_validate.py      the three live calls behind references/act.md §9
   cu_observe_bench.py  UIA walk: comtypes CacheRequest vs uiautomation vs pywinauto → cu_observe_results.json
   cu_tasks.json        10 Windows computer-use tasks with oracles (+ cu_tasks.md)
+  cu_run.py            the task harness: --dry-run (default, synthetic) · --live; cu_report.py renders it
 tests/                 842 tests, offline, green
 docs/install.md        install guide an agent reads and executes
 docs/DESIGN.md         architecture + the mistakes that shaped it

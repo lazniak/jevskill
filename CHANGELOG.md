@@ -197,6 +197,24 @@ teardown confined to `%TEMP%\jevcu`; success is graded by the oracle alone, neve
 by the agent's own `done`/`goal_reached`. Method, metrics and threats to validity
 in `bench/cu_tasks.md`.
 
+### Added — the benchmark harness and the loop contract (`bench/cu_run.py`)
+
+`jevskill/cu/contract.py` fixes the shape a loop must return — `StepRecord`
+(stage timings, candidates, target/op, confidence and margin, the three nouls,
+`decided_by`, whether the tree changed, tokens and cost) and `RunResult`
+(`stop_reason`, steps, escalations, destructive gates, totals). **`RunResult` has
+no `success` field and must not grow one**: the oracle's verdict lives on the
+harness's `TaskRun`, so there is no code path from an agent's own `done` to a
+pass. `bench/cu_run.py` runs setup → agent → oracle → teardown per task with
+dependency-injected callables; `--dry-run` (the default) validates the task
+file, parses all 42 PowerShell snippets for syntax without executing one, drives a
+fake agent and a fake oracle, and marks every row and every report title
+**DRY RUN** so no synthetic number can be mistaken for a measurement. `--live`
+requires `--i-am-not-streaming`, because a live run steals focus and flips
+Settings. `bench/cu_report.py` renders the six per-task metrics from
+`bench/cu_tasks.md` plus escalation counts, and `--compare` puts a second
+results file side by side. No live run has been made yet.
+
 ## [0.11.0] — 2026-09-20
 
 ### Fixed — the vendor endpoint, called for the first time, exposed two defects
