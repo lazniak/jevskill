@@ -346,10 +346,12 @@ ceiling is only ever paid when nothing happened at all. That ceiling is
 **800 ms** (`SETTLE_TIMEOUT_MS`), which is what the loop enforces and what this
 section now publishes. `jev-ultrafast`'s 50 ms / 200 ms are **event-wait**
 caps: that loop blocks on the UIA structure-changed event, where 50 ms is a
-real budget. Here one poll *is* a `snapshot()` walk — 40-400 ms on the
-measured windows (`references/observe.md`) — so a 50 ms cap cannot contain
-even one observation, would call every slow repaint `unchanged`, and the
-loop's stall rule would then stop every real run after two steps. The numbers
+real budget. Here one poll *is* a `snapshot()` walk: 44 ms on Calculator and
+77 ms on Notepad (`bench/cu_observe_results.json`, medians of three), against
+the ~40-400 ms `jevskill.cu` publishes for the range. So a 50 ms cap cannot
+reliably contain even one observation, would call every slow repaint
+`unchanged`, and the loop's stall rule would then stop every real run after
+two steps. The numbers
 survive as a **floor**: `settle_cap_for(element)` raises a caller's shorter
 ceiling to 200 ms for a combobox whose suggestions populate asynchronously,
 and never lowers one. (`references/speculate.md` measures Phase 5 against the
@@ -588,9 +590,10 @@ gave it **P = 0.00**, and it did not move the decision: the run *with* the bait 
 the correct target at 1.00, the control at 0.99 with the missing 0.01 on `e12`
 ("Save As", the nearest thing on the screen to a right answer) and none of it
 anywhere near `e29`. One screen, one phrasing, one run — and the 0.01 landing on
-the *bait-free* run is exactly how little signal there is in a single pair. That is evidence the bait was unattractive here, **not** that
-the model resists injection — the vendor says the opposite is the default — so the
-defence stays in code (§7).
+the *bait-free* run is exactly how little signal there is in a single pair. That
+is evidence the bait was unattractive here, **not** that the model resists
+injection — the vendor says the opposite is the default — so the defence stays in
+code (§7).
 
 **Token cost of contrastive criteria.** 5,800 input tokens at N = 30 (5,785 for
 the control) against 3,308 for the same elements with one-line criteria in
