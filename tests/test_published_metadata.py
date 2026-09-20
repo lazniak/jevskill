@@ -350,6 +350,10 @@ ALLOW_LIST = [
     ("x", 10.0, "TypeSafe parallel-questions cookbook: 13 questions batched, latency"),
     ("%", 95.1, "independent 2,000-email study (anisselbd/jev-phishing-bench): 5 signals + "
                 "logistic regression"),
+    ("%", 62.6, "same study: Jev's single-verdict accuracy (the honest half of the claim)"),
+    ("%", 81.3, "same study: Claude Haiku 4.5 single-verdict accuracy"),
+    ("%", 93.2, "same study: Haiku with the same five signals + logistic regression"),
+    ("%", 91.8, "same study: hand-written regex baseline on the held-out half"),
     ("%", 33.2, "Caveman's published 54-run Claude Code figure, quoted as explicitly "
                 "not comparable"),
     # --- our own superseded numbers, kept on purpose (AGENTS.md: name them, do not
