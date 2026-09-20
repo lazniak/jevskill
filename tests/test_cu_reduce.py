@@ -71,6 +71,27 @@ def screen() -> list:
     ]
 
 
+def list_screen(rows: int) -> list:
+    """One ``list`` region, ``rows`` rows, one "Delete" button per row.
+
+    Every Delete shares ``(role, name, region)`` and differs only in ``parent``
+    — the shape that made per-row controls unreachable.
+    """
+    els = [UIElement(id="e0", role="window", name="App", bbox=(0, 0, 800, 600)),
+           UIElement(id="L", role="list", name="Files", bbox=(0, 40, 800, 500),
+                     parent="e0", region="e0", depth=1)]
+    for index in range(rows):
+        top = 50 + index * 40
+        els.append(UIElement(id="row%d" % index, role="listitem",
+                             name="row %d" % index, bbox=(0, top, 600, 36),
+                             parent="L", region="L", depth=2,
+                             patterns=("select",)))
+        els.append(UIElement(id="del%d" % index, role="button", name="Delete",
+                             bbox=(620, top, 80, 36), parent="row%d" % index,
+                             region="L", depth=3, patterns=("invoke",)))
+    return els
+
+
 class TestFilters:
     def test_visible_enabled_drops_what_cannot_be_clicked(self):
         kept = {el.id for el in visible_enabled(screen())}
@@ -130,11 +151,72 @@ class TestDedupe:
         ]
         assert len(dedupe(els)) == 2
 
+    def test_per_row_controls_survive_one_list(self):
+        """The regression: ten rows, ten Delete buttons, one region.
+
+        Keyed on ``(role, name, region)`` this collapsed to a single survivor
+        with ``duplicates=9`` and "delete row 7" became unreachable. The rows
+        have different parents; that is what tells them apart.
+        """
+        kept = dedupe(interactive(visible_enabled(list_screen(10))))
+        deletes = [el for el in kept if el.name == "Delete"]
+        assert len(deletes) == 10
+        assert "del7" in {el.id for el in kept}
+        assert all(el.duplicates == 0 for el in deletes)
+
+    def test_true_duplicates_under_one_parent_still_collapse(self):
+        """The other half: nine "More options" in one toolbar is still noise."""
+        els = [UIElement(id="bar", role="toolbar", name="Main",
+                         bbox=(0, 0, 800, 40))]
+        els += [UIElement(id="more%d" % i, role="button", name="More options",
+                          bbox=(i * 60, 4, 50, 32), parent="bar", region="bar",
+                          patterns=("invoke",)) for i in range(9)]
+        kept = [el for el in dedupe(interactive(visible_enabled(els)))
+                if el.name == "More options"]
+        assert len(kept) == 1 and kept[0].duplicates == 8
+
+    def test_two_hundred_rows_are_a_cap_problem_not_a_dedupe_problem(self):
+        """Volume is handled by the cap and the ranking, never by deletion."""
+        els = list_screen(200)
+        kept = dedupe(interactive(visible_enabled(els)))
+        assert len([el for el in kept if el.name == "Delete"]) == 200
+        assert len(candidates(els, cap=60)) == 60
+
+
+def modal_screen(n_background: int = 70, focused: bool = True) -> list:
+    """A 72-control screen with a modal on top: 70 tools behind it, 2 in it.
+
+    The shape that exposed the dead dialog prior. Everything in the background
+    shares one region, so before the fix geometry decided the whole order and
+    the modal's two buttons — the only controls that mattered — sorted last.
+    """
+    els = [UIElement(id="e0", role="window", name="App", bbox=(0, 0, 1200, 900)),
+           UIElement(id="e1", role="pane", name="Main", bbox=(0, 40, 1200, 800),
+                     parent="e0", region="e0", depth=1)]
+    for index in range(n_background):
+        els.append(UIElement(
+            id="m%d" % index, role="button", name="Tool %d" % index,
+            bbox=(10 + (index % 10) * 110, 50 + (index // 10) * 40, 100, 32),
+            parent="e1", region="e1", depth=2, patterns=("invoke",),
+            focused=(focused and index == 0)))
+    els.append(UIElement(id="d0", role="dialog", name="Replace file?",
+                         bbox=(300, 300, 500, 200), parent="e0", region="e0",
+                         depth=1))
+    els.append(UIElement(id="d1", role="group", name="", bbox=(310, 400, 480, 60),
+                         parent="d0", region="d0", depth=2))
+    els.append(UIElement(id="d2", role="button", name="Replace",
+                         bbox=(560, 420, 100, 32), parent="d1", region="d1",
+                         depth=3, patterns=("invoke",)))
+    els.append(UIElement(id="d3", role="button", name="Cancel",
+                         bbox=(670, 420, 100, 32), parent="d1", region="d1",
+                         depth=3, patterns=("invoke",)))
+    return els
+
 
 class TestPriority:
     def test_focus_first_then_dialog_then_the_rest(self):
         order = [el.id for el in prioritise(
-            interactive(visible_enabled(screen())), "e12")]
+            interactive(visible_enabled(screen())), "e12", full=screen())]
         assert order[0] == "e12", "the focused control must come first"
         assert order[1] == "e13", "the rest of the modal comes next"
         assert order.index("e13") < order.index("e2")
@@ -151,12 +233,50 @@ class TestPriority:
             "a row must read left to right even when tops differ slightly")
 
     def test_nested_modal_content_still_ranks_as_dialog(self):
+        """Focus is in the *toolbar*, so only the dialog prior can rank this.
+
+        With focus inside the modal this assertion passed through the
+        focus-region path and said nothing about dialogs — the bug it was
+        named for shipped underneath it.
+        """
         deep = UIElement(id="deep", role="button", name="Deep",
                          bbox=(220, 360, 40, 30), parent="e11", region="e11",
                          depth=4, patterns=("invoke",))
+        full = screen() + [deep]
         order = [el.id for el in prioritise(
-            interactive(visible_enabled(screen() + [deep])), "e12")]
-        assert order.index("deep") < order.index("e2")
+            interactive(visible_enabled(full)), "e2", full=full)]
+        assert order.index("deep") < order.index("e3"), (
+            "a control two panes deep inside the modal must outrank the "
+            "toolbar button next to the focused one")
+
+    def test_the_modal_outranks_the_pane_holding_focus(self):
+        """A modal is modal, wherever focus happens to sit."""
+        full = screen()
+        order = [el.id for el in prioritise(
+            interactive(visible_enabled(full)), "e2", full=full)]
+        assert order[0] == "e2"
+        assert order.index("e12") < order.index("e3")
+        assert order.index("e13") < order.index("e3")
+
+    def test_the_dialog_node_is_not_in_the_reduced_list(self):
+        """Why ``full`` exists: the filters delete the evidence.
+
+        ``interactive()`` drops the ``dialog`` node and the unnamed ``group``
+        between it and its buttons, so a parent chain walked over the reduced
+        list can never reach a dialog. Passing ``full`` is not an optimisation.
+        """
+        reduced = interactive(visible_enabled(screen()))
+        assert not any(el.role == "dialog" for el in reduced)
+        assert "e11" not in {el.id for el in reduced}
+
+    @pytest.mark.parametrize("focused", (True, False))
+    def test_a_modal_beats_seventy_background_controls(self, focused):
+        """Measured before the fix: ranks 71 and 72 of 72, outside a cap of 60."""
+        els = modal_screen(focused=focused)
+        assert len(interactive(visible_enabled(els))) == 72
+        picked = [el.id for el in candidates(els, cap=60)]
+        assert {"d2", "d3"} <= set(picked[:10]), (
+            "the modal's buttons must be in the top 10, not the tail")
 
 
 class TestCandidates:
@@ -229,6 +349,38 @@ class TestRegions:
         focus = next(el for el in snap.elements if el.focused)
         state = region_state(snap.elements, cap=3)
         assert any(focus.id in row["members"] for row in state["regions"].values())
+
+    def test_an_oversized_region_is_chunked_not_truncated(self):
+        """254 members, cap 60: member 61 used to be unreachable in both rounds.
+
+        ``members[:cap]`` hid it once in the flat list and again in the cascade,
+        and there is no third level to recover it. Chunks give the second round
+        something to land on.
+        """
+        els = [UIElement(id="e0", role="window", name="App",
+                         bbox=(0, 0, 1600, 4000)),
+               UIElement(id="G", role="group", name="Big panel",
+                         bbox=(0, 40, 1600, 3900), parent="e0", region="e0",
+                         depth=1)]
+        els += [UIElement(id="b%d" % i, role="button", name="Item %d" % i,
+                          bbox=(10 + (i % 8) * 190, 50 + (i // 8) * 40, 180, 36),
+                          parent="G", region="G", depth=2, patterns=("invoke",))
+                for i in range(254)]
+        rows = region_state(els, cap=60)["regions"]
+        assert set(rows) == {"r0a", "r0b", "r0c", "r0d", "r0e"}
+        reachable = [member for row in rows.values() for member in row["members"]]
+        assert len(reachable) == 254 and len(set(reachable)) == 254
+        assert "b60" in reachable, "member 61 must be reachable in two rounds"
+        for row in rows.values():
+            assert len(row["members"]) <= 60, "a chunk is still one Choice"
+            assert row["count"] == len(row["members"])
+            assert row["part"].endswith("/5")
+
+    def test_a_region_that_fits_keeps_its_plain_key(self):
+        """No chunk suffix and no ``part`` when one Choice already covers it."""
+        rows = region_state(screen(), cap=60)["regions"]
+        assert all(key[1:].isdigit() for key in rows), sorted(rows)
+        assert all("part" not in row for row in rows.values())
 
 
 class TestCost:

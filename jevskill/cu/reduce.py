@@ -3,14 +3,22 @@
 This is the cheap half of a computer-use step and it must stay cheap: the step
 budget is ~350-500 ms and ~300 ms of it is the network. Everything here is pure
 Python over dataclasses — no COM, no I/O, no globals — so it is unit-testable
-offline and measurable (``bench/cu_observe_bench.py`` reports it per app; the
-target is <= 2 ms on a 500-node tree).
+offline and measurable. ``bench/cu_observe_bench.py --from-fixtures`` writes the
+numbers to ``bench/cu_observe_results.json``: ``candidates()`` costs 0.043 ms on
+the 34-node Notepad fixture, 0.640 ms at 500 nodes and 2.842 ms at 2,000. The
+"<= 2 ms" the first draft of this docstring claimed holds to ~1,500 nodes and
+not beyond, so the honest statement is: the filter is cheap enough to ignore
+below 500 nodes, and above that the *cap* — not the filter — is what keeps a
+step inside its budget.
 
 Why reduce at all, rather than send the tree:
 
-* A 2,000-node WinUI tree is ~40k tokens of mostly layout panes. The model is
-  measured accurate up to ~60 options; past that the cascade (region first,
-  element second) keeps every individual call inside the measured range.
+* A 2,000-node WinUI tree is ~80k tokens of mostly layout panes (measured on
+  ``synthetic_2000``: 79,672 tokens whole, 2,482 reduced). Reduce for **latency
+  and tokens**, not for accuracy: ``bench/cu_bench.py`` measured ``target`` at
+  0.97-0.99 with 241 options, so the model does not fall over at 60 — but
+  latency climbs +125 ms (vendor) / +205 ms (OpenRouter) by 240 elements, and
+  60 candidates is where a state still fits the 3,500-token budget.
 * Every filter here is a *deterministic* fact — offscreen, disabled, 1x1,
   duplicate. Asking a model to re-derive them wastes the one thing it is good
   at. Code decides what is possible; the model decides what is wanted.
@@ -20,7 +28,9 @@ Order matters and is not arbitrary:
 ``visible_enabled`` -> ``interactive`` -> ``dedupe`` -> ``prioritise`` -> cap
 
 Filtering before deduping means the duplicate that survives is a *reachable*
-one; deduping before prioritising means the sort runs over the short list.
+one; deduping before prioritising means the sort runs over the short list. The
+one thing that must *not* follow that order is the dialog prior: see
+:func:`prioritise`.
 """
 
 from __future__ import annotations
@@ -84,11 +94,21 @@ def _focus_point(elements: Sequence[UIElement],
 
 
 def dedupe(elements: Sequence[Any], *, focus: Optional[Any] = None) -> List[UIElement]:
-    """Collapse ``(role, name, region)`` triples to one representative.
+    """Collapse ``(role, name, region, parent)`` tuples to one representative.
 
-    Ribbons, toolbars and virtualised lists repeat the same name many times;
-    nine identical "More options" buttons cost nine options in a Choice and
-    give the model nine ways to be right, which reads as nine ways to be wrong.
+    Ribbons and toolbars repeat the same name many times; nine identical "More
+    options" buttons cost nine options in a Choice and give the model nine ways
+    to be right, which reads as nine ways to be wrong.
+
+    ``parent`` is in the key and that is the whole correctness of this function.
+    Without it the key was ``(role, name, region)``, and a list is one region:
+    ten rows each carrying a "Delete" button collapsed to **one** survivor with
+    ``duplicates=9``, so "delete row 7" was unreachable — measured, and it is
+    exactly the shape of screen a computer-use loop meets most. Per-row controls
+    have different parents and now all survive; true duplicates (same parent,
+    same role, same name) still collapse. A list of 200 identical rows is a
+    *volume* problem, and volume is what the cap and :func:`prioritise` are for
+    — a filter that answers it by deleting rows answers the wrong question.
 
     The survivor is the one nearest the focused element, because the control the
     user (or the previous step) was last working in is the one a follow-up
@@ -99,9 +119,11 @@ def dedupe(elements: Sequence[Any], *, focus: Optional[Any] = None) -> List[UIEl
     """
     els = as_elements(elements)
     point = _focus_point(els, focus)
-    groups: Dict[Tuple[str, str, Optional[str]], List[Tuple[int, UIElement]]] = {}
+    groups: Dict[Tuple[str, str, Optional[str], Optional[str]],
+                 List[Tuple[int, UIElement]]] = {}
     for index, el in enumerate(els):
-        groups.setdefault((el.role, el.name, el.region), []).append((index, el))
+        groups.setdefault((el.role, el.name, el.region, el.parent),
+                          []).append((index, el))
 
     keep: Dict[str, UIElement] = {}
     for members in groups.values():
@@ -145,19 +167,37 @@ def _reading_order(elements: Sequence[UIElement]) -> List[UIElement]:
     return out
 
 
-def prioritise(elements: Sequence[Any], focus_id: Optional[str] = None) -> List[UIElement]:
-    """Focused first, then the active dialog/pane, then reading order.
+def prioritise(elements: Sequence[Any], focus_id: Optional[str] = None, *,
+               full: Optional[Sequence[Any]] = None) -> List[UIElement]:
+    """Focused first, then the active dialog, then the focused pane, then reading order.
 
     The cap truncates the tail, so this ordering decides what the model never
     sees. The priors are the two that hold across applications: a modal dialog
     owns the next action while it is up, and the pane holding focus is where the
     task was left off.
+
+    **Pass ``full``** — the unreduced element list — or the dialog prior does
+    not exist. :func:`interactive` strips the ``dialog`` node itself and every
+    unnamed ``group`` between it and its buttons, so both ``dialog_ids`` and the
+    parent chain come up empty when this function only sees the reduced list.
+    Measured on a synthetic 72-control screen with a modal open: the two modal
+    buttons ranked 71st and 72nd of 72 — outside a cap of 60, with and without
+    focus — so the loop could not see the only two controls that mattered.
+
+    A dialog member also gets a bucket strictly *above* the focus-region bucket.
+    Merging the two (the original code returned 1 for both) let geometry decide:
+    when focus sat in the pane behind a modal, reading order interleaved the
+    modal's buttons with 70 controls the modal had disabled in spirit if not in
+    UIA. A modal is modal; it outranks wherever focus happens to be.
     """
     els = as_elements(elements)
-    by_id = {el.id: el for el in els}
-    dialog_ids = {el.id for el in els if el.role == "dialog"}
+    # The reduced list is what gets ordered; the full list is what gets *asked*
+    # about ancestry. Two different lists on purpose.
+    scope = as_elements(full) if full is not None else els
+    by_id = {el.id: el for el in scope}
+    dialog_ids = {el.id for el in scope if el.role == "dialog"}
     focus_region = None
-    for el in els:
+    for el in scope:
         if (focus_id is not None and el.id == focus_id) or (focus_id is None and el.focused):
             focus_region = el.region
             if focus_id is None:
@@ -196,28 +236,35 @@ def prioritise(elements: Sequence[Any], focus_id: Optional[str] = None) -> List[
         if dialog_ids and under_dialog(el):
             return 1
         if focus_region is not None and el.region == focus_region:
-            return 1
-        return 2
+            return 2
+        return 3
 
-    buckets: Dict[int, List[UIElement]] = {0: [], 1: [], 2: []}
+    buckets: Dict[int, List[UIElement]] = {0: [], 1: [], 2: [], 3: []}
     for el in els:
         buckets[rank(el)].append(el)
-    return buckets[0] + _reading_order(buckets[1]) + _reading_order(buckets[2])
+    return (buckets[0] + _reading_order(buckets[1]) + _reading_order(buckets[2])
+            + _reading_order(buckets[3]))
 
 
 def candidates(elements: Sequence[Any], cap: int = 60) -> List[UIElement]:
     """The whole reduction, in the order the docstring above justifies.
 
-    ``cap`` defaults to 60 because that is where the published accuracy
-    measurement stops (0.99 to N=60); above it, use :func:`regions` and decide
-    in two steps instead of stretching one call past its measured range.
+    ``cap`` defaults to 60 for **latency and tokens**, not accuracy: a 60-element
+    state is 2,482 tokens on the 2,000-node fixture (budget 3,500), and latency
+    climbs +125 to +205 ms between 30 and 240 elements. Accuracy is not the
+    binding constraint — ``target`` held at 0.97-0.99 with 241 options. Above
+    the cap use :func:`region_state` and decide in two steps, because two cheap
+    calls beat one slow one, not because one call would be wrong.
+
+    The full list is handed to :func:`prioritise` as ``full``: the dialog and
+    the parent chain that proves membership are both stripped by the filters.
     """
     els = as_elements(elements)
     focus_id = next((el.id for el in els if el.focused), None)
     focus_point = _focus_point(els, None)
     kept = interactive(visible_enabled(els))
     kept = dedupe(kept, focus=focus_point)
-    return prioritise(kept, focus_id)[:cap]
+    return prioritise(kept, focus_id, full=els)[:cap]
 
 
 def _region_ancestor(el: UIElement, by_id: Dict[str, UIElement],
@@ -275,7 +322,7 @@ def regions(elements: Sequence[Any]) -> List[Region]:
         else:
             role = host.role if host is not None else "group"
             name = _representative_name(ids, by_id) or (role + " " + region_id)
-            bbox = _union_bbox([by_id[i].bbox for i in ids if i in by_id])
+            bbox = union_bbox([by_id[i].bbox for i in ids if i in by_id])
             if host is not None and host.is_sized():
                 bbox = host.bbox
         out.append(Region(id=region_id, name=name, role=role, bbox=bbox, members=ids))
@@ -290,7 +337,16 @@ def _representative_name(ids: Sequence[str], by_id: Dict[str, UIElement]) -> str
     return ""
 
 
-def _union_bbox(boxes: Sequence[Tuple[int, int, int, int]]) -> Tuple[int, int, int, int]:
+def union_bbox(boxes: Sequence[Tuple[int, int, int, int]]) -> Tuple[int, int, int, int]:
+    """Smallest ``(left, top, width, height)`` covering every non-empty box.
+
+    Public because :mod:`jevskill.cu.observe` needs it to draw the grid
+    ``to_state`` reports cells in, and one module reaching into another's
+    underscore name is a dependency nobody declared. Empty input is ``(0,0,0,0)``
+    rather than an exception: an empty region is a real case (everything in it
+    was filtered) and a caller that has to try/except a geometry helper will
+    eventually not.
+    """
     boxes = [b for b in boxes if b[2] > 0 and b[3] > 0]
     if not boxes:
         return (0, 0, 0, 0)
@@ -299,6 +355,16 @@ def _union_bbox(boxes: Sequence[Tuple[int, int, int, int]]) -> Tuple[int, int, i
     right = max(b[0] + b[2] for b in boxes)
     bottom = max(b[1] + b[3] for b in boxes)
     return (left, top, right - left, bottom - top)
+
+
+def _chunk_suffix(index: int) -> str:
+    """0 -> "a", 25 -> "z", 26 -> "aa". Letters, so ``r3b`` reads as a part."""
+    out = ""
+    index += 1
+    while index:
+        index, remainder = divmod(index - 1, 26)
+        out = chr(ord("a") + remainder) + out
+    return out
 
 
 def region_state(elements: Sequence[Any], cap: int = 60) -> Dict[str, Any]:
@@ -313,11 +379,22 @@ def region_state(elements: Sequence[Any], cap: int = 60) -> Dict[str, Any]:
     produced 71 regions here, and a 71-option Choice is exactly the situation
     the cascade exists to avoid. Regions are ordered by their best-ranked
     member — so the focused control's region and the active dialog's region are
-    never the ones dropped — and the first ``cap`` survive.
+    never the ones dropped — and entries are emitted until ``cap`` is reached.
+
+    **An oversized region is split, not truncated.** ``members[:cap]`` made
+    member 61 of a 254-member region unreachable: the flat cap had already hidden
+    it and the cascade's second round hid it again, with no third level to
+    recover it. A region with more than ``cap`` members is now published as
+    ``r3a``, ``r3b``, ... — each chunk a Choice of at most ``cap`` options,
+    ranked, carrying ``"part": "2/5"`` so the two rounds still reach every
+    member. The residue is honest and bounded: if a screen needs more chunks
+    than ``cap`` entries, the tail is still dropped and a third round would be
+    required. At ``cap=60`` that needs 3,600 ranked candidates in one window.
     """
     els = as_elements(elements)
     ranked = prioritise(dedupe(interactive(visible_enabled(els))),
-                        next((el.id for el in els if el.focused), None))
+                        next((el.id for el in els if el.focused), None),
+                        full=els)
     rank = {el.id: index for index, el in enumerate(ranked)}
 
     scored: List[Tuple[int, Region, List[str]]] = []
@@ -328,10 +405,20 @@ def region_state(elements: Sequence[Any], cap: int = 60) -> Dict[str, Any]:
     scored.sort(key=lambda row: (row[0], row[1].id))
 
     out: Dict[str, Any] = {}
-    for index, (_, region, members) in enumerate(scored[:cap]):
+    for index, (_, region, members) in enumerate(scored):
+        if len(out) >= cap:
+            break
         members.sort(key=lambda i: rank[i])
-        out["r%d" % index] = {
-            "name": region.name, "role": region.role,
-            "members": members[:cap], "count": len(members),
-        }
+        chunks = [members[start:start + cap]
+                  for start in range(0, len(members), cap)]
+        for part, chunk in enumerate(chunks):
+            if len(out) >= cap:
+                break
+            row: Dict[str, Any] = {
+                "name": region.name, "role": region.role,
+                "members": chunk, "count": len(chunk),
+            }
+            if len(chunks) > 1:
+                row["part"] = "%d/%d" % (part + 1, len(chunks))
+            out["r%d%s" % (index, _chunk_suffix(part) if len(chunks) > 1 else "")] = row
     return {"regions": out}

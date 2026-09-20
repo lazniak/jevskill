@@ -68,7 +68,7 @@ import time
 from ctypes import wintypes
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
-from .reduce import _union_bbox
+from .reduce import union_bbox
 from .types import CONTROL_TYPES, REGION_ROLES, Snapshot, UIElement
 
 #: A model does not need a document's whole text to pick a control, and a
@@ -465,7 +465,7 @@ def _frame(elements: Sequence[UIElement]) -> Tuple[int, int, int, int]:
     list, whose first element is a button, and a grid over a button puts every
     candidate in the same cell.
     """
-    return _union_bbox([el.bbox for el in elements])
+    return union_bbox([el.bbox for el in elements])
 
 
 def to_state(snapshot: Union[Snapshot, Sequence[Any]], *,
