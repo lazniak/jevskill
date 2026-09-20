@@ -45,8 +45,9 @@ class FakeClient:
         self.warmed += 1
         return 90.0
 
-    def decide(self, state, questions, session_id=None):
-        FakeClient.calls.append({"state": state, "questions": questions, "session_id": session_id})
+    def decide(self, state, questions, session_id=None, timeout_s=None):
+        FakeClient.calls.append({"state": state, "questions": questions,
+                                 "session_id": session_id, "timeout_s": timeout_s})
         return fake_decisions()
 
     def close(self):
@@ -393,6 +394,106 @@ class TestAdviceCommand:
         code, out, _ = run(capsys, ["advice", "--limit-unproven", "1"])
         assert code == 0
         assert "UNPROVEN" in out
+
+
+class TestBatchCommand:
+    def _fixture(self, tmp_path, n=6):
+        path = tmp_path / "items.jsonl"
+        path.write_text("".join(
+            json.dumps({"id": f"L{i}", "line": f"ERROR line {i}"}) + "\n"
+            for i in range(n)), encoding="utf-8")
+        return path
+
+    def test_batch_runs_and_reports(self, capsys, tmp_path):
+        path = self._fixture(tmp_path)
+        code, out, _ = run(capsys, ["batch", str(path), "--text-key", "line",
+                                    "--question-type", "choice", "--name", "kind",
+                                    "--options", "routine", "problem"])
+        assert code == 0
+        assert "Jev batch" in out
+        assert "reading" in out
+
+    def test_json_output_has_results_and_tally(self, capsys, tmp_path):
+        path = self._fixture(tmp_path)
+        code, out, _ = run(capsys, ["batch", str(path), "--text-key", "line",
+                                    "--question-type", "choice", "--name", "kind",
+                                    "--options", "routine", "problem", "--json"])
+        payload = json.loads(out)
+        assert payload["ok"] is True
+        assert payload["items"] == 6
+        assert len(payload["results"]) == 6
+        assert "tally" in payload
+
+    def test_out_file_is_written(self, capsys, tmp_path):
+        path = self._fixture(tmp_path)
+        out_file = tmp_path / "results.jsonl"
+        run(capsys, ["batch", str(path), "--text-key", "line",
+                     "--question-type", "noul", "--name", "q",
+                     "--out", str(out_file), "--json"])
+        lines = out_file.read_text(encoding="utf-8").strip().splitlines()
+        assert len(lines) == 6
+
+    def test_windowed_uses_fewer_calls_than_items(self, capsys, tmp_path):
+        path = self._fixture(tmp_path, n=16)
+        _code, out, _ = run(capsys, ["batch", str(path), "--text-key", "line",
+                                     "--question-type", "noul", "--name", "q",
+                                     "--window", "8", "--json"])
+        payload = json.loads(out)
+        assert payload["calls"] == 2
+        assert payload["items"] == 16
+
+    def test_per_item_strategy_makes_one_call_each(self, capsys, tmp_path):
+        path = self._fixture(tmp_path, n=4)
+        _code, out, _ = run(capsys, ["batch", str(path), "--text-key", "line",
+                                     "--question-type", "noul", "--name", "q",
+                                     "--strategy", "per-item", "--json"])
+        assert json.loads(out)["calls"] == 4
+
+    def test_limit_caps_items(self, capsys, tmp_path):
+        path = self._fixture(tmp_path, n=10)
+        _code, out, _ = run(capsys, ["batch", str(path), "--text-key", "line",
+                                     "--question-type", "noul", "--name", "q",
+                                     "--limit", "3", "--json"])
+        assert json.loads(out)["items"] == 3
+
+    def test_ledger_rows_are_written_per_call(self, capsys, tmp_path):
+        path = self._fixture(tmp_path, n=8)
+        run(capsys, ["batch", str(path), "--text-key", "line",
+                     "--question-type", "noul", "--name", "q", "--intent", "my-batch",
+                     "--json"])
+        rows = [json.loads(l) for l in (tmp_path / "ledger.jsonl").read_text(
+            encoding="utf-8").strip().splitlines()]
+        assert rows
+        assert all(r["intent"] == "my-batch" for r in rows)
+        assert all(r["which"] == "triage" for r in rows)
+
+    def test_no_ledger_flag_skips_rows(self, capsys, tmp_path):
+        path = self._fixture(tmp_path, n=4)
+        run(capsys, ["batch", str(path), "--text-key", "line",
+                     "--question-type", "noul", "--name", "q", "--no-ledger", "--json"])
+        assert not (tmp_path / "ledger.jsonl").exists()
+
+    def test_missing_file_is_reported(self, capsys, tmp_path):
+        code, _, err = run(capsys, ["batch", str(tmp_path / "nope.jsonl"),
+                                    "--question-type", "noul", "--name", "q"])
+        assert code == 1
+        assert "could not read items" in err
+
+    def test_bad_text_key_is_reported(self, capsys, tmp_path):
+        path = self._fixture(tmp_path)
+        code, _, err = run(capsys, ["batch", str(path), "--text-key", "absent",
+                                    "--question-type", "noul", "--name", "q"])
+        assert code == 1
+        assert "available keys" in err
+
+    def test_measured_baseline_reports_a_saving(self, capsys, tmp_path):
+        path = self._fixture(tmp_path, n=8)
+        _code, out, _ = run(capsys, ["batch", str(path), "--text-key", "line",
+                                     "--question-type", "noul", "--name", "q",
+                                     "--json"])
+        payload = json.loads(out)
+        assert payload["baseline_measured"] is True
+        assert payload["separate_tokens"] > 0
 
 
 class TestArgumentParsing:

@@ -282,8 +282,7 @@ Two rounds is the useful budget. Beyond that you are paying for a coin flip.
 
 ## 5. Iterative design: how to plan multi-call work
 
-A single call is rarely the whole answer. Design the *sequence* before the first
-call. Three reusable shapes:
+Design the *sequence* before the first call. Three reusable shapes:
 
 **Cascade — coarse, then fine.** Cheap broad buckets first, then a second call
 over only the winner's children. Turns 40 options into 5+5 and keeps both calls
@@ -297,6 +296,37 @@ shortlist of ~8 lines (~90 tokens) — **99% of the data never reaches the LLM.*
 **Fan-out then combine — many gates, one decision in code.** Ask every independent
 signal about the same state in one call, then weight them yourself. Use this when
 no single question captures the judgement.
+
+**Batch — the same questions over many items.** When you have N things to decide
+about rather than one thing to decide repeatedly, put several items in one state
+with one question per item. This is the large-dataset path, and it is the cheapest
+shape of all.
+
+```bash
+jevskill batch build.log --text-key line \
+  --question-type choice --name owner \
+  --instructions 'Which team should own `item`?' \
+  --options backend frontend infra unclear \
+  --intent ci-triage --out triaged.jsonl
+# Jev batch [windowed] — 60 items in 8 call(s)
+#   reading  10,674 tokens batched vs 23,288 one-per-call  (54% fewer)
+#   cost     $0.00044831 batched vs $0.00097810 one-per-call   (8 call(s) vs 60)
+#   wall     667 ms
+```
+
+Measured on 60 log lines, half of them genuinely salient: **2.18× fewer input
+tokens and 12× faster than one call per item, with no accuracy cost** — windowed
+found 30/30 salient lines while one per-item call returned no answer at all.
+Reproduce with `python bench/batch_bench.py`.
+
+**Name the item as `` `item` `` and the tool rewrites it per item.** This is not
+cosmetic: batching puts many items in one state, which makes the "question does not
+name its value" failure *more* likely, and that failure is silent. The rewrite is
+mechanical so it cannot be forgotten.
+
+**`--strategy per-item`** trades cost for isolation — one item per call, so a long
+or ambiguous item cannot influence a neighbour. Use it when that matters more than
+tokens.
 
 Budget the calls before starting: `jevskill plan "<problem>"` returns the pattern,
 the layer strategy and the expected call count for free.
@@ -441,6 +471,7 @@ accepting an answer the model already told you it was unsure about.
 jevskill doctor                # key, connectivity, warm latency, live cost
 jevskill patterns              # the palette, with shapes and examples
 jevskill plan "<problem>"      # FREE: should Jev be used? which pattern? how many calls?
+jevskill batch items.jsonl --text-key line --question-type choice --name owner --options a b unclear
 jevskill ask --state ... --questions '<json>'
 jevskill ask --state-file diff.txt --question-type choice --name owner --options a b c unclear
 jevskill outcome <decision_id> correct|incorrect|escalated|overridden|no_action

@@ -9,7 +9,7 @@ tokens on decisions — and start making them for **$0.000013** in **325 ms**.
 
 **A/B tested: 99.3% fewer input tokens, and accuracy went *up* (12/18 → 15/18).**
 
-[![tests](https://img.shields.io/badge/tests-293%20passing-brightgreen)](#-does-it-actually-help-ab-tested)
+[![tests](https://img.shields.io/badge/tests-344%20passing-brightgreen)](#-does-it-actually-help-ab-tested)
 [![A/B](https://img.shields.io/badge/A%2FB-99.3%25%20fewer%20tokens-blue)](#-does-it-actually-help-ab-tested)
 [![cost](https://img.shields.io/badge/decision-%240.000013-success)](#-cost-per-decision)
 [![license](https://img.shields.io/badge/license-MIT-informational)](LICENSE)
@@ -316,6 +316,48 @@ jevskill plan "there are too many log lines" --state-file build.log   # free go/
 
 ---
 
+## 📦 Large datasets — `jevskill batch`
+
+The case that matters most: N things to decide about, not one thing to decide
+repeatedly. Triage a build log, label a backlog, classify failing tests, filter
+candidates.
+
+```bash
+jevskill batch build.log --text-key line \
+  --question-type choice --name owner \
+  --instructions 'Which team should own `item`?' \
+  --options backend frontend infra unclear \
+  --intent ci-triage --out triaged.jsonl
+```
+
+Measured on 60 log lines, half genuinely salient, both strategies on identical
+items (`python bench/batch_bench.py`):
+
+| | **windowed** (default) | per-item |
+|---|---:|---:|
+| Input tokens | **10,674** | 23,288 |
+| Cost | **$0.000448** | $0.000978 |
+| Wall clock | **667 ms** | 7,979 ms |
+| API calls | **8** | 60 |
+| Salient lines found | **30/30** | 29/30 |
+
+**2.18× fewer input tokens and 12× faster — with no accuracy cost.** Windowed found
+every salient line while one per-item call returned no answer at all.
+
+Three things worth knowing:
+
+- **Name the item as `` `item` `` and the tool rewrites it per item.** Not
+  cosmetic: batching puts many items in one state, which makes the "question does
+  not name its value" failure *more* likely — and that failure is silent. The
+  rewrite is mechanical so it cannot be forgotten.
+- **`--strategy per-item` trades cost for isolation.** One item per call, so a long
+  or ambiguous item cannot influence a neighbour.
+- **Items come from JSONL, a JSON array, or a plain line-per-item file.** The most
+  common input in practice is a file of log lines, so anything that is not JSON is
+  treated as a string.
+
+---
+
 ## 🧪 Measured, not marketed
 
 **148 decisions, 1,188 questions, live API.** Every number below came from
@@ -489,18 +531,19 @@ jevskill/              the Python package — the measurement half
   primitives.py        noul / choice / score, with validation that prevents 400s
   orchestrate.py       pattern selection, profiling, chunking, iteration rules
   stats.py             the effectiveness ledger
-  cli.py               doctor · plan · patterns · ask · outcome · stats · advice
+  cli.py               doctor · plan · patterns · ask · batch · outcome · stats · advice
+  jevtask.py           batching: N items, one question set, measured saving
 bench/
   run.py               E1–E7 microbenchmarks (latency, fan-out, REDUCE, guards)
   ab.py                the A/B evaluation vs the model doing it alone
-tests/                 293 tests, offline, green
+tests/                 344 tests, offline, green
 docs/DESIGN.md         architecture + the mistakes that shaped it
 AGENTS.md              conventions for agents working on this repo
 ```
 
 ## 🧭 Status & known limits — `v0.3.0`
 
-CLI, skill, bundled scripts, ledger and reference docs (293 offline tests) are
+CLI, skill, bundled scripts, ledger and reference docs (344 offline tests) are
 complete, and there are now two benchmark suites. What is **not** proven:
 
 * **Latency is one location.** Measured from Poland. TypeSafe quotes 70–500 ms

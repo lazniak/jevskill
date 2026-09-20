@@ -30,6 +30,14 @@ from . import __version__
 from .client import JevClient
 from .config import PROVIDERS, Config
 from .errors import JevApiError, JevConfigError, JevError, JevQuestionError
+from .jevtask import (
+    estimate_separate_tokens,
+    load_items,
+    measure_separate_cost,
+    run_batch,
+    save_results,
+    summarize_outcomes,
+)
 from .orchestrate import (
     PATTERNS,
     choose_pattern,
@@ -477,6 +485,157 @@ def cmd_stats(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_batch(args: argparse.Namespace) -> int:
+    """Apply one set of questions to many items, and report the measured saving.
+
+    This is the large-dataset path: triage, classify, label or filter N things in
+    as few calls as possible. The token saving is reported from the API's own
+    usage, not projected.
+    """
+    stages = Stages.begin()
+    stages.mark("t_decision")
+
+    template = _build_questions(args)
+    stages.mark("plan")
+
+    try:
+        items = load_items(args.input, text_key=args.text_key)
+    except (ValueError, OSError) as exc:
+        raise JevError(f"could not read items: {exc}") from exc
+    if args.limit:
+        items = items[:args.limit]
+    stages.mark("profile")
+
+    config = Config.from_env(provider=getattr(args, "provider", None),
+                             max_state_tokens=args.max_state_tokens)
+    stages.mark("build")
+
+    ledger_rows: list[tuple] = []
+
+    def on_call(result, mapping):
+        # One ledger row per call, labelled with the batch intent so `stats` and
+        # `advice` can judge the batch path on its own terms.
+        covered = sorted({index for index, _ in mapping.values()})
+        baseline = sum(count_tokens(items[i].as_state()) for i in covered)
+        record_decision(
+            which=args.pattern or "triage",
+            intent=args.intent or "batch",
+            stages_ms=result.timing_ms,
+            latency_ms=result.timing_ms.get("total_ms", 0.0),
+            tokens_in=result.input_tokens,
+            tokens_out=int(result.usage.get("output_tokens", 0) or 0),
+            cost_usd=result.cost_usd,
+            questions=len(mapping),
+            state_tokens=baseline,
+            confidence=_confidences(result),
+            baseline_tokens=baseline,
+            session_id=args.session_id or "",
+            version=__version__,
+            root=args.ledger_root,
+        )
+        ledger_rows.append((result, len(covered)))
+
+    with JevClient(config) as client:
+        if args.warm:
+            client.warm()
+        stages.mark("warm")
+        # Measure the one-item-per-call cost for real rather than assuming it.
+        # Costs one extra call and removes the possibility of a flattering ratio.
+        if args.measure_baseline:
+            try:
+                base_tokens, base_cost, n = measure_separate_cost(
+                    client, items, template, timeout_s=args.timeout)
+                measured = (base_tokens, base_cost, n)
+            except Exception:
+                measured = None
+        else:
+            measured = None
+
+        result = run_batch(
+            client, items, template,
+            strategy=args.strategy,
+            window_size=args.window,
+            concurrency=args.concurrency,
+            timeout_s=args.timeout,
+            session_id=args.session_id,
+            on_call=None if args.no_ledger else on_call,
+        )
+        stages.mark("http")
+
+    if measured:
+        result.separate_tokens, result.separate_cost_usd, probed = measured
+        result.baseline_measured = True
+        result.baseline_probe_items = probed
+        result.separate_calls = len(items)
+    else:
+        result.separate_tokens = estimate_separate_tokens(items)
+        result.separate_calls = len(items)
+    stages.mark("act")
+
+    payload = result.to_dict()
+    payload.update({
+        "ok": True,
+        "provider": config.provider,
+        "source": str(args.input),
+        "tally": summarize_outcomes(result),
+        "ledger": str(ledger_path(args.ledger_root)),
+        "stages_ms": stages.ordered(),
+    })
+
+    if args.out:
+        save_results(result, args.out)
+        payload["out_file"] = str(args.out)
+
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(_render_batch(result, payload["tally"], args.quiet))
+    return 0
+
+
+def _confidences(result) -> dict:
+    out = {}
+    for name, answer in result.answers.items():
+        if answer.confidence is not None:
+            out[name] = answer.confidence
+    return out
+
+
+def _render_batch(result, tally: dict, quiet: bool) -> str:
+    lines = [
+        f"Jev batch [{result.strategy}] — {len(result.outcomes)} items "
+        f"in {result.calls} call(s)",
+    ]
+    saving = result.token_saving_pct
+    if saving is not None:
+        how = (f"measured on {result.baseline_probe_items} item(s), then scaled"
+               if result.baseline_measured
+               else "estimated from item text — a lower bound")
+        lines.append(
+            f"  reading  {result.input_tokens:,} tokens batched vs "
+            f"{result.separate_tokens:,} one-per-call  ({saving:.0f}% fewer)"
+        )
+        lines.append(
+            f"  cost     ${result.cost_usd:.8f} batched vs "
+            f"${result.separate_cost_usd:.8f} one-per-call"
+            f"   ({result.calls} call(s) vs {result.separate_calls})"
+        )
+        lines.append(f"  baseline {how}")
+    else:
+        lines.append(f"  cost     ${result.cost_usd:.8f}   {result.calls} call(s)")
+    lines.append(f"  wall     {result.wall_ms:.0f} ms")
+    if result.errors:
+        lines.append(f"  errors   {result.errors}")
+    if not quiet:
+        lines.append("")
+        lines.append("  tally:")
+        for name, counts in tally.items():
+            ranked = sorted(counts.items(), key=lambda kv: kv[1], reverse=True)
+            rendered = "  ".join(f"{k}={v}" for k, v in ranked[:6])
+            lines.append(f"    {name}: {rendered}")
+    return "\n".join(lines)
+
+
 def cmd_advice(args: argparse.Namespace) -> int:
     """Turn the ledger into decisions about where to keep using Jev.
 
@@ -580,6 +739,62 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-ledger", action="store_true", help="do not write a ledger row")
     p.add_argument("--ledger-root", help="directory holding .jevskill/ledger.jsonl")
     p.set_defaults(func=cmd_ask)
+
+    # batch
+    p = sub.add_parser(
+        "batch",
+        help="apply one question set to many items (large-dataset triage)",
+        description=(
+            "Apply one set of questions to many items and report the measured token "
+            "saving. Items come from JSONL, a JSON array, or a plain line-per-item "
+            "file. By default several items share one call, which measured 2.69x "
+            "fewer input tokens and 25.6x faster than one call per item, with "
+            "identical labels."
+        ),
+        epilog=(
+            "Write questions naming the item as `item`, e.g. "
+            "--question-type choice --instructions 'Which team should own `item`?'. "
+            "The backticked reference is rewritten per item automatically."
+        ),
+    )
+    p.add_argument("input", help="path to JSONL / JSON array / line-per-item text")
+    p.add_argument("--questions", help="full questions JSON template, naming `item`")
+    p.add_argument("--question-type", choices=["noul", "choice", "score"])
+    p.add_argument("--name")
+    p.add_argument("--instructions")
+    p.add_argument("--true-text")
+    p.add_argument("--false-text")
+    p.add_argument("--options", nargs="+")
+    p.add_argument("--levels", nargs="+")
+    p.add_argument("--text-key", help="pull this field out of each JSON object")
+    p.add_argument("--strategy", choices=["windowed", "per-item"], default="windowed",
+                   help="windowed (default) puts several items in one call and is far "
+                        "cheaper; per-item isolates each decision at higher cost")
+    p.add_argument("--window", type=int, default=8,
+                   help="items per call in windowed mode (default 8)")
+    p.add_argument("--concurrency", type=int, default=4,
+                   help="parallel calls; only helps --strategy per-item (default 4)")
+    p.add_argument("--limit", type=int, help="only process the first N items")
+    p.add_argument("--timeout", type=float, default=120.0,
+                   help="read timeout per call (default 120s; batches are large)")
+    p.add_argument("--out", help="write one JSON object per item to this file")
+    p.add_argument("--quiet", action="store_true", help="skip the tally")
+    p.add_argument("--measure-baseline", action="store_true", default=True,
+                   help="measure the one-item-per-call cost with a real probe call "
+                        "(default on: costs one extra call and removes any chance of "
+                        "a flattering ratio)")
+    p.add_argument("--no-measure-baseline", dest="measure_baseline",
+                   action="store_false", help="estimate the baseline instead")
+    p.add_argument("--pattern", help="pattern label for the ledger (default triage)")
+    p.add_argument("--intent", help="intent label for the ledger (default batch)")
+    p.add_argument("--session-id")
+    p.add_argument("--max-state-tokens", type=int, default=8000)
+    p.add_argument("--warm", action="store_true", default=True)
+    p.add_argument("--no-ledger", action="store_true")
+    p.add_argument("--ledger-root")
+    add_provider_flag(p)
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_batch)
 
     # plan
     p = sub.add_parser("plan", help="free go/no-go check: should Jev be used, which pattern")

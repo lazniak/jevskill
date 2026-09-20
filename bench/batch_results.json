@@ -1,0 +1,51 @@
+{
+  "items": 60,
+  "salient": 30,
+  "window": 8,
+  "runs": 1,
+  "windowed": [
+    {
+      "tokens": 10674,
+      "cost_usd": 0.00044830799999999996,
+      "wall_ms": 667.3139999911655,
+      "calls": 8,
+      "errors": 0,
+      "score": {
+        "caught": 30,
+        "of": 30,
+        "false_positives": 0,
+        "missed": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "tally": {
+          "problem": 30,
+          "routine": 30
+        }
+      }
+    }
+  ],
+  "per_item": [
+    {
+      "tokens": 23288,
+      "cost_usd": 0.0009780959999999997,
+      "wall_ms": 7979.203299997607,
+      "calls": 60,
+      "errors": 2,
+      "score": {
+        "caught": 29,
+        "of": 30,
+        "false_positives": 0,
+        "missed": 1,
+        "precision": 1.0,
+        "recall": 0.967,
+        "tally": {
+          "problem": 29,
+          "routine": 29,
+          "None": 2
+        }
+      }
+    }
+  ],
+  "token_ratio": 2.18,
+  "wall_ratio": 11.96
+}

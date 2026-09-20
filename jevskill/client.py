@@ -268,11 +268,16 @@ class JevClient:
         questions: Mapping[str, dict],
         *,
         session_id: str | None = None,
+        timeout_s: float | None = None,
     ) -> Decisions:
         """One round trip: one state, all questions, all answers.
 
         Questions are evaluated in parallel, so adding a question is nearly free.
         Prefer one call with six questions over six calls with one.
+
+        ``timeout_s`` overrides the read timeout for this call only. Callers that
+        batch — many items in one state, hence a long payload — should raise it,
+        while the default stays tuned for a single small decision.
         """
         validate_questions(questions)
         t0 = time.perf_counter_ns()
@@ -298,7 +303,7 @@ class JevClient:
             if attempt:
                 time.sleep(min(0.25 * (2 ** (attempt - 1)), 2.0))
             try:
-                raw, status = self._post(body)
+                raw, status = self._post(body, timeout_s=timeout_s)
             except Exception as exc:  # transport-level
                 last_error = exc
                 if attempt >= self.config.retries:
@@ -372,9 +377,14 @@ class JevClient:
         return [self.decide(state, questions, **kwargs) for state, questions in items]
 
     # ------------------------------------------------------------------ transport
-    def _post(self, body: bytes) -> tuple[bytes, int]:
+    def _post(self, body: bytes, *, timeout_s: float | None = None) -> tuple[bytes, int]:
         if self._client is not None:
-            response = self._client.post(self.config.decisions_url, content=body)
+            kwargs = {}
+            if timeout_s is not None and httpx is not None:
+                kwargs["timeout"] = httpx.Timeout(
+                    timeout_s, connect=self.config.timeout_connect_s
+                )
+            response = self._client.post(self.config.decisions_url, content=body, **kwargs)
             self.requests_sent += 1
             return response.content, response.status_code
         request = urllib.request.Request(
@@ -387,7 +397,9 @@ class JevClient:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(request, timeout=self.config.timeout_read_s) as response:
+            with urllib.request.urlopen(
+                request, timeout=timeout_s or self.config.timeout_read_s
+            ) as response:
                 self.requests_sent += 1
                 return response.read(), response.status
         except urllib.error.HTTPError as exc:

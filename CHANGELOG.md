@@ -13,13 +13,85 @@ replaced.
 ### Planned
 - A genuinely ambiguous case for the `shortlist` pattern, so narrowing can be
   demonstrated rather than only unit-tested.
-- `jevskill batch` — read a JSONL/CSV of items and run one pattern across them
-  with progress and a resumable ledger. (Not to be confused with `--provider`.)
 - Block-level REDUCE, so a gate can keep a parent key together with its values.
   The `yaml_drift` loss in the A/B suite is exactly this gap.
 - Per-repository ledger merging (`jevskill stats --merge`).
 - Live verification of the vendor endpoint. It is verified by 51 unit tests plus
   endpoint existence, but not by a real call — no TypeSafe key was available.
+
+## [0.6.0] — 2026-09-20
+
+The large-dataset path. The objective named *"large datasets"* as the case that
+matters most, and every command until now handled one decision at a time.
+
+### Added
+
+**`jevskill batch`** — apply one set of questions to many items, and report the
+token saving the API actually reported rather than a projection.
+
+```bash
+jevskill batch build.log --text-key line \
+  --question-type choice --name owner \
+  --instructions 'Which team should own `item`?' \
+  --options backend frontend infra unclear \
+  --intent ci-triage --out triaged.jsonl
+```
+
+Measured on 60 log lines, half genuinely salient, both strategies on identical
+items (`python bench/batch_bench.py`):
+
+| | windowed (default) | per-item |
+|---|---:|---:|
+| Input tokens | **10,674** | 23,288 |
+| Cost | **$0.000448** | $0.000978 |
+| Wall clock | **667 ms** | 7,979 ms |
+| API calls | **8** | 60 |
+| Salient lines found | **30/30** | 29/30 |
+
+**2.18× fewer input tokens and 12× faster, with no accuracy cost.** Windowed found
+every salient line while one per-item call returned no answer at all.
+
+Two strategies: ``windowed`` puts several items in one call; ``per-item`` isolates
+each decision at higher cost, for when a long or ambiguous item must not influence
+a neighbour. Both write ledger rows, so ``stats`` and ``advice`` see them.
+
+**Items from JSONL, a JSON array, or a plain line-per-item file.** Anything that is
+not JSON is treated as a string, because the commonest input in practice is a file
+of log lines.
+
+**The `item` reference is rewritten mechanically.** `_retarget` rewrites a
+backticked `` `item` `` (and `` `item.path` ``) to the item's actual state key in
+instructions, criteria, and structured objects. This is not cosmetic: batching puts
+many items in one state, which makes the *"question does not name its value"*
+failure **more** likely, and that failure is silent — it returns a plausible number
+for every candidate. The rewrite cannot be forgotten because it is not manual.
+
+**`--measure-baseline`** (on by default) makes one real probe call to measure the
+one-item-per-call cost, then scales it. The obvious alternative — summing the
+items' own tokens — is wrong in the direction that flatters batching: a per-item
+call also pays for question text and per-request framing, which on small items
+exceeds the item itself. A first cut compared a batched payload against item text
+alone and printed **"-313% fewer"** on a run that was in fact 61% cheaper.
+
+### Fixed
+- `JevClient.decide` accepts a per-call `timeout_s`. Batches send larger payloads
+  than a single decision, so the read timeout must be raisable without changing the
+  default that suits small calls.
+- `JevClient._post` honours that timeout on both the httpx and the stdlib
+  transport paths.
+
+### Documented
+- `SKILL.md` §5 gains **batch** as a fourth reusable shape, alongside cascade,
+  reduce and fan-out — with the caveat that this is the shape where the
+  name-the-value rule bites hardest.
+- README documents the command with the measured table.
+
+### Tests
+51 new tests. `tests/test_jevtask.py` (36) covers the template rewrite in every
+position it can appear, the loader's three formats, both strategies, attribution of
+answers to the right item, and that **a failed call loses only its own items**.
+`tests/test_cli.py` (15) covers the command surface, ledger rows, `--no-ledger`,
+and the measured baseline. 293 → 344.
 
 ## [0.5.0] — 2026-09-20
 

@@ -41,7 +41,7 @@ because passing the wrong one is a 404 or a 422.
 ## Running things
 
 ```bash
-python -m pytest -q                       # 293 tests, offline, must stay green
+python -m pytest -q                       # 344 tests, offline, must stay green
 python bench/run.py --legacy-reduce       # live API: E1-E7, writes bench/results.json
 python bench/ab.py --runs 3               # live API: the A/B evaluation, writes bench/ab_results.json
 
@@ -49,6 +49,7 @@ python skills/jev/scripts/jev_query.py --help       # the bundled, zero-install 
 python skills/jev/scripts/jev_recovery.py --list    # read back what REDUCE rejected
 python -m jevskill patterns                         # the usage palette
 python -m jevskill advice                           # KEEP / STOP / ESCALATE per pattern
+python bench/batch_bench.py                         # live API: batch vs per-item
 ```
 
 The benchmark scripts spend real money (a few cents) and need
