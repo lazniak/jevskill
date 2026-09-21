@@ -68,6 +68,18 @@ LAUNCH_SETTLE_S = 1.5
 LAUNCH_WAIT_S = 5.0
 ELEMENTS_FOR_LLM = 60
 EVENT_LIMIT = 2000
+#: Candidates the loop keeps before falling back to the two-stage region
+#: cascade. The loop's own default is 60, tuned on Notepad and Calculator; a
+#: Windows Save As dialog reduces to ~90 interactive controls, and at 60 the
+#: reading-order cut dropped exactly the file-name field and the Save button
+#: while the region stage found "no region holds the control" (measured
+#: 2026-09-21, every step of the dialog goal ended `unknown_op`). At 150 the
+#: dialog is one decision of ~1,400 state tokens — cents — and the cascade is
+#: kept for windows that really are large.
+OPERATOR_CAP = 150
+#: The observe budget: the same dialog took 634 ms to walk once and 448 ms the
+#: next time; the loop's default of 600 ms marks that `over_budget`.
+OBSERVE_BUDGET_MS = 1500.0
 
 #: Programs a plan may start without asking. Anything else goes through the
 #: same confirm gate as a destructive click — a model that decides to launch
@@ -177,13 +189,95 @@ def quoted_text(goal: str) -> Optional[str]:
 def _default_observe() -> Snapshot:
     from .observe import snapshot  # Windows-only; resolved per call
 
-    return snapshot()
+    return snapshot(budget_ms=OBSERVE_BUDGET_MS)
 
 
 def _default_foreground_title() -> str:
     from .observe import foreground_hwnd, window_title
 
     return window_title(foreground_hwnd())
+
+
+def _default_foreground_hwnd() -> int:
+    from .observe import foreground_hwnd
+
+    return int(foreground_hwnd())
+
+
+def _default_top_windows() -> set:
+    """Handles of the visible, titled top-level windows — before/after a launch."""
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.windll.user32  # type: ignore[attr-defined]
+    found: List[int] = []
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def visit(hwnd, _lparam):
+        if user32.IsWindowVisible(hwnd) and user32.GetWindowTextLengthW(hwnd) > 0:
+            found.append(int(hwnd))
+        return True
+
+    user32.EnumWindows(visit, 0)
+    return set(found)
+
+
+def _default_window_pid(hwnd: int) -> int:
+    from .observe import window_pid
+
+    return int(window_pid(int(hwnd)) or 0)
+
+
+def _default_window_process(hwnd: int) -> str:
+    """Executable name owning ``hwnd`` (``Notepad.exe``), or ``""``."""
+    from .observe import process_name, window_pid
+
+    try:
+        return str(process_name(window_pid(hwnd)) or "")
+    except Exception:
+        return ""
+
+
+def _default_bring_to_front(hwnd: int) -> bool:
+    """Ask Windows to put ``hwnd`` in front; True when it is there afterwards.
+
+    A process that is not the foreground process is normally refused
+    ``SetForegroundWindow`` — the launched window flashes in the taskbar instead.
+    ``SwitchToThisWindow`` is the documented-as-legacy call that still switches
+    in that case; ``SetForegroundWindow`` follows for the cases where it is
+    allowed, and a minimised window is restored first. The caller verifies.
+    """
+    import ctypes
+
+    user32 = ctypes.windll.user32  # type: ignore[attr-defined]
+    kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+    hwnd = int(hwnd)
+    if user32.IsIconic(hwnd):
+        user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+    try:
+        user32.SwitchToThisWindow(hwnd, True)
+    except Exception:
+        pass
+    user32.SetForegroundWindow(hwnd)
+    if int(user32.GetForegroundWindow()) == hwnd:
+        return True
+    # Refused. Attach to the foreground window's input thread, which makes this
+    # thread count as "the process that owns the foreground" for the duration,
+    # then ask again. Measured 2026-09-21: from the console's own process the
+    # plain call above was refused every time; this one was not.
+    front = user32.GetForegroundWindow()
+    front_thread = user32.GetWindowThreadProcessId(front, None) if front else 0
+    ours = kernel32.GetCurrentThreadId()
+    attached = bool(front_thread and front_thread != ours
+                    and user32.AttachThreadInput(ours, front_thread, True))
+    try:
+        user32.BringWindowToTop(hwnd)
+        user32.SetForegroundWindow(hwnd)
+        user32.SetActiveWindow(hwnd)
+    finally:
+        if attached:
+            user32.AttachThreadInput(ours, front_thread, False)
+    return int(user32.GetForegroundWindow()) == hwnd
 
 
 def _default_launcher(target: str) -> None:
@@ -203,6 +297,11 @@ class Operator:
                  observe: Optional[Callable[[], Snapshot]] = None,
                  backend_factory: Optional[Callable[[], Any]] = None,
                  foreground_title: Optional[Callable[[], str]] = None,
+                 foreground_hwnd: Optional[Callable[[], int]] = None,
+                 top_windows: Optional[Callable[[], set]] = None,
+                 window_pid: Optional[Callable[[int], int]] = None,
+                 window_process: Optional[Callable[[int], str]] = None,
+                 bring_to_front: Optional[Callable[[int], bool]] = None,
                  launcher: Optional[Callable[[str], Any]] = None,
                  platform_check: Optional[Callable[[], Dict[str, Any]]] = None,
                  kill_switch: Optional[KillSwitch] = None,
@@ -214,6 +313,19 @@ class Operator:
         self._observe = observe or _default_observe
         self._backend_factory = backend_factory or (lambda: act_module.UiaBackend())
         self._foreground_title = foreground_title or _default_foreground_title
+        self._foreground_hwnd = foreground_hwnd or _default_foreground_hwnd
+        self._top_windows = top_windows or _default_top_windows
+        self._window_pid = window_pid or _default_window_pid
+        self._window_process = window_process or _default_window_process
+        #: The window a run works in: pinned after a launch or after the user
+        #: brought it to the front. Every observation and every action first
+        #: checks the foreground still belongs to its process (a dialog it
+        #: opened counts); if the user switched away the window is brought
+        #: back once, and if that fails the step refuses to act.
+        self._target: Dict[str, int] = {"hwnd": 0, "pid": 0}
+        self._abort_goal: str = ""
+        self._exec_failures: int = 0
+        self._bring_to_front = bring_to_front or _default_bring_to_front
         self._launcher = launcher or _default_launcher
         self._platform_check = platform_check or platform_status
         stop_file = ledger_path(ledger_root).parent / STOP_FILE_NAME
@@ -248,6 +360,10 @@ class Operator:
         command = (command or "").strip()
         if not command:
             raise ValueError("the command is empty")
+        if not self.busy:
+            # A STOP that ended the previous run must not veto this planning
+            # call: the switch is armed per run, and between runs it is silent.
+            self.kill.reset()
         llm = self._make_llm(model)
         scratch = Run(id="plan", command=command, model=self._model_id(model))
         steps, note = self._plan(scratch, llm, command)
@@ -282,12 +398,23 @@ class Operator:
                     raise ValueError("the supplied plan has no usable steps")
             self.run = run
             self._verify_cache = {}
+            self._target = {"hwnd": 0, "pid": 0}
+            self._abort_goal = ""
+            self._exec_failures = 0
+            self._agreed_done = ""
+            self._refocused = 0
             self._thread = threading.Thread(target=self._main, args=(run, llm),
                                             name="jev-operator", daemon=True)
             self._thread.start()
             return run.id
 
     def stop(self, reason: str = "STOP button") -> Dict[str, Any]:
+        if not self.busy:
+            # Nothing to stop. Tripping the switch anyway would leave it set
+            # until the next run arms it, and `plan()` would then refuse with
+            # "Stopped: STOP button" — which is how the panel's plan button
+            # first answered 500.
+            return self.status()
         self.kill.trigger(reason)
         self._confirm_answer = False
         self._confirm_event.set()
@@ -318,6 +445,9 @@ class Operator:
             self._finish(run, "failed", error="%s: %s" % (type(exc).__name__, exc))
         finally:
             self.kill.disarm()
+            # The reason is already on the run; a set switch outliving its run
+            # would veto the next `plan()`.
+            self.kill.reset()
             ledger = self._ledger
             if ledger is not None:
                 try:
@@ -362,10 +492,15 @@ class Operator:
                 # and without this check a Jev-only run would go on to report
                 # itself *failed* — the user pressed STOP, and that is the reason.
                 raise Stopped(self.kill.reason or "stopped")
-            if result.stop_reason == "done":
+            agreed = self._agreed_done if result.stop_reason == "escalated" else ""
+            if result.stop_reason == "done" or agreed:
                 step.status = "done"
-                self._event(run, "goal_done", "goal %d done after %d step%s" % (
-                    index + 1, step.steps, "" if step.steps == 1 else "s"))
+                if agreed:
+                    step.stop_reason = "done"
+                    step.note = agreed[:200]
+                self._event(run, "goal_done", "goal %d done after %d step%s%s" % (
+                    index + 1, step.steps, "" if step.steps == 1 else "s",
+                    (" — %s judged it complete: %s" % (run.model, agreed)) if agreed else ""))
                 index += 1
                 continue
             step.note = (result.error or (result.steps[-1].note if result.steps else ""))[:200]
@@ -405,14 +540,40 @@ class Operator:
                              {"op": "launch", "target": target, "name": target}):
                 raise Stopped("launch of %s refused" % target) if self.kill.event.is_set() \
                     else RuntimeError("launch refused: %s" % target)
-        before = self._title_or_empty()
+        before = self._hwnd_or_zero()
+        known = self._windows_or_empty()
         self._event(run, "launch", "launching %s" % target)
         self._launcher(target)
         time.sleep(LAUNCH_SETTLE_S)
         deadline = time.time() + LAUNCH_WAIT_S
-        while time.time() < deadline and self._title_or_empty() == before:
+        while time.time() < deadline and self._hwnd_or_zero() == before:
             self.kill.raise_if_tripped()
+            # Windows refuses a background process the foreground: the new
+            # window flashes in the taskbar while whatever the user had in front
+            # stays there — and "act on the foreground window" would act on
+            # *that*. So the window is found and switched to: a *new* top-level
+            # window first; failing that, an existing window of the launched
+            # program — Windows 11 Notepad is single-instance and answers a
+            # second launch with a new tab in the window it already has.
+            current = self._windows_or_empty()
+            candidates = sorted(current - known) or self._windows_of(target, current)
+            for hwnd in candidates:
+                try:
+                    switched = bool(self._bring_to_front(hwnd))
+                except Exception as exc:
+                    switched = False
+                    self._event(run, "switch", "switching to window %d raised %s"
+                                % (hwnd, type(exc).__name__))
+                    continue
+                self._event(run, "switch", "switching to window %d: %s"
+                            % (hwnd, "ok" if switched else "refused"))
+                if switched:
+                    break
             time.sleep(0.25)
+        if self._hwnd_or_zero() == before:
+            raise RuntimeError("%s started but did not come to the front; click its window "
+                               "and start again without the launch" % target)
+        self._pin(run, self._hwnd_or_zero())
 
     def _wait_for_target_window(self, run: Run) -> None:
         deadline = time.time() + WINDOW_WAIT_S
@@ -430,9 +591,62 @@ class Operator:
                                    % WINDOW_WAIT_S)
             self.kill.raise_if_tripped()
             time.sleep(0.25)
-        if warned:
-            self._event(run, "window", "working in: %s" % self._title_or_empty())
+        self._pin(run, self._hwnd_or_zero())
         self._set_state(run, "running")
+
+    def _pin(self, run: Run, hwnd: int) -> None:
+        pid = 0
+        try:
+            pid = int(self._window_pid(hwnd) or 0) if hwnd else 0
+        except Exception:
+            pid = 0
+        self._target = {"hwnd": int(hwnd or 0), "pid": pid}
+        self._event(run, "window", "working in: %s" % (self._title_or_empty() or "?"),
+                    {"hwnd": self._target["hwnd"], "pid": pid})
+
+    def _ensure_target_in_front(self, what: str) -> None:
+        """Before observing and before acting: is the pinned app still in front?
+
+        The foreground may legitimately be another window of the same process
+        (a Save As dialog), so the comparison is by pid. If the user switched
+        away, the window is brought back once per run; if Windows refuses,
+        the step raises rather than let the next action land in the wrong
+        window, and if the user switches away a second time the run stops.
+        """
+        target = self._target
+        if not target["pid"]:
+            return
+        front = self._hwnd_or_zero()
+        try:
+            front_pid = int(self._window_pid(front) or 0) if front else 0
+        except Exception:
+            front_pid = 0
+        if front_pid == target["pid"]:
+            return
+        if self._refocused:
+            # Brought back once already and the user went elsewhere again: they
+            # want their desktop. Measured live (2026-09-21): three steals in
+            # 40 s while the user typed in Discord, until Windows itself refused
+            # the fourth. One loss is a glance; a second one is a decision.
+            title = self._title_or_empty()
+            if self.run is not None:
+                self._event(self.run, "refocus", "%s: the target window lost the foreground "
+                            "again (%s) — stopping, the desktop is the user's" % (what, title or "?"))
+            raise Stopped("the user switched to %r again after the window was brought back "
+                          "once; the desktop is theirs" % title)
+        switched = False
+        try:
+            switched = bool(self._bring_to_front(target["hwnd"]))
+        except Exception:
+            switched = False
+        if switched:
+            self._refocused += 1
+        if self.run is not None:
+            self._event(self.run, "refocus", "%s: the target window was not in front — %s"
+                        % (what, "brought back" if switched else "could not bring it back"))
+        if not switched:
+            raise RuntimeError("the target window lost the foreground before the %s and could "
+                               "not be brought back; not acting on %r" % (what, self._title_or_empty()))
 
     def _title_or_empty(self) -> str:
         try:
@@ -440,9 +654,40 @@ class Operator:
         except Exception:
             return ""
 
+    def _hwnd_or_zero(self) -> int:
+        try:
+            return int(self._foreground_hwnd() or 0)
+        except Exception:
+            return 0
+
+    def _windows_or_empty(self) -> set:
+        try:
+            return set(self._top_windows() or ())
+        except Exception:
+            return set()
+
+    def _windows_of(self, target: str, windows: set) -> List[int]:
+        """Windows owned by the launched program, matched on the executable stem."""
+        stem = os.path.basename(target).lower()
+        stem = stem[:-4] if stem.endswith(".exe") else stem
+        if not stem or ":" in stem:
+            return []
+        out = []
+        for hwnd in sorted(windows):
+            try:
+                owner = self._window_process(hwnd).lower()
+            except Exception:
+                continue
+            if owner == stem or owner == stem + ".exe":
+                out.append(hwnd)
+        return out
+
     def _run_goal(self, run: Run, llm: Any, step: PlanStep, index: int) -> RunResult:
         options = RunOptions(max_steps=run.max_steps, budget_s=run.budget_s,
                              dry_run=run.dry_run)
+        self._abort_goal = ""
+        self._exec_failures = 0
+        self._agreed_done = ""
         hooks = dict(
             task_id="%s:%d" % (run.id, index), run=0,
             observe=self._observe_hook, ledger=self._ledger_or_none(),
@@ -458,20 +703,40 @@ class Operator:
         if loop is None:
             from .loop import run as loop  # type: ignore[no-redef]
         backend = self._backend_factory()
-        return loop(step.goal, options, client=self._client(),
+        return loop(step.goal, options, client=self._client(), cap=OPERATOR_CAP,
                     execute=functools.partial(self._execute_hook, backend=backend), **hooks)
 
     # ------------------------------------------------------------------- hooks
     def _observe_hook(self) -> Snapshot:
         self.kill.raise_if_tripped()
+        if self._abort_goal:
+            reason, self._abort_goal = self._abort_goal, ""
+            raise RuntimeError(reason)
+        self._ensure_target_in_front("observation")
         return self._observe()
 
     def _execute_hook(self, action: Any, snapshot: Any, *, backend: Any = None,
                       dry_run: bool = False) -> Any:
         self.kill.raise_if_tripped()
-        return act_module.execute(action, snapshot, backend=backend, dry_run=dry_run)
+        self._ensure_target_in_front("action")
+        result = act_module.execute(action, snapshot, backend=backend, dry_run=dry_run)
+        if self.run is not None and not getattr(result, "ok", False):
+            self._event(self.run, "act_error", "%s %s did not execute: %s" % (
+                getattr(action, "op", "?"), getattr(action, "key", None) or getattr(action, "target", "") or "",
+                getattr(result, "error", "") or "no error text"))
+        return result
 
     def _on_step(self, run: Run, step: PlanStep, record: StepRecord) -> None:
+        # Three escalation answers in a row that could not be performed is a
+        # broken action path, not a hard screen: stop the goal instead of
+        # buying the same failed answer from the model until the step cap.
+        if record.decided_by == "escalation" and not record.executed:
+            self._exec_failures += 1
+            if self._exec_failures >= 3:
+                self._abort_goal = ("%d consecutive escalation actions did not execute; "
+                                    "giving the goal up" % self._exec_failures)
+        else:
+            self._exec_failures = 0
         run.spend["jev_calls"] += 1 if record.decided_by in ("jev", "cascade") else 0
         run.spend["jev_tokens"] += int(record.tokens_in)
         run.spend["jev_usd"] += float(record.cost_usd)
@@ -521,10 +786,16 @@ class Operator:
         return allow
 
     def _compose_hook(self, run: Run, llm: Any, step: PlanStep, goal: str, element: Any) -> str:
-        literal = quoted_text(step.goal) or quoted_text(run.command)
-        if literal is not None:
-            self._event(run, "text", "typing the quoted text from the goal")
-            return literal
+        # The planner is told to keep typed text in the goal, in quotes; when it
+        # puts it in `done_when` instead ("The text area contains \"hello world\""),
+        # or only the command carries it, those are the next places to look
+        # before a model is asked to guess.
+        for source, text in (("goal", step.goal), ("done_when", step.done_when),
+                             ("command", run.command)):
+            literal = quoted_text(text)
+            if literal is not None:
+                self._event(run, "text", "typing the quoted text from the %s" % source)
+                return literal
         if llm is None:
             from .loop import TextNeeded
 
@@ -573,27 +844,51 @@ class Operator:
         snapshot = context.get("snapshot")
         candidates = context.get("candidates") or []
         decision = context.get("decision")
-        reply = self._llm(run, llm, "escalate", (
+        system = (
             "A fast decision model drives a Windows UI agent one step at a time and "
             "just failed on this step. Choose the single next action from the elements "
             "listed. Ops: click, type, select, scroll_up, scroll_down, key (give the chord "
-            "in `key`, e.g. ctrl+s, enter, escape), wait, or none when nothing safe applies. "
-            "`target` must be an element id from the list (null for key/scroll/wait). "
+            "in `key`, e.g. ctrl+s, enter, escape), wait, done when `done_when` is already "
+            "satisfied on this screen, or none when nothing safe applies. "
+            "`target` must be an element id from the list (null for key/scroll/wait/done). "
             "Never choose an action that deletes, sends, pays or overwrites unless the goal "
             "says so. Reply with JSON only: {\"op\": \"...\", \"target\": \"e3\"|null, "
-            "\"text\": null, \"key\": null, \"why\": \"...\"}."),
-            json.dumps({"command": run.command, "goal": step.goal, "done_when": step.done_when,
-                        "reason": context.get("reason"), "step": context.get("step"),
-                        "last_action": context.get("last_action"),
-                        "model_said": {"op": getattr(decision, "op", None),
-                                       "target": getattr(decision, "target", None),
-                                       "confidence": round(float(getattr(decision, "confidence", 0) or 0), 3)},
-                        "screen": self._screen(snapshot, candidates)}, ensure_ascii=False))
+            "\"text\": null, \"key\": null, \"why\": \"...\"}; keep `why` under 25 words.")
+        user = json.dumps({"command": run.command, "goal": step.goal, "done_when": step.done_when,
+                           "reason": context.get("reason"), "step": context.get("step"),
+                           "last_action": context.get("last_action"),
+                           "model_said": {"op": getattr(decision, "op", None),
+                                          "target": getattr(decision, "target", None),
+                                          "confidence": round(float(getattr(decision, "confidence", 0) or 0), 3)},
+                           "screen": self._screen(snapshot, candidates)}, ensure_ascii=False)
+        reply = self._llm(run, llm, "escalate", system, user)
         data = reply.json() if reply is not None else None
+        if reply is not None and not isinstance(data, dict):
+            # Measured live (2026-09-21, Sonnet 5 in a Save As dialog): a reply
+            # that ran to the 900-token cap and never closed its JSON, $0.015
+            # for nothing. One terse retry, capped short, before giving up.
+            head = " ".join(str(getattr(reply, "text", "") or "").split())[:160]
+            self._event(run, "escalate", "%s gave no usable answer (%d tokens out): %s" % (
+                run.model, int(getattr(reply, "tokens_out", 0) or 0), head or "empty reply"))
+            reply = self._llm(run, llm, "escalate_retry", system + (
+                " Your previous reply was not one JSON object. Reply with exactly one JSON "
+                "object and nothing else."), user, max_tokens=300)
+            data = reply.json() if reply is not None else None
         if not isinstance(data, dict):
             self._event(run, "escalate", "%s gave no usable answer" % run.model)
             return None
         op = str(data.get("op") or "none").strip().lower()
+        why = str(data.get("why", ""))[:120]
+        if op == "done":
+            # The model read the screen and found `done_when` already true. The
+            # loop has no channel for that from an escalation, so the operator
+            # closes the goal once the loop returns. Measured live: Jev said
+            # done with a target (incoherent_terminal), the model answered
+            # "nothing left to do", and the goal still ended `escalated` and
+            # bought a re-plan ($0.004, 2.5 s) to learn what it had been told.
+            self._agreed_done = why or "the escalation model judged done_when satisfied"
+            self._event(run, "escalate", "%s: done_when already satisfied — %s" % (run.model, why))
+            return None
         if op not in ESCALATION_OPS:
             self._event(run, "escalate", "%s: %s — %s" % (run.model, op, str(data.get("why", ""))[:120]))
             return None
@@ -618,11 +913,17 @@ class Operator:
             "performs one action per step: click, type, select, scroll, a key chord, wait. "
             "It cannot see pixels, cannot browse, and cannot run programs except a launch "
             "you name. Split the command into 1-%d sub-goals. Each goal: one short English "
-            "imperative completable inside a single window or dialog. Text the agent must "
-            "type goes inside double quotes, verbatim, in the user's language. `done_when` "
+            "imperative completable inside a single window or dialog. Write `goal` and "
+            "`done_when` in English whatever language the command is in — the agent's "
+            "decision model reads English best. Only the text the agent must type stays in "
+            "the user's language, inside double quotes, verbatim. `done_when` "
             "is an observable end state (a window title, a control's value, a control that "
             "exists). `launch` is the program to start before the goal — notepad.exe, "
-            "calc.exe, mspaint.exe, explorer.exe, a ms-settings: URI — or null. Do not add "
+            "calc.exe, mspaint.exe, explorer.exe, a ms-settings: URI — or null. In a file "
+            "dialog, prefer typing a full path (\"C:\\\\Users\\\\<user>\\\\Desktop\\\\name.txt\", "
+            "using %%USERPROFILE%% when the user name is unknown) into the file-name field and "
+            "pressing Save over navigating folders — the agent cannot see a folder tree "
+            "well. Do not add "
             "steps that delete, send, pay or overwrite unless the command says so. Reply "
             "with JSON only: {\"steps\": [{\"goal\": \"...\", \"done_when\": \"...\", "
             "\"launch\": null}], \"note\": \"...\"}" % MAX_PLAN_STEPS),
@@ -726,14 +1027,15 @@ class Operator:
         models, _source = cached_models()
         return OpenRouterLLM(model, pricing=pricing_table(models))
 
-    def _llm(self, run: Run, llm: Any, purpose: str, system: str, user: str) -> Any:
+    def _llm(self, run: Run, llm: Any, purpose: str, system: str, user: str,
+             **chat_kw: Any) -> Any:
         if run.spend["llm_calls"] >= MAX_LLM_CALLS:
             self._event(run, "llm_cap", "the planning model was asked %d times; no more this run"
                         % MAX_LLM_CALLS)
             return None
         self.kill.raise_if_tripped()
         try:
-            reply = llm.chat(system, user)
+            reply = llm.chat(system, user, **chat_kw)
         except LLMError as exc:
             self._event(run, "llm_error", "%s: %s" % (purpose, str(exc)[:200]))
             return None

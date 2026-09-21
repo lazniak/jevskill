@@ -26,7 +26,7 @@ tokens on decisions — and start making them for **$0.000013** in **325 ms**.
 **Jev** is TypeSafe's *System One* decision model, and it is the whole engine here.
 Official model page: **[typesafe.ai](https://typesafe.ai/)** · [API docs](https://docs.typesafe.ai/)
 
-[![tests](https://img.shields.io/badge/tests-1392%20passing-brightgreen)](#-does-it-actually-help-ab-tested)
+[![tests](https://img.shields.io/badge/tests-1402%20passing-brightgreen)](#-does-it-actually-help-ab-tested)
 [![A/B](https://img.shields.io/badge/A%2FB-99.3%25%20fewer%20tokens-blue)](#-does-it-actually-help-ab-tested)
 [![cost](https://img.shields.io/badge/decision-%240.000013-success)](#-cost-per-decision)
 [![license](https://img.shields.io/badge/license-MIT-informational)](LICENSE)
@@ -754,7 +754,9 @@ The switch is checked before every decision *and* again before every action
 reaches the desktop. A destructive step (`Delete`, `Send`, `Pay`, …) waits for
 **allow** / **deny** in the panel; STOP denies. A run that starts with the
 console in the foreground waits for you to click the target window rather than
-clicking the browser.
+clicking the browser. The target window is pinned: switch away mid-run and it
+is brought back in front **once**; switch away again and the run stops — the
+desktop is yours.
 
 **Dry run** plans for real and simulates the steps — nothing on the desktop is
 touched, no Jev spend — so you can watch the whole flow, the confirm box and
@@ -767,7 +769,11 @@ jevskill cu run "Open Notepad and type \"hello\"" --dry-run      # simulate
 jevskill cu stop                                                  # from another terminal
 ```
 
-No live command has been issued from the panel yet — see the status section.
+Measured live on 2026-09-21: *Open Notepad, type "hello world"* was done in
+13.9 s from the panel (`bench/cu_live_first_run.json`); the full command with
+*save as hello.txt* got as far as the Save As dialog and did not save
+(`bench/cu_live_save_run.json` — what it exposed is fixed). See the status
+section.
 
 ## 📁 What's inside
 
@@ -802,7 +808,7 @@ bench/
   cu_tasks.json        10 Windows computer-use tasks with oracles (+ cu_tasks.md)
   cu_run.py            the task harness: --dry-run (default, synthetic) · --live; cu_report.py renders it
   web_live.json        the one live decision behind CHANGELOG 0.13.0 "Measured live": a ledger row, which=web
-tests/                 1392 tests, offline, green
+tests/                 1402 tests, offline, green
 docs/install.md        install guide an agent reads and executes
 docs/DESIGN.md         architecture + the mistakes that shaped it
 AGENTS.md              conventions for agents working on this repo
@@ -814,15 +820,20 @@ CLI, skill, bundled scripts, ledger, reference docs and the computer-use half
 (`jevskill.cu`: observe · reduce · hashing · decide · act · loop · macros) are
 complete and offline-tested. What is **not** proven, stated plainly:
 
-* **The live UIA execution path has never been run against a desktop.** Every
-  `act.execute()`/`loop.run()` test drives it through fakes; the only Windows
-  machine available was live-streaming on 2026-09-20. The first live run is the
-  next task (`bench/cu_run.py --live --i-am-not-streaming`), and until it happens
-  the loop is a measured design, not a measured agent.
-* **No live command has been issued from the computer-use panel.** The operator,
-  the confirm handshake and all four stop paths are exercised offline and in dry
-  run only (`tests/test_cu_runner.py`); the first live command, its escalation
-  rate and its cost are still to be measured, by the user, off-stream.
+* **The live UIA execution path has run against a desktop only through the
+  panel.** `loop.run()` drove Notepad live on 2026-09-21 — typing, key chords, a
+  file dialog observed — but `bench/cu_run.py --live`, the ten tasks with
+  oracles, has still not been run: there is no task-level success rate, and the
+  loop is a measured design with a handful of measured runs, not a benchmarked
+  agent.
+* **The computer-use panel has run live but has not yet saved a file.** *Open
+  Notepad, type "hello world"* was done in 13.9 s; the full command with *save
+  as hello.txt* reached the Save As dialog and saved nothing in three attempts
+  (`bench/cu_live_save_run.json`: chords that sent nothing, a window opening
+  behind, a dropped file-name field, a rambling escalation reply, a foreground
+  fought over — each fixed with a test). A successful save and the escalation
+  rate over more than one command remain to be measured, by the user, from the
+  panel, off-stream.
 * **No computer-use benchmark result exists yet.** `bench/cu_tasks.json` has the
   ten tasks and their oracles; `bench/cu_run.py --dry-run` proves the harness,
   and every dry-run number is marked synthetic.

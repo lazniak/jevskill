@@ -361,8 +361,23 @@ class UiaBackend:
                         ("dwFlags", wintypes.DWORD), ("time", wintypes.DWORD),
                         ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong))]
 
+        # The union must be the size of its *largest* member, MOUSEINPUT, or
+        # ``cbSize`` is wrong and SendInput sends nothing — measured live
+        # 2026-09-21: "SendInput sent 0 of 6 events" on every chord, because a
+        # union holding only KEYBDINPUT made INPUT 32 bytes on x64 where
+        # Windows expects 40.
+        class MOUSEINPUT(ctypes.Structure):
+            _fields_ = [("dx", wintypes.LONG), ("dy", wintypes.LONG),
+                        ("mouseData", wintypes.DWORD), ("dwFlags", wintypes.DWORD),
+                        ("time", wintypes.DWORD),
+                        ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong))]
+
+        class HARDWAREINPUT(ctypes.Structure):
+            _fields_ = [("uMsg", wintypes.DWORD), ("wParamL", wintypes.WORD),
+                        ("wParamH", wintypes.WORD)]
+
         class _UNION(ctypes.Union):
-            _fields_ = [("ki", KEYBDINPUT)]
+            _fields_ = [("mi", MOUSEINPUT), ("ki", KEYBDINPUT), ("hi", HARDWAREINPUT)]
 
         class INPUT(ctypes.Structure):
             _anonymous_ = ("u",)

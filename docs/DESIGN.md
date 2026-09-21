@@ -273,3 +273,16 @@ full-screen window), the cursor in the top-left corner, and a stop file that
 `jevskill cu stop` touches so a second terminal, SSH or a scheduled task can end
 a run that the browser started. The switch is armed only while a run is active,
 so a mouse parked in the corner between runs does nothing.
+
+**Measured, then amended (2026-09-21, live).** The first live runs happened
+with the user working on the same desktop, and the switch was not what ended
+most of them: the operator was. It pins the launched window by pid and, when
+the user switched away, brought it back before every observation and action —
+three times in 40 s while the user typed in Discord, until Windows itself
+refused. The rule is now *once per run*: one loss of the foreground is a glance
+and the window comes back; a second one is a decision and the run stops with
+"the desktop is theirs", reported as *stopped*, not *failed*. The corner
+trigger fired once, 1.5 s after a launch, as the user's cursor crossed the
+corner: that is the convention working as documented, and it stays a hair
+trigger — a dwell requirement would not tell a parked mouse from a fling to the
+first browser tab, and the cost of a false stop is one re-run.

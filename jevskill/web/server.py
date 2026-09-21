@@ -39,8 +39,10 @@ from __future__ import annotations
 import importlib.resources as resources
 import json
 import re
+import sys
 import threading
 import time
+import traceback
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable, Optional
@@ -952,6 +954,10 @@ class _Handler(BaseHTTPRequestHandler):
             self._error(400, str(exc), "command is a non-empty string; model an OpenRouter id or null.")
 
     def _unexpected(self, exc: Exception) -> None:  # pragma: no cover - defensive
+        # The hint promises a traceback in the terminal; print it, or the
+        # promise is empty — the first 500 from /api/cu/plan had to be
+        # reproduced by hand because nothing was logged.
+        traceback.print_exception(type(exc), exc, exc.__traceback__, file=sys.stderr)
         self._error(
             500,
             f"{type(exc).__name__}: {exc}",
