@@ -22,6 +22,100 @@ replaced.
   indentation (minified JSON, unformatted XML). One workload proves the fix, not the
   generality.
 
+## [0.14.0] — 2026-09-21
+
+### Added — a computer-use panel: one command, Jev per step, an LLM between
+
+The console gained a second view. `computer use` takes a natural-language
+command for *this* desktop — *"Otwórz Notatnik, wpisz „hello world" i zapisz
+jako hello.txt na pulpicie"* — and runs it through the loop that `0.12.0`
+shipped, with the missing half supplied by a model the user picks from a list:
+
+- **`jevskill.cu.runner.Operator`** turns the command into 1-8 sub-goals, each
+  one window or dialog, and drives each with `jevskill.cu.loop.run`. The
+  planning model is consulted only **between** Jev steps — to plan, to compose
+  the text a field needs, to judge a sub-goal's `done_when`, to answer an
+  escalation, to re-plan when a sub-goal ends without `done` (at most twice).
+  With `none` chosen the command is one goal, quoted text still types, and
+  nothing else is generated: a step that needs language ends the run with a
+  reason rather than a guess.
+- **`jevskill.cu.llm.OpenRouterLLM`** — one stdlib client for any OpenRouter
+  model. The picker is OpenRouter's live list (the newest plain model of each
+  family recommended, prices per Mtok shown), with a built-in fallback marked
+  as such when the list cannot be fetched. Every model call is a ledger row,
+  `which="cu_llm"`, with its tokens and cost — a run's spend is Jev **plus**
+  the model, and `jevskill stats` sees both.
+- **`jevskill.cu.killswitch.KillSwitch`** — four ways to stop, all of which work
+  while the agent is typing: the STOP button, **Ctrl+Alt+Esc** anywhere (polled
+  with `GetAsyncKeyState`, so no hotkey registration and no collision with a
+  full-screen application), the mouse in the top-left corner, and
+  `jevskill cu stop` from any terminal (a stop file). The switch is checked in
+  the loop's `observe` and `execute` hooks — before deciding and again before
+  touching the desktop — so `loop.py` is unchanged: a tripped switch raises
+  `Stopped` inside a hook and the run is reported as *stopped*, not *failed*.
+- **A destructive step waits.** The loop's confirm gate becomes a question the
+  page shows — *allow* / *deny*, 120 s, STOP denies. A launch outside the
+  allow-list (`notepad`, `calc`, `mspaint`, `explorer`, `ms-settings:`) asks the
+  same way. A run started with the console in the foreground waits 10 s for
+  the user to click the target window, then refuses rather than clicking the
+  browser.
+- **Dry run** plans for real and simulates the steps — synthetic records, no
+  desktop, no Jev spend — so the whole panel, the confirm handshake and every
+  stop path can be exercised on a machine that must not be touched. Every
+  simulated event says so.
+- Routes: `GET /api/cu/status`, `GET /api/cu/models`, `POST /api/cu/start`
+  (`202`, `400` empty, `409` busy, `501` not a Windows desktop, `503` no key),
+  `POST /api/cu/plan`, `POST /api/cu/stop`, `POST /api/cu/confirm`. The key
+  appears in no response; the models payload carries a boolean.
+- CLI: `jevskill cu run "<command>" [--model ID] [--dry-run] [--max-steps]
+  [--budget-s] [--usd-cap]` prints the events as they happen and asks `y/N` on
+  stdin at a destructive step; `jevskill cu stop` stops whichever front end
+  started the run.
+
+**Measured live** (2026-09-21, Windows 11, `anthropic/claude-sonnet-5`, the
+user working on the same desktop; the payloads are in `bench/`):
+
+- The first live command from the panel — *Open Notepad, type "hello world"* —
+  was done in 13.9 s: 3 Jev calls ($0.0007) and 3 model calls ($0.0106)
+  (`bench/cu_live_first_run.json`).
+- The full command with *save as hello.txt on the desktop* — **saved, on the
+  sixth attempt, from the panel's start button with dry run off: 60.1 s,
+  5 Jev calls ($0.0038), 12 model calls ($0.0547)**. `hello.txt` on the
+  Desktop contains `hello world`. All six attempts are in
+  `bench/cu_live_save_run.json` with what each exposed; one of them was
+  stopped by the corner 1.5 s after the launch — the stop path measured,
+  $0.0075 spent.
+- What the attempts exposed is fixed in this release, each with a regression
+  test: key chords sent nothing (the `SendInput` `INPUT` union lacked
+  `MOUSEINPUT`, 40 bytes on x64); a launched window that opened behind the
+  foreground lock is found by enumeration and switched to; the 60-candidate
+  cap dropped a file dialog's file-name field and Save button (the operator
+  passes 150, observes with a 1500 ms budget, and the model sees the same 150
+  — at 60 it never saw the field and navigated folders instead); the compose
+  hook typed the *command's* quote into the file-name field (with a model the
+  model is asked, with `done_when` and the field; the command's quote is for
+  Jev-only runs); the escalation prompt offers `done` and the operator closes
+  the goal on it instead of buying a re-plan; an unusable escalation reply is
+  retried once, terse, at 300 tokens, and verify is held to 25 words; three
+  unexecuted escalation actions end a goal; a scrollable container without
+  `ScrollItem` gets `ScrollPattern`, then the mouse wheel; Jev's post-type
+  sanity check no longer clears text the model composed (it scored a correct
+  `%USERPROFILE%` path at 0.06).
+- **The user keeps their desktop.** The run's window is pinned by pid and read
+  **by handle** (`GetLastActivePopup` finds the dialog it opened), so a run
+  keeps working while the user reads the console or types elsewhere. Only
+  synthetic input — a key chord, text into a control without a `ValuePattern`,
+  a click by point, the wheel — takes the foreground, and first waits up to
+  10 s for the user's hands to pause (`GetLastInputInfo`); so does the switch
+  to a launched window. Measured before the change: the window was pulled in
+  front of the user's Discord three times in 40 s, and a run was stopped for
+  the user merely reading the console; after it, the user's keystrokes landed
+  in a freshly launched Notepad once, which is what the launch's wait is for.
+
+**What is not claimed.** One command, one successful save, on the sixth
+attempt. No escalation rate over more than one command, and no task-level
+success rate: `bench/cu_run.py --live` has still not been run.
+
 ## [0.13.0] — 2026-09-21
 
 ### Added — a local web console

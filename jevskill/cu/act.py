@@ -361,8 +361,23 @@ class UiaBackend:
                         ("dwFlags", wintypes.DWORD), ("time", wintypes.DWORD),
                         ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong))]
 
+        # The union must be the size of its *largest* member, MOUSEINPUT, or
+        # ``cbSize`` is wrong and SendInput sends nothing — measured live
+        # 2026-09-21: "SendInput sent 0 of 6 events" on every chord, because a
+        # union holding only KEYBDINPUT made INPUT 32 bytes on x64 where
+        # Windows expects 40.
+        class MOUSEINPUT(ctypes.Structure):
+            _fields_ = [("dx", wintypes.LONG), ("dy", wintypes.LONG),
+                        ("mouseData", wintypes.DWORD), ("dwFlags", wintypes.DWORD),
+                        ("time", wintypes.DWORD),
+                        ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong))]
+
+        class HARDWAREINPUT(ctypes.Structure):
+            _fields_ = [("uMsg", wintypes.DWORD), ("wParamL", wintypes.WORD),
+                        ("wParamH", wintypes.WORD)]
+
         class _UNION(ctypes.Union):
-            _fields_ = [("ki", KEYBDINPUT)]
+            _fields_ = [("mi", MOUSEINPUT), ("ki", KEYBDINPUT), ("hi", HARDWAREINPUT)]
 
         class INPUT(ctypes.Structure):
             _anonymous_ = ("u",)
@@ -406,6 +421,47 @@ class UiaBackend:
             buffer[index].type = 1
             buffer[index].ki = KEYBDINPUT(0, scan, flags, 0, None)
         self._send_input(buffer, len(events))
+
+    def wheel(self, x: int, y: int, *, direction: str, amount: int = 1) -> None:
+        """The mouse wheel over a point: the scroll of last resort.
+
+        For a scrollable container that exposes neither ``ScrollItem`` nor
+        ``Scroll`` (measured live: a file dialog's navigation pane). The
+        pointer is moved there first because the wheel goes to the window
+        under it. Three notches per unit of ``amount``; a notch is
+        ``WHEEL_DELTA``, 120, negative to scroll down.
+        """
+        import ctypes
+        from ctypes import wintypes
+
+        class MOUSEINPUT(ctypes.Structure):
+            _fields_ = [("dx", wintypes.LONG), ("dy", wintypes.LONG),
+                        ("mouseData", wintypes.DWORD), ("dwFlags", wintypes.DWORD),
+                        ("time", wintypes.DWORD),
+                        ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong))]
+
+        class _UNION(ctypes.Union):
+            _fields_ = [("mi", MOUSEINPUT)]
+
+        class INPUT(ctypes.Structure):
+            _anonymous_ = ("u",)
+            _fields_ = [("type", wintypes.DWORD), ("u", _UNION)]
+
+        user32 = ctypes.windll.user32
+        left, top = user32.GetSystemMetrics(76), user32.GetSystemMetrics(77)
+        width = user32.GetSystemMetrics(78) or 1
+        height = user32.GetSystemMetrics(79) or 1
+        nx = int((x - left) * 65535 / width)
+        ny = int((y - top) * 65535 / height)
+        notches = 3 * max(1, int(amount or 1))
+        delta = (120 if direction == "up" else -120) & 0xFFFFFFFF
+        buffer = (INPUT * (1 + notches))()
+        buffer[0].type = 0
+        buffer[0].mi = MOUSEINPUT(nx, ny, 0, 0x0001 | 0x8000 | 0x4000, 0, None)
+        for index in range(1, 1 + notches):
+            buffer[index].type = 0
+            buffer[index].mi = MOUSEINPUT(0, 0, delta, 0x0800, 0, None)   # MOUSEEVENTF_WHEEL
+        self._send_input(buffer, 1 + notches)
 
     def click_point(self, x: int, y: int) -> None:
         """The fallback's fallback: a synthetic click at a screen point.
@@ -596,7 +652,19 @@ def execute(action: Action, snapshot: Snapshot, *, backend: Any = None,
             if method == "scroll":
                 backend.scroll(handle, direction, action.amount)
             elif method == "scrollitem":
-                backend.scroll_into_view(handle)
+                try:
+                    backend.scroll_into_view(handle)
+                except Exception:
+                    # Measured live (2026-09-21, a Save As dialog's navigation
+                    # pane): a scrollable container advertises no ScrollItem
+                    # pattern. ScrollPattern next; the wheel over it last.
+                    try:
+                        backend.scroll(handle, direction, action.amount)
+                        method = "scroll"
+                    except Exception:
+                        backend.wheel(*element.center, direction=direction,
+                                      amount=action.amount)
+                        method = "wheel"
             else:
                 backend.send_keys("pageup" if direction == "up" else "pagedown")
             return done(True, method)

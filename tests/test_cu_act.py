@@ -145,6 +145,25 @@ class TestExecute:
                 backend=backend)
         assert backend.calls == [("scroll", ("handle:e5", "down", 2), {})]
 
+    def test_a_container_without_a_scroll_item_pattern_tries_the_scroll_pattern(self):
+        backend = Recorder(fail_on={"scroll_into_view"})
+        result = execute(Action(op="scroll_down", target="e1"), window(), backend=backend)
+        assert result.ok and result.method == "scroll"
+        assert backend.names == ["scroll_into_view", "scroll"]
+
+    def test_a_container_with_neither_scroll_pattern_gets_the_wheel(self):
+        # Measured live 2026-09-21: a Save As dialog's navigation pane answered
+        # "element does not support IUIAutomationScrollItemPattern" and the
+        # escalation's scroll never happened — twice.
+        backend = Recorder(fail_on={"scroll_into_view", "scroll"})
+        result = execute(Action(op="scroll_up", target="e1", amount=2), window(),
+                         backend=backend)
+        assert result.ok and result.method == "wheel"
+        assert backend.names == ["scroll_into_view", "scroll", "wheel"]
+        _name, args, kwargs = backend.calls[-1]
+        assert args == tuple(window().by_id("e1").center)
+        assert kwargs == {"direction": "up", "amount": 2}
+
     def test_a_key_needs_no_element(self):
         backend = Recorder()
         result = execute(Action(op="key", key="ctrl+s"), window(), backend=backend)

@@ -21,6 +21,11 @@
   --line-strong: rgba(255, 255, 255, .35);
   --gold: #d6b24a;
   --gold-hi: #f0d27a;
+  /* The one colour outside the gold/greyscale system, and it buys exactly one
+   * thing: a control that takes the desktop back. A safety button the eye has
+   * to hunt for is a safety button that failed, so STOP — and the log lines
+   * that say a run went wrong — are the only red on the page. */
+  --stop: #ff6b6b;
   --ease: cubic-bezier(.2, .7, .2, 1);
   --gutter: 16px;
   --panel-w: 440px;
@@ -484,6 +489,234 @@ pre.raw {
 }
 
 .error .hint { display: block; color: var(--fg-2); margin-top: 6px; font-size: 11.5px; }
+
+/* --------------------------------------------------------- view switch */
+
+.views { display: flex; gap: 14px; align-self: baseline; }
+
+.view-tab {
+  font-family: var(--pixel);
+  font-size: 15px;
+  letter-spacing: .04em;
+  color: var(--fg-3);
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid transparent;
+  border-radius: 0;
+  padding: 2px 0 3px;
+}
+
+.view-tab:hover:not(:disabled) { color: var(--fg-2); }
+.view-tab[aria-pressed="true"] { color: var(--fg); border-bottom-color: var(--gold); }
+
+/* --------------------------------------------------------- computer use */
+
+#cu-command {
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1.55;
+  min-height: 8.5em;
+  resize: vertical;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  overflow-x: hidden;
+}
+
+.cu-sub { margin-top: 18px; }
+label.microlabel { display: block; }
+
+#cu-model, #cu-model-custom { width: 100%; }
+#cu-model-custom { margin-top: 8px; font-size: 12px; }
+
+#cu-advanced {
+  border-top: 1px solid var(--line);
+  margin-top: 18px;
+  padding-top: 10px;
+}
+
+#cu-advanced summary {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: var(--fg-3);
+  cursor: pointer;
+}
+
+#cu-advanced summary:hover { color: var(--fg-2); }
+
+.cu-fields { margin-top: 12px; }
+
+.cu-field {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: var(--fg-2);
+}
+
+.cu-field label { flex: 1 1 auto; }
+.cu-field input { flex: 0 0 96px; width: 96px; font-family: var(--mono); font-size: 12px; }
+
+.cu-dry { margin: 12px 0 2px; }
+.cu-dry .switch { text-transform: none; letter-spacing: .02em; font-size: 12px; align-items: flex-start; }
+
+/* The three controls sit on one row and STOP is the full height of it: the
+ * button you reach for in a hurry should be the biggest target there. */
+.cu-actions { margin-top: 16px; align-items: stretch; }
+
+#cu-stop {
+  border-color: var(--stop);
+  color: var(--stop);
+  padding: 8px 18px;
+  letter-spacing: .1em;
+  margin-left: auto;
+}
+
+#cu-stop.is-armed { background: var(--stop); color: #000; border-color: var(--stop); }
+#cu-stop.is-armed:hover { background: var(--stop); color: #000; }
+#cu-stop:disabled { background: transparent; color: var(--dimmer); border-color: var(--line); }
+
+#cu-hint { margin-top: 8px; }
+
+.cu-howstop {
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  padding: 10px;
+  margin-top: 16px;
+  font-size: 12.5px;
+  color: var(--fg-2);
+  line-height: 1.6;
+}
+
+.cu-howstop p { margin: 0; }
+.cu-howstop p + p { margin-top: 5px; }
+.cu-howstop .k { font-family: var(--mono); font-size: 12px; color: var(--fg); }
+.cu-howstop .after { color: var(--fg-3); }
+
+/* ------------------------------------------------------------ run panel */
+
+.cu-strip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.cu-sim {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: var(--fg-3);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  padding: 1px 6px;
+}
+
+.cu-meta { font-size: 11px; color: var(--fg-3); }
+#cu-state.is-live { color: var(--gold); border-color: var(--gold); }
+#cu-state.is-lost { color: var(--stop); border-color: var(--stop); }
+
+/* ------------------------------------------------------------ plan list */
+
+.cu-step {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: baseline;
+  border-top: 1px solid var(--line);
+  border-left: 1px solid transparent;
+  padding: 8px 0 8px 8px;
+}
+
+.cu-step:first-child { border-top: 0; }
+.cu-step.is-running { border-left-color: var(--gold); }
+
+.cu-glyph { font-family: var(--mono); font-size: 12px; color: var(--fg-3); }
+.cu-step.is-running .cu-glyph, .cu-step.is-running .cu-goal { color: var(--gold); }
+.cu-step.is-failed .cu-glyph { color: var(--stop); }
+
+.cu-goal { font-size: 13.5px; color: var(--fg); overflow-wrap: anywhere; }
+.cu-when { display: block; font-size: 11.5px; color: var(--fg-3); margin-top: 3px; overflow-wrap: anywhere; }
+
+.cu-launch {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: .06em;
+  color: var(--fg-3);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  padding: 0 5px;
+  margin-left: 6px;
+  white-space: nowrap;
+}
+
+.cu-step-meta {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--fg-3);
+  text-align: right;
+  white-space: nowrap;
+}
+
+/* ---------------------------------------------------------- confirm box */
+
+.cu-confirm {
+  border: 1px solid var(--gold);
+  border-radius: var(--r);
+  padding: 12px;
+  margin-top: 14px;
+}
+
+.cu-confirm .ask { margin: 0; font-size: 14px; color: var(--fg); overflow-wrap: anywhere; }
+.cu-confirm .ask b { color: var(--gold); font-weight: 400; }
+.cu-confirm .facts { margin: 8px 0 0; font-family: var(--mono); font-size: 11.5px; color: var(--fg-3); overflow-wrap: anywhere; }
+.cu-confirm .btn-row { margin-top: 12px; }
+.cu-confirm .countdown { font-family: var(--mono); font-size: 11.5px; color: var(--fg-2); margin: 10px 0 0; }
+.cu-confirm .countdown .warn { color: var(--stop); }
+
+/* -------------------------------------------------------------- the log */
+
+.cu-log {
+  font-size: 12px;
+  line-height: 1.55;
+  min-height: 4em;
+  max-height: 40vh;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  padding: 8px;
+}
+
+.cu-line {
+  display: flex;
+  gap: 8px;
+  color: var(--fg-2);
+  overflow-wrap: anywhere;
+}
+
+.cu-line .t { flex: 0 0 7ch; text-align: right; color: var(--fg-3); }
+.cu-line .kind { flex: 0 0 auto; color: var(--fg-3); letter-spacing: .04em; }
+.cu-line .what { flex: 1 1 auto; min-width: 0; }
+
+.cu-line.is-gold, .cu-line.is-gold .kind, .cu-line.is-gold .t { color: var(--gold); }
+.cu-line.is-dim, .cu-line.is-dim .what { color: var(--fg-3); }
+.cu-line.is-end .what { color: var(--fg); font-weight: 400; }
+.cu-line.is-stop, .cu-line.is-stop .kind, .cu-line.is-stop .what { color: var(--stop); }
+
+.cu-empty { font-size: 13px; color: var(--fg-3); margin: 8px 0 0; }
+
+/* At a phone width the row becomes a column and STOP goes to the top of it:
+ * one thumb-sized target, above everything it might have to interrupt. */
+@media (max-width: 640px) {
+  .cu-actions { flex-direction: column; align-items: stretch; }
+  .cu-actions button { width: 100%; }
+  #cu-stop { order: -1; margin-left: 0; }
+  .cu-step { grid-template-columns: 16px minmax(0, 1fr); }
+  .cu-step-meta { grid-column: 2; text-align: left; white-space: normal; }
+}
 
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }

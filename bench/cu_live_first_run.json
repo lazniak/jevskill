@@ -1,0 +1,293 @@
+{
+  "what": "The first live computer-use command issued through the console's operator on a real Windows 11 desktop (POST /api/cu/start, dry_run false). Everything below is the run's status payload as the page polled it; the per-step rows are in the ledger under session_id = \"<run_id>:<goal index>\" (which=act) and the planning-model calls next to them under session_id = run_id (which=cu_llm).",
+  "when": "2026-09-21T02:30:30 local time, Poland",
+  "machine": "Windows 11 Pro 10.0.26100, Python 3.13, comtypes UIA backend, Windows 11 Notepad (single-instance, Store build)",
+  "command": "Otwórz Notatnik i wpisz „hello world”",
+  "model": "anthropic/claude-sonnet-5",
+  "jev": {
+    "provider": "typesafe",
+    "endpoint": "https://api.typesafe.ai/v1/systemone"
+  },
+  "note": "The two earlier attempts (02:24, 02:27) failed safely at the launch: notepad.exe opened behind the foreground Chrome window and the operator refused to act on the wrong window. The fix — find the launched window by enumeration or process name and switch to it via SwitchToThisWindow / AttachThreadInput — is what this run exercised ('switch ... ok').",
+  "status": {
+    "run_id": "20260921-023030-aa964c",
+    "command": "Otwórz Notatnik i wpisz „hello world”",
+    "model": "anthropic/claude-sonnet-5",
+    "dry_run": false,
+    "state": "done",
+    "plan": [
+      {
+        "goal": "Open Notepad",
+        "done_when": "A window titled 'Notepad' (Notatnik) is open with an empty text editor",
+        "launch": "notepad.exe",
+        "status": "done",
+        "stop_reason": "done",
+        "note": "",
+        "steps": 1,
+        "tokens_in": 5164,
+        "cost_usd": 0.00021689,
+        "wall_ms": 3923.3
+      },
+      {
+        "goal": "Type \"hello world\" into the Notepad text area",
+        "done_when": "The Notepad editor's text value equals \"hello world\"",
+        "launch": null,
+        "status": "done",
+        "stop_reason": "done",
+        "note": "",
+        "steps": 2,
+        "tokens_in": 11354,
+        "cost_usd": 0.00047687,
+        "wall_ms": 3522.6
+      }
+    ],
+    "current": 1,
+    "events": [
+      {
+        "i": 0,
+        "t": 0.0,
+        "kind": "start",
+        "text": "run 20260921-023030-aa964c — model anthropic/claude-sonnet-5"
+      },
+      {
+        "i": 1,
+        "t": 0.0,
+        "kind": "kill_switch",
+        "text": "to stop: the STOP button · Ctrl+Alt+Esc · mouse to the top-left corner · `jevskill cu stop`"
+      },
+      {
+        "i": 2,
+        "t": 4.61,
+        "kind": "llm",
+        "text": "plan · anthropic/claude-sonnet-5 · 419+272 tok · $0.003558 · 4609 ms"
+      },
+      {
+        "i": 3,
+        "t": 4.62,
+        "kind": "plan_note",
+        "text": "Opens Notepad and types the exact text 'hello world' as requested; no saving or additional actions performed."
+      },
+      {
+        "i": 4,
+        "t": 4.62,
+        "kind": "plan",
+        "text": "2 steps",
+        "data": {
+          "steps": [
+            {
+              "goal": "Open Notepad",
+              "done_when": "A window titled 'Notepad' (Notatnik) is open with an empty text editor",
+              "launch": "notepad.exe",
+              "status": "pending",
+              "stop_reason": "",
+              "note": "",
+              "steps": 0,
+              "tokens_in": 0,
+              "cost_usd": 0.0,
+              "wall_ms": 0.0
+            },
+            {
+              "goal": "Type \"hello world\" into the Notepad text area",
+              "done_when": "The Notepad editor's text value equals \"hello world\"",
+              "launch": null,
+              "status": "pending",
+              "stop_reason": "",
+              "note": "",
+              "steps": 0,
+              "tokens_in": 0,
+              "cost_usd": 0.0,
+              "wall_ms": 0.0
+            }
+          ]
+        }
+      },
+      {
+        "i": 5,
+        "t": 4.62,
+        "kind": "goal",
+        "text": "goal 1/2: Open Notepad",
+        "data": {
+          "index": 0
+        }
+      },
+      {
+        "i": 6,
+        "t": 4.62,
+        "kind": "launch",
+        "text": "launching notepad.exe"
+      },
+      {
+        "i": 7,
+        "t": 6.19,
+        "kind": "switch",
+        "text": "switching to window 7931678: ok"
+      },
+      {
+        "i": 8,
+        "t": 6.45,
+        "kind": "window",
+        "text": "working in: Bez tytułu — Notatnik"
+      },
+      {
+        "i": 9,
+        "t": 10.37,
+        "kind": "llm",
+        "text": "verify · anthropic/claude-sonnet-5 · 1489+85 tok · $0.003828 · 2599 ms"
+      },
+      {
+        "i": 10,
+        "t": 10.37,
+        "kind": "verify",
+        "text": "anthropic/claude-sonnet-5 judged done — Notepad window is open with title 'Bez tytułu — Notatnik' (Untitled - Notepad), empty document editor with 0 characters,"
+      },
+      {
+        "i": 11,
+        "t": 10.37,
+        "kind": "step",
+        "text": "#0 done none · jev · conf 0.81 · not executed · 750 ms · verified",
+        "data": {
+          "index": 0,
+          "op": "done",
+          "target": "none",
+          "decided_by": "jev",
+          "confidence": 0.81,
+          "executed": false,
+          "stages_ms": {
+            "observe": 269.4,
+            "reduce": 0.3,
+            "decide": 480.7,
+            "validate": 0.0
+          },
+          "note": "verified"
+        }
+      },
+      {
+        "i": 12,
+        "t": 10.37,
+        "kind": "goal_done",
+        "text": "goal 1 done after 1 step"
+      },
+      {
+        "i": 13,
+        "t": 10.37,
+        "kind": "goal",
+        "text": "goal 2/2: Type \"hello world\" into the Notepad text area",
+        "data": {
+          "index": 1
+        }
+      },
+      {
+        "i": 14,
+        "t": 10.92,
+        "kind": "text",
+        "text": "typing the quoted text from the goal"
+      },
+      {
+        "i": 15,
+        "t": 11.43,
+        "kind": "step",
+        "text": "#0 type e2 · jev · conf 0.69 · executed · 614 ms · text_ok=0.98",
+        "data": {
+          "index": 0,
+          "op": "type",
+          "target": "e2",
+          "decided_by": "jev",
+          "confidence": 0.69,
+          "executed": true,
+          "stages_ms": {
+            "observe": 97.4,
+            "reduce": 0.3,
+            "decide": 261.8,
+            "validate": 0.0,
+            "act": 14.2,
+            "settle": 240.3
+          },
+          "note": "text_ok=0.98"
+        }
+      },
+      {
+        "i": 16,
+        "t": 13.89,
+        "kind": "llm",
+        "text": "verify · anthropic/claude-sonnet-5 · 1449+28 tok · $0.003178 · 2044 ms"
+      },
+      {
+        "i": 17,
+        "t": 13.89,
+        "kind": "verify",
+        "text": "anthropic/claude-sonnet-5 judged done — Editor value equals 'hello world' as required."
+      },
+      {
+        "i": 18,
+        "t": 13.89,
+        "kind": "step",
+        "text": "#1 done none · jev · conf 0.62 · not executed · 420 ms · verified",
+        "data": {
+          "index": 1,
+          "op": "done",
+          "target": "none",
+          "decided_by": "jev",
+          "confidence": 0.62,
+          "executed": false,
+          "stages_ms": {
+            "observe": 156.6,
+            "reduce": 0.2,
+            "decide": 263.3,
+            "validate": 0.0
+          },
+          "note": "verified"
+        }
+      },
+      {
+        "i": 19,
+        "t": 13.89,
+        "kind": "goal_done",
+        "text": "goal 2 done after 2 steps"
+      },
+      {
+        "i": 20,
+        "t": 13.89,
+        "kind": "end",
+        "text": "done after 13.9 s · 2 goals · jev $0.000694 · llm $0.010564"
+      }
+    ],
+    "next": 21,
+    "pending_confirm": null,
+    "spend": {
+      "jev_calls": 3,
+      "jev_tokens": 16518,
+      "jev_usd": 0.00069376,
+      "llm_calls": 3,
+      "llm_tokens": 3742,
+      "llm_usd": 0.010564,
+      "usd": 0.01125776
+    },
+    "started_at": 1789950630.5904286,
+    "ended_at": 1789950644.4815953,
+    "elapsed_s": 13.9,
+    "stop_reason": "",
+    "error": "",
+    "limits": {
+      "max_steps": 8,
+      "budget_s": 45.0,
+      "total_budget_s": 120.0,
+      "usd_cap": 0.15
+    },
+    "run": "20260921-023030-aa964c",
+    "busy": false,
+    "platform": {
+      "ok": true,
+      "reason": ""
+    },
+    "kill_switch": {
+      "button": true,
+      "hotkey": "Ctrl+Alt+Esc",
+      "corner": "top-left",
+      "stop_file": "D:\\code\\jevskill\\.jevskill\\cu.stop",
+      "cli": "jevskill cu stop",
+      "armed": false,
+      "tripped": false,
+      "reason": ""
+    }
+  }
+}

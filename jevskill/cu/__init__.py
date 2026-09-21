@@ -51,14 +51,15 @@ from .types import (CONTROL_TYPES, INTERACTIVE_ROLES, PATTERN_KEYS,
 __all__ = [
     "BEAM_MARGIN", "CONTROL_TYPES", "DESTRUCTIVE_NAMES", "INTERACTIVE_ROLES",
     "OPS", "PATTERN_KEYS", "REGION_ROLES", "THRESHOLDS", "Action", "ActResult",
-    "Consistency", "ConsistencyGate", "Decision", "MacroCache", "Region",
-    "RunOptions", "RunResult", "Snapshot", "Speculation", "Speculator",
-    "StepRecord", "TreeDiff", "UIElement", "Verdict", "build_bundle",
-    "build_state", "candidates", "decide_beam", "decide_cascade", "decide_step",
-    "dedupe", "diff", "execute", "foreground_hwnd", "interactive",
-    "is_destructive_name", "normalise", "prioritise", "region_state", "regions",
-    "run_loop", "settle", "snapshot", "state_tokens", "to_state", "top_regions",
-    "tree_hash", "validate", "visible_enabled",
+    "Consistency", "ConsistencyGate", "Decision", "KillSwitch", "MacroCache",
+    "OpenRouterLLM", "Operator", "Region", "RunOptions", "RunResult", "Snapshot",
+    "Speculation", "Speculator", "StepRecord", "Stopped", "TreeDiff", "UIElement",
+    "Verdict", "build_bundle", "build_state", "candidates", "decide_beam",
+    "decide_cascade", "decide_step", "dedupe", "diff", "execute",
+    "foreground_hwnd", "interactive", "is_destructive_name", "normalise",
+    "platform_status", "prioritise", "region_state", "regions", "run_loop",
+    "settle", "snapshot", "state_tokens", "to_state", "top_regions", "tree_hash",
+    "validate", "visible_enabled",
 ]
 
 _LAZY = {"snapshot": "observe", "to_state": "observe",
@@ -71,7 +72,13 @@ _LAZY = {"snapshot": "observe", "to_state": "observe",
          # switch on, which is the same trade `observe` is deferred for.
          "Speculation": "speculate", "Speculator": "speculate",
          "Consistency": "consistency", "ConsistencyGate": "consistency",
-         "BEAM_MARGIN": "beam", "decide_beam": "beam", "top_regions": "beam"}
+         "BEAM_MARGIN": "beam", "decide_beam": "beam", "top_regions": "beam",
+         # The operator behind the console's computer-use panel, its kill
+         # switch and its planning-model client. Deferred for the same reason:
+         # a caller composing bundles never needs a thread, a socket or ctypes.
+         "Operator": "runner", "platform_status": "runner",
+         "KillSwitch": "killswitch", "Stopped": "killswitch",
+         "OpenRouterLLM": "llm"}
 
 
 def __getattr__(name: str) -> Any:
