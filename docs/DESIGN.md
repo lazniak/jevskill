@@ -276,13 +276,19 @@ so a mouse parked in the corner between runs does nothing.
 
 **Measured, then amended (2026-09-21, live).** The first live runs happened
 with the user working on the same desktop, and the switch was not what ended
-most of them: the operator was. It pins the launched window by pid and, when
-the user switched away, brought it back before every observation and action —
-three times in 40 s while the user typed in Discord, until Windows itself
-refused. The rule is now *once per run*: one loss of the foreground is a glance
-and the window comes back; a second one is a decision and the run stops with
-"the desktop is theirs", reported as *stopped*, not *failed*. The corner
-trigger fired once, 1.5 s after a launch, as the user's cursor crossed the
-corner: that is the convention working as documented, and it stays a hair
-trigger — a dwell requirement would not tell a parked mouse from a fling to the
-first browser tab, and the cost of a false stop is one re-run.
+most of them: the operator was. It observed "the foreground window" and, when
+the user switched away, pulled its window back before every observation and
+action — three times in 40 s while the user typed in Discord, until Windows
+itself refused. A first amendment, *bring it back once, stop on the second
+loss*, ended the next run because the user was reading the console. The rule
+that held is: **reading needs no screen, keys do.** The pinned window is
+observed by handle (`GetLastActivePopup` finds a dialog it opened), in front or
+not; only synthetic input — a key chord, text into a control without a
+`ValuePattern`, a click by point, the wheel — takes the foreground, after
+waiting up to 10 s for the user's hands to pause (`GetLastInputInfo`), and the
+switch to a freshly launched window waits the same way, because the user's
+next two keystrokes once landed in it. The corner trigger fired once, 1.5 s
+after a launch, as the user's cursor crossed the corner: the convention working
+as documented, and it stays a hair trigger — a dwell requirement would not tell
+a parked mouse from a fling to the first browser tab, and the cost of a false
+stop is one re-run.

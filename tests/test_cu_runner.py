@@ -72,6 +72,7 @@ class RunResultStub:
 def make_operator(tmp_path, llm=None, **kwargs):
     switch = KillSwitch(tmp_path / ".jevskill" / "cu.stop", hotkey=False, corner=False,
                         poll_s=0.01)
+    kwargs.setdefault("idle_seconds", lambda: 99.0)   # the user's hands are still
     return Operator(ledger_root=tmp_path, client_getter=lambda: object(),
                     llm_factory=(lambda _m: llm) if llm is not None else None,
                     kill_switch=switch, **kwargs)
@@ -400,36 +401,42 @@ class TestOperatorDryRun:
         assert brought == [3131]
         assert operator.status()["state"] == "done", operator.status()["error"]
 
-    def test_a_step_refuses_to_act_when_the_user_switched_windows(self, tmp_path):
+    def test_a_key_refuses_to_act_when_the_user_holds_the_foreground(self, tmp_path):
         # Measured live 2026-09-21: the user clicked Chrome mid-run and the loop,
         # observing "the foreground window", was handed Chrome and a model that
-        # proposed the Windows key. Observation and action now check the pid.
-        desktop = {"front": 100, "pids": {100: 5, 200: 9}, "windows": {100}}
-        brought = []
+        # proposed the Windows key. The pinned window is now read by handle;
+        # a key chord needs the foreground and refuses when Windows will not
+        # give it, rather than type into the user's window.
+        from jevskill.cu.act import Action
+
+        desktop = {"front": 100, "pids": {100: 5, 200: 9}}
+        brought, observed = [], []
 
         def bring(hwnd):
             brought.append(hwnd)
             return False  # Windows refused
 
-        def loop_that_observes(goal, opts=None, **hooks):
+        def loop_that_presses(goal, opts=None, **hooks):
             desktop["front"] = 200  # the user switched to another app
+            snap = hooks["observe"]()   # read by handle, no screen needed
             try:
-                hooks["observe"]()
+                hooks["execute"](Action(op="key", key="win"), snap)
             except RuntimeError as exc:
                 return RunResultStub("error", error="RuntimeError: %s" % exc)
             return RunResultStub("done")
 
         operator = make_operator(
             tmp_path, platform_check=lambda: {"ok": True, "reason": ""},
-            launcher=lambda _t: desktop["windows"].add(100),
             foreground_hwnd=lambda: desktop["front"], window_pid=lambda h: desktop["pids"][h],
-            top_windows=lambda: set(desktop["windows"]), bring_to_front=bring,
-            foreground_title=lambda: "Chrome", run_loop=loop_that_observes,
-            observe=lambda: (_ for _ in ()).throw(AssertionError("must not observe")),
-            backend_factory=lambda: object())
-        operator.start("type it", None, plan=[{"goal": 'Type "x"'}])
+            bring_to_front=bring, foreground_title=lambda: "Chrome",
+            run_loop=loop_that_presses,
+            observe=lambda: (_ for _ in ()).throw(AssertionError("must not observe the foreground")),
+            observe_window=lambda hwnd: observed.append(hwnd) or object(),
+            active_popup=lambda hwnd: hwnd, backend_factory=lambda: object())
+        operator.start("press it", None, plan=[{"goal": "Press the key"}])
         operator.wait(20)
         status = operator.status()
+        assert observed == [100]
         assert brought == [100]
         assert status["state"] == "failed"
         assert "lost the foreground" in status["error"]
@@ -554,43 +561,223 @@ class TestOperatorDryRun:
         assert status["spend"]["llm_calls"] == 2
         assert status["state"] == "done"
 
-    def test_a_second_loss_of_the_foreground_stops_the_run_for_the_user(self, tmp_path):
-        # Measured live 2026-09-21: the user was typing in Discord; the operator
-        # pulled Notepad back in front three times in 40 s before Windows
-        # refused the fourth. One refocus per run; the second loss stops it.
+    def test_observation_reads_the_pinned_window_and_the_dialog_it_opened(self, tmp_path):
+        # Measured live 2026-09-21: a run was stopped because the user was
+        # reading the console — the loop had been observing "the foreground".
+        # The pinned window is read by handle; the user keeps their screen.
+        desktop = {"front": 300, "pids": {100: 5, 150: 5, 300: 7}, "popup": 100,
+                   "windows": set()}
+        brought, observed = [], []
+
+        def bring(hwnd):
+            brought.append(hwnd)
+            desktop["front"] = hwnd
+            return True
+
+        def loop_that_observes(goal, opts=None, **hooks):
+            desktop["front"] = 300             # the user went back to the console
+            hooks["observe"]()                 # ... the window is read anyway
+            desktop["popup"] = 150             # Notepad opened a Save As dialog
+            hooks["observe"]()                 # ... the dialog, still not in front
+            desktop["front"] = 150             # the dialog came to the front
+            hooks["observe"]()
+            return RunResultStub("done")
+
+        operator = make_operator(
+            tmp_path, platform_check=lambda: {"ok": True, "reason": ""},
+            launcher=lambda _t: desktop["windows"].add(100),
+            top_windows=lambda: set(desktop["windows"]),
+            foreground_hwnd=lambda: desktop["front"],
+            window_pid=lambda h: desktop["pids"][h],
+            bring_to_front=bring,
+            foreground_title=lambda: "jev · console", run_loop=loop_that_observes,
+            observe=lambda: (_ for _ in ()).throw(AssertionError("must not observe the foreground")),
+            observe_window=lambda hwnd: observed.append(hwnd) or object(),
+            active_popup=lambda hwnd: desktop["popup"],
+            backend_factory=lambda: object())
+        operator.start("save it", None,
+                       plan=[{"goal": "Open the Save As dialog", "launch": "notepad.exe"}])
+        operator.wait(20)
+        status = operator.status()
+        assert status["state"] == "done", status["error"]
+        assert observed == [100, 150, 150]
+        assert brought == [100], "only the launch switched windows; no observation did"
+        assert not [e for e in status["events"] if e["kind"] == "refocus"]
+
+    def test_a_key_chord_waits_for_the_user_to_pause_before_taking_the_window(self, tmp_path):
+        # Measured live 2026-09-21: three foreground steals in 40 s while the
+        # user typed in Discord. A chord needs the window; it waits for the
+        # user's hands to pause, then takes it once.
+        from jevskill.cu.act import Action
+
         desktop = {"front": 100, "pids": {100: 5, 200: 9}}
-        brought = []
+        idle = iter([0.1, 0.2, 0.4, 5.0])
+        brought, pressed = [], []
 
         def bring(hwnd):
             brought.append(hwnd)
             desktop["front"] = 100
             return True
 
-        def loop_that_observes(goal, opts=None, **hooks):
-            desktop["front"] = 200          # the user glanced at Discord
-            hooks["observe"]()              # brought back once: fine
-            desktop["front"] = 200          # the user went back to Discord
-            try:
-                hooks["observe"]()
-            except Stopped as exc:
-                return RunResultStub("error", error="Stopped: %s" % exc)
+        class KeyBackend:
+            def send_keys(self, chord):
+                pressed.append(chord)
+
+        def loop_that_presses(goal, opts=None, **hooks):
+            snap = hooks["observe"]()
+            desktop["front"] = 200      # the user is typing in Discord
+            result = hooks["execute"](Action(op="key", key="ctrl+shift+s"), snap)
+            assert result.ok, result.error
             return RunResultStub("done")
 
         operator = make_operator(
             tmp_path, platform_check=lambda: {"ok": True, "reason": ""},
             foreground_hwnd=lambda: desktop["front"], window_pid=lambda h: desktop["pids"][h],
-            foreground_title=lambda: "Discord - AI Lounge" if desktop["front"] == 200 else "Notepad",
-            bring_to_front=bring, run_loop=loop_that_observes,
-            observe=lambda: object(), backend_factory=lambda: object())
-        operator.start("type it", None, plan=[{"goal": 'Type "x"'}])
+            foreground_title=lambda: "Discord", run_loop=loop_that_presses,
+            observe_window=lambda hwnd: object(), active_popup=lambda hwnd: hwnd,
+            bring_to_front=bring, idle_seconds=lambda: next(idle, 99.0),
+            backend_factory=lambda: KeyBackend())
+        operator.start("save it", None, plan=[{"goal": "Open the Save As dialog"}])
         operator.wait(20)
         status = operator.status()
-        assert brought == [100], "one steal per run, not one per action"
-        assert status["state"] == "stopped"
-        assert "the desktop is theirs" in status["stop_reason"]
-        assert "'Discord - AI Lounge'" in status["stop_reason"]
+        assert status["state"] == "done", status["error"]
+        assert brought == [100] and pressed == ["ctrl+shift+s"]
         refocus = [e["text"] for e in status["events"] if e["kind"] == "refocus"]
-        assert len(refocus) == 2 and "brought back" in refocus[0] and "stopping" in refocus[1]
+        assert len(refocus) == 1 and "brought back after waiting" in refocus[0]
+
+    def test_a_uia_pattern_action_needs_no_foreground(self, tmp_path):
+        # SetValue and Invoke act on a background window; only synthetic input
+        # takes the screen. A file name typed into a Save As field while the
+        # user reads the console must not pull the dialog in front of them.
+        from types import SimpleNamespace
+
+        from jevskill.cu.act import Action
+        from jevskill.cu.runner import Operator
+
+        field = SimpleNamespace(id="e73", role="edit", name="Nazwa pliku:", patterns=("value",))
+        button = SimpleNamespace(id="e86", role="button", name="Zapisz", patterns=("invoke",))
+        plain = SimpleNamespace(id="e9", role="button", name="Plain", patterns=())
+        snap = SimpleNamespace(by_id=lambda i: {"e73": field, "e86": button, "e9": plain}.get(i))
+        needs = Operator._needs_foreground
+        assert needs(Action(op="type", target="e73", text="x"), snap) is False
+        assert needs(Action(op="click", target="e86"), snap) is False
+        assert needs(Action(op="click", target="e9"), snap) is True       # click by point
+        assert needs(Action(op="key", key="ctrl+shift+s"), snap) is True
+        assert needs(Action(op="done"), snap) is False
+
+    def test_compose_asks_the_model_before_using_the_commands_quote(self, tmp_path):
+        # Measured live 2026-09-21: goal 4 "Type the full file path into the
+        # File name field" carried no quote of its own and the compose hook
+        # typed the command's "hello world" into the Save As file-name field.
+        from types import SimpleNamespace
+
+        class PathLLM(FakeLLM):
+            def chat(self, system, user, **kw):
+                self.calls.append(system)
+                if "exact text" in system:
+                    payload = json.loads(user)
+                    assert payload["field"]["name"] == "Nazwa pliku:"
+                    assert payload["done_when"] == "hello.txt is on the Desktop"
+                    assert kw == {"max_tokens": 300}
+                    body = {"text": "%USERPROFILE%\\Desktop\\hello.txt"}
+                    return LLMReply(text=json.dumps(body), model="fake/model", tokens_in=50,
+                                    tokens_out=20, cost_usd=0.0001, latency_ms=5.0)
+                return FakeLLM.chat(self, system, user, **kw)
+
+        fake = PathLLM()
+        texts = []
+
+        def loop_that_types(goal, opts=None, **hooks):
+            field = SimpleNamespace(role="edit", name="Nazwa pliku:", value="")
+            texts.append(hooks["compose_text"](goal, field))
+            return RunResultStub("done")
+
+        operator = make_operator(
+            tmp_path, fake, platform_check=lambda: {"ok": True, "reason": ""},
+            foreground_hwnd=lambda: 100, window_pid=lambda h: 5,
+            foreground_title=lambda: "Zapisz jako", run_loop=loop_that_types,
+            observe=lambda: object(), backend_factory=lambda: object())
+        operator.start('Otwórz Notatnik, wpisz „hello world” i zapisz jako hello.txt na pulpicie',
+                       "fake/model",
+                       plan=[{"goal": "Type the full file path into the File name field and save",
+                              "done_when": "hello.txt is on the Desktop"}])
+        operator.wait(20)
+        status = operator.status()
+        assert texts == ["%USERPROFILE%\\Desktop\\hello.txt"]
+        assert status["state"] == "done"
+        events = [e["text"] for e in status["events"]]
+        assert any("text from fake/model" in t for t in events)
+        assert not any("quoted text from the command" in t for t in events)
+
+    def test_the_model_sees_every_candidate_the_loop_saw(self, tmp_path):
+        from jevskill.cu import runner as runner_module
+
+        assert runner_module.ELEMENTS_FOR_LLM == runner_module.OPERATOR_CAP == 150
+
+    def test_a_launch_waits_for_the_user_to_pause_before_switching_windows(self, tmp_path):
+        # Measured live 2026-09-21: Notepad was switched to while the user typed
+        # elsewhere and their next two keystrokes ("ac") landed in it.
+        desktop = {"front": 300, "pids": {100: 5, 300: 7}, "windows": set()}
+        idle = iter([0.1, 0.2, 0.3, 5.0])
+        brought = []
+
+        def bring(hwnd):
+            brought.append(hwnd)
+            desktop["front"] = hwnd
+            return True
+
+        operator = make_operator(
+            tmp_path, platform_check=lambda: {"ok": True, "reason": ""},
+            launcher=lambda _t: desktop["windows"].add(100),
+            top_windows=lambda: set(desktop["windows"]),
+            foreground_hwnd=lambda: desktop["front"], window_pid=lambda h: desktop["pids"][h],
+            bring_to_front=bring, foreground_title=lambda: "Discord",
+            run_loop=lambda goal, opts=None, **hooks: RunResultStub("done"),
+            observe_window=lambda hwnd: object(), idle_seconds=lambda: next(idle, 99.0),
+            backend_factory=lambda: object())
+        operator.start("open it", None, plan=[{"goal": "Open Notepad", "launch": "notepad.exe"}])
+        operator.wait(20)
+        status = operator.status()
+        assert status["state"] == "done", status["error"]
+        assert brought == [100]
+        launch = [e["text"] for e in status["events"] if e["kind"] == "launch"]
+        assert any("waited" in text and "before switching windows" in text for text in launch)
+
+    def test_text_the_model_composed_is_not_cleared_by_the_sanity_check(self, tmp_path):
+        # Measured live 2026-09-21: Jev scored a correct %USERPROFILE% path at
+        # 0.06 in the Save As file-name field and the loop cleared it.
+        from jevskill.cu.decide import THRESHOLDS
+
+        seen = {}
+
+        def loop_that_records(goal, opts=None, **hooks):
+            seen["with_model"] = hooks.get("thresholds")
+            return RunResultStub("done")
+
+        with_model = make_operator(
+            tmp_path, FakeLLM(), platform_check=lambda: {"ok": True, "reason": ""},
+            foreground_hwnd=lambda: 100, window_pid=lambda h: 5,
+            foreground_title=lambda: "Notepad", run_loop=loop_that_records,
+            observe_window=lambda hwnd: object(), backend_factory=lambda: object())
+        with_model.start("save it", "fake/model", plan=[{"goal": "Save it"}])
+        with_model.wait(20)
+        assert with_model.status()["state"] == "done"
+        assert seen["with_model"]["text_sanity"] == 0.0
+        assert {k: v for k, v in seen["with_model"].items() if k != "text_sanity"} == \
+            {k: v for k, v in THRESHOLDS.items() if k != "text_sanity"}
+
+        def loop_jev_only(goal, opts=None, **hooks):
+            seen["jev_only"] = "thresholds" in hooks
+            return RunResultStub("done")
+
+        jev_only = make_operator(
+            tmp_path, platform_check=lambda: {"ok": True, "reason": ""},
+            foreground_hwnd=lambda: 100, window_pid=lambda h: 5,
+            foreground_title=lambda: "Notepad", run_loop=loop_jev_only,
+            observe_window=lambda hwnd: object(), backend_factory=lambda: object())
+        jev_only.start("save it", None, plan=[{"goal": "Save it"}])
+        jev_only.wait(20)
+        assert seen["jev_only"] is False, "Jev only: the loop's own sanity check stays"
 
     def test_plan_only_calls_the_model_and_touches_nothing(self, tmp_path):
         fake = FakeLLM()

@@ -78,29 +78,43 @@ user working on the same desktop; the payloads are in `bench/`):
 - The first live command from the panel — *Open Notepad, type "hello world"* —
   was done in 13.9 s: 3 Jev calls ($0.0007) and 3 model calls ($0.0106)
   (`bench/cu_live_first_run.json`).
-- The full command with *save as hello.txt on the desktop* was tried three
-  times (`bench/cu_live_save_run.json`). The best attempt reached Notepad open,
-  the text typed and verified, and the Save As dialog open and verified
-  (52.7 s, Jev $0.0021, model $0.0486) and did **not** save the file: the
-  file-name step's escalation reply ran to the token cap, and the run then
-  ended because the user was typing in Discord. One attempt was stopped by the
-  corner 1.5 s after the launch — the stop path measured, $0.0075 spent.
+- The full command with *save as hello.txt on the desktop* — **saved, on the
+  sixth attempt, from the panel's start button with dry run off: 60.1 s,
+  5 Jev calls ($0.0038), 12 model calls ($0.0547)**. `hello.txt` on the
+  Desktop contains `hello world`. All six attempts are in
+  `bench/cu_live_save_run.json` with what each exposed; one of them was
+  stopped by the corner 1.5 s after the launch — the stop path measured,
+  $0.0075 spent.
 - What the attempts exposed is fixed in this release, each with a regression
   test: key chords sent nothing (the `SendInput` `INPUT` union lacked
   `MOUSEINPUT`, 40 bytes on x64); a launched window that opened behind the
-  foreground lock is now found by enumeration and switched to; the target
-  window is pinned by pid and the loop refuses to act in another process; the
-  60-candidate cap dropped a file dialog's file-name field and Save button (the
-  operator passes 150 and observes with a 1500 ms budget); the escalation
-  prompt offers `done` and the operator closes the goal on it instead of buying
-  a re-plan; an unusable escalation reply is retried once, terse and capped at
-  300 tokens; three unexecuted escalation actions end a goal; the window is
-  brought back in front once per run — a second loss of the foreground stops
-  the run, because the desktop is the user's.
+  foreground lock is found by enumeration and switched to; the 60-candidate
+  cap dropped a file dialog's file-name field and Save button (the operator
+  passes 150, observes with a 1500 ms budget, and the model sees the same 150
+  — at 60 it never saw the field and navigated folders instead); the compose
+  hook typed the *command's* quote into the file-name field (with a model the
+  model is asked, with `done_when` and the field; the command's quote is for
+  Jev-only runs); the escalation prompt offers `done` and the operator closes
+  the goal on it instead of buying a re-plan; an unusable escalation reply is
+  retried once, terse, at 300 tokens, and verify is held to 25 words; three
+  unexecuted escalation actions end a goal; a scrollable container without
+  `ScrollItem` gets `ScrollPattern`, then the mouse wheel; Jev's post-type
+  sanity check no longer clears text the model composed (it scored a correct
+  `%USERPROFILE%` path at 0.06).
+- **The user keeps their desktop.** The run's window is pinned by pid and read
+  **by handle** (`GetLastActivePopup` finds the dialog it opened), so a run
+  keeps working while the user reads the console or types elsewhere. Only
+  synthetic input — a key chord, text into a control without a `ValuePattern`,
+  a click by point, the wheel — takes the foreground, and first waits up to
+  10 s for the user's hands to pause (`GetLastInputInfo`); so does the switch
+  to a launched window. Measured before the change: the window was pulled in
+  front of the user's Discord three times in 40 s, and a run was stopped for
+  the user merely reading the console; after it, the user's keystrokes landed
+  in a freshly launched Notepad once, which is what the launch's wait is for.
 
-**What is not claimed.** A successful save has not been measured, and neither
-has an escalation rate over more than one command. The next live run is the
-user's, from the panel, off-stream; the README status section says so.
+**What is not claimed.** One command, one successful save, on the sixth
+attempt. No escalation rate over more than one command, and no task-level
+success rate: `bench/cu_run.py --live` has still not been run.
 
 ## [0.13.0] — 2026-09-21
 

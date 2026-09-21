@@ -64,9 +64,14 @@ MAX_REPLANS = 2
 MAX_LLM_CALLS = 40
 CONFIRM_TIMEOUT_S = 120.0
 WINDOW_WAIT_S = 10.0
+#: A key chord waits for this many seconds without user input before it
+#: takes the foreground from whatever the user is doing.
+USER_PAUSE_S = 0.8
 LAUNCH_SETTLE_S = 1.5
 LAUNCH_WAIT_S = 5.0
-ELEMENTS_FOR_LLM = 60
+#: The model sees what the loop saw. 60 hid a Save As dialog's file-name
+#: field from every escalation and re-plan (measured live, 2026-09-21).
+ELEMENTS_FOR_LLM = 150
 EVENT_LIMIT = 2000
 #: Candidates the loop keeps before falling back to the two-stage region
 #: cascade. The loop's own default is 60, tuned on Notepad and Calculator; a
@@ -192,6 +197,42 @@ def _default_observe() -> Snapshot:
     return snapshot(budget_ms=OBSERVE_BUDGET_MS)
 
 
+def _default_observe_window(hwnd: int) -> Snapshot:
+    from .observe import snapshot  # Windows-only; resolved per call
+
+    return snapshot(hwnd=hwnd, budget_ms=OBSERVE_BUDGET_MS)
+
+
+def _default_active_popup(hwnd: int) -> int:
+    """The window of ``hwnd``'s that is active: a dialog it opened, else itself."""
+    try:
+        import ctypes
+
+        user32 = ctypes.windll.user32
+        popup = int(user32.GetLastActivePopup(hwnd) or 0)
+        return popup if popup and user32.IsWindowVisible(popup) else int(hwnd)
+    except Exception:
+        return int(hwnd)
+
+
+def _default_idle_seconds() -> float:
+    """Seconds since the user's last key or mouse event (``GetLastInputInfo``)."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class LASTINPUTINFO(ctypes.Structure):
+            _fields_ = [("cbSize", wintypes.UINT), ("dwTime", wintypes.DWORD)]
+
+        info = LASTINPUTINFO(ctypes.sizeof(LASTINPUTINFO), 0)
+        if not ctypes.windll.user32.GetLastInputInfo(ctypes.byref(info)):
+            return float("inf")
+        elapsed = (ctypes.windll.kernel32.GetTickCount() - info.dwTime) & 0xFFFFFFFF
+        return elapsed / 1000.0
+    except Exception:
+        return float("inf")
+
+
 def _default_foreground_title() -> str:
     from .observe import foreground_hwnd, window_title
 
@@ -305,12 +346,22 @@ class Operator:
                  launcher: Optional[Callable[[str], Any]] = None,
                  platform_check: Optional[Callable[[], Dict[str, Any]]] = None,
                  kill_switch: Optional[KillSwitch] = None,
-                 ledger: Any = None) -> None:
+                 ledger: Any = None,
+                 observe_window: Optional[Callable[[int], Snapshot]] = None,
+                 active_popup: Optional[Callable[[int], int]] = None,
+                 idle_seconds: Optional[Callable[[], float]] = None) -> None:
         self.ledger_root = ledger_root
         self._client_getter = client_getter
         self._llm_factory = llm_factory or self._default_llm
         self._run_loop = run_loop
         self._observe = observe or _default_observe
+        # The pinned window is read by handle, so a run keeps working while the
+        # user reads the console. A fake `observe` without a window reader
+        # keeps the foreground-only path.
+        self._observe_window = observe_window or (
+            _default_observe_window if observe is None else None)
+        self._active_popup = active_popup or _default_active_popup
+        self._idle_seconds = idle_seconds or _default_idle_seconds
         self._backend_factory = backend_factory or (lambda: act_module.UiaBackend())
         self._foreground_title = foreground_title or _default_foreground_title
         self._foreground_hwnd = foreground_hwnd or _default_foreground_hwnd
@@ -318,10 +369,11 @@ class Operator:
         self._window_pid = window_pid or _default_window_pid
         self._window_process = window_process or _default_window_process
         #: The window a run works in: pinned after a launch or after the user
-        #: brought it to the front. Every observation and every action first
-        #: checks the foreground still belongs to its process (a dialog it
-        #: opened counts); if the user switched away the window is brought
-        #: back once, and if that fails the step refuses to act.
+        #: brought it to the front. It is observed by handle (a dialog it
+        #: opened counts), in front or not. Only synthetic input — a key chord,
+        #: typed text without a ValuePattern, a click by point — needs it in
+        #: front: then it waits for the user's hands to pause, brings the
+        #: window back, and refuses to act if Windows will not give it.
         self._target: Dict[str, int] = {"hwnd": 0, "pid": 0}
         self._abort_goal: str = ""
         self._exec_failures: int = 0
@@ -402,7 +454,6 @@ class Operator:
             self._abort_goal = ""
             self._exec_failures = 0
             self._agreed_done = ""
-            self._refocused = 0
             self._thread = threading.Thread(target=self._main, args=(run, llm),
                                             name="jev-operator", daemon=True)
             self._thread.start()
@@ -545,6 +596,13 @@ class Operator:
         self._event(run, "launch", "launching %s" % target)
         self._launcher(target)
         time.sleep(LAUNCH_SETTLE_S)
+        waited = self._wait_for_user_pause()
+        if waited >= 0.3:
+            # Measured live (2026-09-21): the launched Notepad was switched to
+            # while the user was typing elsewhere, and their next two
+            # keystrokes landed in it. The switch waits for a pause first.
+            self._event(run, "launch", "waited %.1f s for the user to pause before switching "
+                                       "windows" % waited)
         deadline = time.time() + LAUNCH_WAIT_S
         while time.time() < deadline and self._hwnd_or_zero() == before:
             self.kill.raise_if_tripped()
@@ -605,13 +663,12 @@ class Operator:
                     {"hwnd": self._target["hwnd"], "pid": pid})
 
     def _ensure_target_in_front(self, what: str) -> None:
-        """Before observing and before acting: is the pinned app still in front?
+        """Before synthetic input: is the pinned app in front?
 
         The foreground may legitimately be another window of the same process
         (a Save As dialog), so the comparison is by pid. If the user switched
-        away, the window is brought back once per run; if Windows refuses,
-        the step raises rather than let the next action land in the wrong
-        window, and if the user switches away a second time the run stops.
+        away, the step waits for a pause in their typing, brings the window
+        back, and if Windows refuses raises rather than type into their window.
         """
         target = self._target
         if not target["pid"]:
@@ -623,30 +680,35 @@ class Operator:
             front_pid = 0
         if front_pid == target["pid"]:
             return
-        if self._refocused:
-            # Brought back once already and the user went elsewhere again: they
-            # want their desktop. Measured live (2026-09-21): three steals in
-            # 40 s while the user typed in Discord, until Windows itself refused
-            # the fourth. One loss is a glance; a second one is a decision.
-            title = self._title_or_empty()
-            if self.run is not None:
-                self._event(self.run, "refocus", "%s: the target window lost the foreground "
-                            "again (%s) — stopping, the desktop is the user's" % (what, title or "?"))
-            raise Stopped("the user switched to %r again after the window was brought back "
-                          "once; the desktop is theirs" % title)
+        waited = self._wait_for_user_pause()
         switched = False
         try:
             switched = bool(self._bring_to_front(target["hwnd"]))
         except Exception:
             switched = False
-        if switched:
-            self._refocused += 1
         if self.run is not None:
-            self._event(self.run, "refocus", "%s: the target window was not in front — %s"
-                        % (what, "brought back" if switched else "could not bring it back"))
+            self._event(self.run, "refocus", "%s: the target window was not in front — %s%s" % (
+                what, "brought back" if switched else "could not bring it back",
+                (" after waiting %.1f s for the user to pause" % waited) if waited >= 0.3 else ""))
         if not switched:
             raise RuntimeError("the target window lost the foreground before the %s and could "
                                "not be brought back; not acting on %r" % (what, self._title_or_empty()))
+
+    def _wait_for_user_pause(self) -> float:
+        """Seconds waited until the user's hands paused (``USER_PAUSE_S`` with
+        no input), at most ``WINDOW_WAIT_S``. Measured live (2026-09-21): the
+        window was taken back three times in 40 s while the user typed in
+        Discord, until Windows itself refused the fourth."""
+        started = time.monotonic()
+        while True:
+            try:
+                idle = float(self._idle_seconds())
+            except Exception:
+                idle = float("inf")
+            if idle >= USER_PAUSE_S or time.monotonic() - started >= WINDOW_WAIT_S:
+                return time.monotonic() - started
+            self.kill.raise_if_tripped()
+            time.sleep(0.1)
 
     def _title_or_empty(self) -> str:
         try:
@@ -699,6 +761,16 @@ class Operator:
         )
         if run.dry_run:
             return self._simulate(step.goal, options, **hooks)
+        if llm is not None:
+            # The planning model composes the text a field needs, for that
+            # field. Jev's post-type sanity check is for text nobody composed;
+            # measured live (2026-09-21) it scored a correct
+            # %USERPROFILE%\Desktop\hello.txt at 0.06 in a Save As file-name
+            # field and cleared it. With a model, the check still runs and is
+            # recorded, but never clears.
+            from .decide import THRESHOLDS
+
+            hooks["thresholds"] = dict(THRESHOLDS, text_sanity=0.0)
         loop = self._run_loop
         if loop is None:
             from .loop import run as loop  # type: ignore[no-redef]
@@ -712,13 +784,57 @@ class Operator:
         if self._abort_goal:
             reason, self._abort_goal = self._abort_goal, ""
             raise RuntimeError(reason)
+        hwnd = self._window_to_observe()
+        if hwnd and self._observe_window is not None:
+            # By handle: the pinned window or the dialog it opened, in front or
+            # not. Reading needs no screen; only keys do. Measured live
+            # (2026-09-21): observing "the foreground" pulled the window in
+            # front of the user's Discord three times in 40 s, and later ended
+            # a run because the user was reading the console.
+            return self._observe_window(hwnd)
         self._ensure_target_in_front("observation")
         return self._observe()
+
+    def _window_to_observe(self) -> int:
+        """The pinned process's active window: the foreground when it is theirs
+        (a dialog counts), else the last active popup, else the window."""
+        target = self._target
+        if not target["pid"]:
+            return 0
+        front = self._hwnd_or_zero()
+        try:
+            if front and int(self._window_pid(front) or 0) == target["pid"]:
+                return front
+        except Exception:
+            pass
+        try:
+            return int(self._active_popup(target["hwnd"]) or target["hwnd"])
+        except Exception:
+            return target["hwnd"]
+
+    @staticmethod
+    def _needs_foreground(action: Any, snapshot: Any) -> bool:
+        """Only synthetic input needs the window in front: a key chord, typed
+        text without a ValuePattern, a click by point, the wheel. UIA patterns
+        (Invoke, SetValue, Select, Scroll) act on a background window."""
+        op = getattr(action, "op", "")
+        if op in ("done", "blocked", "wait"):
+            return False
+        if op == "key":
+            return True
+        try:
+            target = getattr(action, "target", None)
+            element = snapshot.by_id(target) if target else None
+            method = act_module._method_for(op, element)
+        except Exception:
+            return True
+        return method in ("sendinput_text", "sendinput_key", "click_point", "wheel")
 
     def _execute_hook(self, action: Any, snapshot: Any, *, backend: Any = None,
                       dry_run: bool = False) -> Any:
         self.kill.raise_if_tripped()
-        self._ensure_target_in_front("action")
+        if self._needs_foreground(action, snapshot):
+            self._ensure_target_in_front("action")
         result = act_module.execute(action, snapshot, backend=backend, dry_run=dry_run)
         if self.run is not None and not getattr(result, "ok", False):
             self._event(self.run, "act_error", "%s %s did not execute: %s" % (
@@ -788,27 +904,35 @@ class Operator:
     def _compose_hook(self, run: Run, llm: Any, step: PlanStep, goal: str, element: Any) -> str:
         # The planner is told to keep typed text in the goal, in quotes; when it
         # puts it in `done_when` instead ("The text area contains \"hello world\""),
-        # or only the command carries it, those are the next places to look
-        # before a model is asked to guess.
-        for source, text in (("goal", step.goal), ("done_when", step.done_when),
-                             ("command", run.command)):
+        # that is the next place to look before a model is asked.
+        for source, text in (("goal", step.goal), ("done_when", step.done_when)):
             literal = quoted_text(text)
             if literal is not None:
                 self._event(run, "text", "typing the quoted text from the %s" % source)
                 return literal
         if llm is None:
+            # Jev only: the command's own quote is all there is. With a model
+            # present it is *not* used — measured live (2026-09-21) it typed the
+            # command's "hello world" into a Save As file-name field, because
+            # that quote belonged to an earlier goal. With a model, ask.
+            literal = quoted_text(run.command)
+            if literal is not None:
+                self._event(run, "text", "typing the quoted text from the command")
+                return literal
             from .loop import TextNeeded
 
             raise TextNeeded("the step needs text and no planning model was chosen")
         reply = self._llm(run, llm, "compose", (
-            "You write the exact text a desktop agent types into one field. "
+            "You write the exact text a desktop agent types into one field, for the "
+            "current sub-goal of the command. For a file-name field give a full path, "
+            "with %USERPROFILE% for the user's profile when the user name is unknown. "
             "Reply with JSON only: {\"text\": \"...\"}. No explanation, no quotes around "
             "the value beyond JSON's own."),
-            json.dumps({"command": run.command, "goal": step.goal,
+            json.dumps({"command": run.command, "goal": step.goal, "done_when": step.done_when,
                         "field": {"role": getattr(element, "role", ""),
                                   "name": getattr(element, "name", ""),
                                   "value": getattr(element, "value", None)}},
-                       ensure_ascii=False))
+                       ensure_ascii=False), max_tokens=300)
         data = reply.json() if reply is not None else None
         text = data.get("text") if isinstance(data, dict) else None
         if not isinstance(text, str) or not text:
@@ -828,9 +952,10 @@ class Operator:
         reply = self._llm(run, llm, "verify", (
             "You judge whether a desktop sub-goal is complete from the UI Automation "
             "tree of the foreground window. Be strict: unsaved, half-typed or still-open "
-            "dialogs are not done. Reply with JSON only: {\"done\": true|false, \"why\": \"...\"}."),
+            "dialogs are not done. Reply with JSON only: {\"done\": true|false, \"why\": \"...\"}; "
+            "keep `why` under 25 words."),
             json.dumps({"goal": step.goal, "done_when": step.done_when,
-                        "screen": self._screen(snapshot)}, ensure_ascii=False))
+                        "screen": self._screen(snapshot)}, ensure_ascii=False), max_tokens=300)
         data = reply.json() if reply is not None else None
         done = bool(isinstance(data, dict) and data.get("done") is True)
         why = data.get("why", "") if isinstance(data, dict) else ""
@@ -1061,7 +1186,7 @@ class Operator:
         return reply
 
     def _screen(self, snapshot: Any, candidates: Optional[Sequence[Any]] = None) -> Dict[str, Any]:
-        """What the model sees: title, app and up to 60 reduced elements."""
+        """What the model sees: title, app and up to 150 reduced elements."""
         if snapshot is None:
             return {}
         try:
