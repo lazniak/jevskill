@@ -219,6 +219,23 @@ class TestOperatorDryRun:
         assert status["stop_reason"] == "test STOP"
         assert status["plan"][-1]["status"] in ("skipped", "stopped")
 
+    def test_stop_while_waiting_for_a_confirmation_is_stopped_not_failed(self, tmp_path):
+        # Jev-only: no model, so nothing after the denied gate would have looked
+        # at the switch — the run used to end as `failed`, hiding that the user
+        # pressed STOP.
+        operator = make_operator(tmp_path)
+        operator.start("delete the file", None, dry_run=True)
+        deadline = time.time() + 10
+        while time.time() < deadline and not operator.status().get("pending_confirm"):
+            time.sleep(0.02)
+        assert operator.status()["state"] == "waiting_confirm"
+        operator.stop("panel STOP")
+        operator.wait(10)
+        status = operator.status()
+        assert status["state"] == "stopped"
+        assert status["stop_reason"] == "panel STOP"
+        assert status["plan"][0]["stop_reason"] == "blocked"
+
     def test_the_stop_file_stops_a_run_too(self, tmp_path):
         operator = make_operator(tmp_path, FakeLLM())
         operator.start("three goals", "fake/model", dry_run=True)

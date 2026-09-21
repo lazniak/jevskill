@@ -356,6 +356,12 @@ class Operator:
             step.cost_usd += result.cost_usd
             if result.stop_reason == "error" and result.error.startswith("Stopped"):
                 raise Stopped(result.error.split(":", 1)[-1].strip() or self.kill.reason)
+            if self.kill.event.is_set():
+                # STOP that landed while the goal was waiting on a confirmation:
+                # the gate answered "deny", the loop ended the goal as `blocked`,
+                # and without this check a Jev-only run would go on to report
+                # itself *failed* — the user pressed STOP, and that is the reason.
+                raise Stopped(self.kill.reason or "stopped")
             if result.stop_reason == "done":
                 step.status = "done"
                 self._event(run, "goal_done", "goal %d done after %d step%s" % (
