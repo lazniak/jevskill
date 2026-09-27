@@ -444,3 +444,46 @@ class TestOperatorLearns:
         assert status["memory"]["plan_source"] == "memory"
         assert desk2.saved == {"hello.txt": "hello world"}
         assert calls == []
+
+
+# --------------------------------------------------------------------------- #
+# The console routes and the CLI
+# --------------------------------------------------------------------------- #
+
+
+class TestMemorySurfaces:
+    def test_the_console_lists_forgets_and_clears_only_on_confirm(self, tmp_path):
+        from test_cu_runner import call, running
+
+        with running(ledger_root=tmp_path) as (port, server):
+            store = server.console.operator().experience
+            store.learn_plan(SAVE_COMMAND, SAVE_PLAN["steps"])
+            store.learn_plan("another command", [{"goal": "Do it"}])
+            status, body = call(port, "GET", "/api/cu/memory")
+            assert status == 200 and body["stats"]["plans"] == 2
+            key = next(p["key"] for p in body["plans"] if p["command"] == "another command")
+            status, body = call(port, "POST", "/api/cu/memory/forget",
+                                {"kind": "plan", "key": key})
+            assert status == 200 and body["forgot"] is True
+            assert body["memory"]["stats"]["plans"] == 1
+            status, body = call(port, "POST", "/api/cu/memory/forget", {"kind": "x", "key": "y"})
+            assert status == 400
+            status, body = call(port, "POST", "/api/cu/memory/clear", {})
+            assert status == 400, "clear without confirm must refuse"
+            status, body = call(port, "POST", "/api/cu/memory/clear", {"confirm": True})
+            assert status == 200 and body["memory"]["stats"]["plans"] == 0
+
+    def test_the_cli_lists_and_forgets(self, tmp_path, capsys):
+        from jevskill import cli
+
+        store = Experience.for_ledger_root(tmp_path)
+        store.learn_plan(SAVE_COMMAND, SAVE_PLAN["steps"])
+        assert cli.main(["cu", "memory", "--ledger-dir", str(tmp_path)]) == 0
+        out = capsys.readouterr().out
+        assert "1 plans" in out and "Type \"«1»\" into the editor" in out
+        assert cli.main(["cu", "memory", "--json", "--ledger-dir", str(tmp_path)]) == 0
+        key = json.loads(capsys.readouterr().out)["plans"][0]["key"]
+        assert cli.main(["cu", "memory", "--forget", "plan", key,
+                         "--ledger-dir", str(tmp_path)]) == 0
+        assert "forgot" in capsys.readouterr().out
+        assert Experience.for_ledger_root(tmp_path).stats()["plans"] == 0

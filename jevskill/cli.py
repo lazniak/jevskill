@@ -958,6 +958,8 @@ def cmd_cu(args: argparse.Namespace) -> int:
         touch_stop_file(stop_file)
         print(f"stop requested via {stop_file}")
         return 0
+    if args.cu_command == "memory":
+        return _cu_memory(args)
 
     from .cu.runner import Operator, OperatorUnavailable
     from .errors import JevConfigError as _ConfigError
@@ -966,7 +968,7 @@ def cmd_cu(args: argparse.Namespace) -> int:
     try:
         run_id = operator.start(args.command_text, args.model, dry_run=args.dry_run,
                                 max_steps=args.max_steps, budget_s=args.budget_s,
-                                usd_cap=args.usd_cap)
+                                usd_cap=args.usd_cap, memory=not args.no_memory)
     except (OperatorUnavailable, _ConfigError, ValueError) as exc:
         print(f"error: {exc}", file=_sys.stderr)
         return 2
@@ -995,6 +997,41 @@ def cmd_cu(args: argparse.Namespace) -> int:
             print(f"[{event['t']:7.2f}] {event['kind']:<14} {event['text']}", flush=True)
         return 130
     return 0 if status.get("state") == "done" else 1
+
+
+def _cu_memory(args: argparse.Namespace) -> int:
+    """``jevskill cu memory``: what the operator learned, and forgetting it."""
+    from .cu.experience import Experience
+
+    store = Experience.for_ledger_root(args.ledger_dir)
+    if args.forget:
+        kind, key = args.forget
+        forgot = store.forget(kind, key)
+        print("forgot" if forgot else "no such entry (a tombstone was written anyway)")
+        return 0
+    if args.clear:
+        print(f"cleared {store.clear()} entries from {store.path}")
+        return 0
+    listing = store.listing(limit=args.limit)
+    if args.json:
+        print(json.dumps(listing, ensure_ascii=False, indent=2))
+        return 0
+    stats = listing["stats"]
+    print(f"{stats['path']}: {stats['plans']} plans, {stats['recipes']} recipes "
+          f"({stats['usable_recipes']} usable), {stats['lessons']} lessons")
+    for plan in listing["plans"]:
+        print(f"  plan   {plan['successes']}ok/{plan['failures']}x  {plan['command'][:70]}")
+        for goal in plan["goals"]:
+            print(f"           - {goal}")
+    for recipe in listing["recipes"]:
+        flag = "" if recipe["usable"] else "  [demoted]"
+        print(f"  recipe {recipe['successes']}ok/{recipe['failures']}x  {recipe['app']}: "
+              f"{recipe['goal'][:60]}{flag}")
+        for step in recipe["steps"]:
+            print(f"           - {step}")
+    for lesson in listing["lessons"]:
+        print(f"  lesson {lesson['app']}: {lesson['line']}")
+    return 0
 
 
 # --------------------------------------------------------------------------- #
@@ -1226,8 +1263,18 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--budget-s", type=float, default=90.0, help="seconds per sub-goal (default 90)")
     r.add_argument("--usd-cap", type=float, default=0.5,
                    help="stop when Jev + model spend passes this (default 0.50)")
+    r.add_argument("--no-memory", action="store_true",
+                   help="neither use nor feed what earlier runs learned (plans, recipes, lessons)")
     r.add_argument("--ledger-dir", help="directory holding .jevskill/ledger.jsonl")
     r.set_defaults(func=cmd_cu)
+    m = cu_sub.add_parser("memory", help="list what the operator learned, or forget it")
+    m.add_argument("--forget", nargs=2, metavar=("KIND", "KEY"),
+                   help="forget one entry: KIND is recipe, plan or lesson; KEY from --json")
+    m.add_argument("--clear", action="store_true", help="forget everything")
+    m.add_argument("--json", action="store_true", help="the listing as JSON (with keys)")
+    m.add_argument("--limit", type=int, default=50, help="entries per kind (default 50)")
+    m.add_argument("--ledger-dir", help="directory holding .jevskill/ (default: ~/.jevskill)")
+    m.set_defaults(func=cmd_cu)
     s = cu_sub.add_parser("stop", help="stop the active run, from any terminal")
     s.add_argument("--ledger-dir", help="directory holding .jevskill/ledger.jsonl")
     s.set_defaults(func=cmd_cu)

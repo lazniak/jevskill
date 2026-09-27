@@ -708,6 +708,32 @@ label.microlabel { display: block; }
 
 .cu-empty { font-size: 13px; color: var(--fg-3); margin: 8px 0 0; }
 
+/* Memory: what earlier runs taught. Gold-hi marks "no decision was bought". */
+.cu-line.is-memory .kind, .cu-line.is-memory .t { color: var(--gold-hi); }
+.cu-memory { margin-top: 16px; }
+.cu-memory summary { cursor: pointer; }
+.cu-mem-group { margin: 10px 0 0; }
+.cu-mem-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  padding: 6px 0;
+  border-top: 1px solid var(--line);
+  font-size: 12.5px;
+  color: var(--fg-2);
+}
+.cu-mem-item .sub { display: block; font-family: var(--mono); font-size: 11px; color: var(--fg-3); overflow-wrap: anywhere; }
+.cu-mem-item .demoted { color: var(--stop); font-family: var(--mono); font-size: 10.5px; margin-left: 6px; }
+.cu-mem-badge {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--gold-hi);
+  border: 1px solid var(--gold);
+  border-radius: var(--r);
+  padding: 0 5px;
+  white-space: nowrap;
+}
+
 /* At a phone width the row becomes a column and STOP goes to the top of it:
  * one thumb-sized target, above everything it might have to interrupt. */
 @media (max-width: 640px) {

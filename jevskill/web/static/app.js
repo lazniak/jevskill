@@ -1045,6 +1045,7 @@ function cuRestorePrefs() {
   // Dry run is the default, and stays the default until it is switched off by
   // hand: the cheap mistake is a simulation nobody wanted.
   $('#cu-dry').checked = lsGet('jev.cu.dry', '1') !== '0';
+  $('#cu-memory').checked = lsGet('jev.cu.memory', '1') !== '0';
 }
 
 function cuSavePrefs() {
@@ -1052,6 +1053,7 @@ function cuSavePrefs() {
   lsSet('jev.cu.budget_s', $('#cu-budget').value);
   lsSet('jev.cu.usd_cap', $('#cu-cap').value);
   lsSet('jev.cu.dry', $('#cu-dry').checked ? '1' : '0');
+  lsSet('jev.cu.memory', $('#cu-memory').checked ? '1' : '0');
 }
 
 function cuUpdateButtons() {
@@ -1061,7 +1063,9 @@ function cuUpdateButtons() {
   const start = $('#cu-start');
   start.textContent = dry ? 'simulate' : 'start';
   start.disabled = cu.busy || cu.sending || !command;
-  $('#cu-plan-btn').disabled = cu.busy || cu.sending || !command || !model;
+  // Without a model, plan still answers from memory when memory is on.
+  const memory = $('#cu-memory').checked;
+  $('#cu-plan-btn').disabled = cu.busy || cu.sending || !command || (!model && !memory);
   const stop = $('#cu-stop');
   stop.disabled = !cu.busy;
   stop.classList.toggle('is-armed', cu.busy);
@@ -1069,7 +1073,7 @@ function cuUpdateButtons() {
   let hint = cu.note || '';
   if (!command) hint = 'write a command first';
   else if (cu.busy) hint = 'a run is active — STOP takes the desktop back';
-  else if (!model) hint = 'plan needs a planning model';
+  else if (!model && !memory) hint = 'plan needs a planning model or memory';
   else if (!hint && cu.preview) hint = 'plan ready — start runs exactly these steps';
   $('#cu-hint').textContent = hint;
 }
@@ -1108,6 +1112,7 @@ async function cuStart() {
     budget_s: cuNumber('#cu-budget', 90),
     total_budget_s: 600,
     usd_cap: cuCap(),
+    memory: $('#cu-memory').checked,
   };
   // What the user read is what runs: a plan shown in the list is sent back
   // verbatim rather than planned again behind their back.
@@ -1133,10 +1138,13 @@ async function cuPlanNow() {
   button.textContent = 'planning…';
   $('#cu-error').textContent = '';
   try {
-    const payload = await postJSON('/api/cu/plan', { command: command, model: cuModel() });
+    const payload = await postJSON('/api/cu/plan', {
+      command: command, model: cuModel(), memory: $('#cu-memory').checked,
+    });
     cu.preview = (payload.steps || []).map((step) => Object.assign({}, step, { status: 'pending' }));
     cu.previewFor = command;
-    cu.note = payload.note || '';
+    cu.note = (payload.source === 'memory' ? 'from memory — no planning call. ' : '') +
+      (payload.note || '');
     cuRenderPlanSteps(cu.preview);
     cuAppendEvents(payload.events || []);
   } catch (err) {
@@ -1193,8 +1201,11 @@ async function cuPoll() {
 }
 
 function cuApply(payload, sent) {
+  const wasBusy = cu.busy;
   cu.last = payload;
   cu.busy = !!payload.busy;
+  // A run that just ended may have taught something: show it.
+  if (wasBusy && !cu.busy) cuLoadMemory();
   const runId = payload.run || null;
   let skipEvents = false;
   if (runId !== cu.runId) {
@@ -1245,7 +1256,7 @@ function cuRenderStatus(payload) {
   const calls = Number(spend.jev_calls || 0) + Number(spend.llm_calls || 0);
   $('#cu-spend').textContent = payload.run
     ? 'jev ' + cuMoney(spend.jev_usd) + ' · llm ' + cuMoney(spend.llm_usd) +
-      ' · ' + calls + (calls === 1 ? ' call' : ' calls')
+      ' · ' + calls + (calls === 1 ? ' call' : ' calls') + cuMemoryText(payload.memory)
     : '';
 
   const platform = payload.platform || { ok: true, reason: '' };
@@ -1384,6 +1395,97 @@ function cuRenderHowToStop(kill) {
   }));
 }
 
+/* ----------------------------------------------------------- the memory */
+
+/* What memory did for this run, in one clause of the status strip. */
+function cuMemoryText(memory) {
+  if (!memory || memory.enabled === false) return memory ? ' · memory off' : '';
+  const parts = [];
+  if (memory.plan_source === 'memory') parts.push('plan');
+  if (memory.replayed_goals) parts.push(memory.replayed_goals + ' replayed');
+  if (memory.code_verified) parts.push(memory.code_verified + ' verified in code');
+  if (memory.memory_answers) parts.push(memory.memory_answers + ' answered');
+  if (memory.recipes_learned) parts.push('+' + memory.recipes_learned + ' learned');
+  return parts.length ? ' · memory: ' + parts.join(', ') : '';
+}
+
+async function cuLoadMemory() {
+  let payload;
+  try {
+    payload = await api('/api/cu/memory');
+  } catch (_) {
+    $('#cu-memory-count').textContent = '(unavailable)';
+    return;
+  }
+  cuRenderMemory(payload);
+}
+
+function cuMemoryItem(kind, key, main, sub, extra) {
+  const forget = el('button', { type: 'button', class: 'tiny', text: 'forget' });
+  forget.addEventListener('click', () => cuForget(kind, key));
+  return el('div', { class: 'cu-mem-item' }, [
+    el('div', {}, [el('span', { text: main }), extra || null,
+      sub ? el('span', { class: 'sub', text: sub }) : null]),
+    forget,
+  ]);
+}
+
+function cuRenderMemory(payload) {
+  const stats = (payload && payload.stats) || {};
+  const host = $('#cu-memory-list');
+  host.textContent = '';
+  $('#cu-memory-count').textContent = '· ' + Number(stats.plans || 0) + ' plans · ' +
+    Number(stats.recipes || 0) + ' recipes · ' + Number(stats.lessons || 0) + ' lessons';
+  $('#cu-memory-path').textContent = stats.path ? 'kept in ' + stats.path : '';
+  const groups = [
+    ['plans', 'plan', (p) => [String(p.command || ''),
+      (p.goals || []).join(' → ') + ' · ' + p.successes + ' ok / ' + p.failures + ' failed',
+      p.usable ? null : el('span', { class: 'demoted', text: 'demoted' })]],
+    ['recipes', 'recipe', (r) => [String(r.app || '') + ': ' + String(r.goal || ''),
+      ((r.steps || []).join(' · ') || 'the launch alone') + ' · ' + r.successes + ' ok / ' +
+        r.failures + ' failed' + (r.replay_ms ? ' · replay ' + (r.replay_ms / 1000).toFixed(1) +
+        ' s vs learned ' + (r.learned_ms / 1000).toFixed(1) + ' s' : ''),
+      r.usable ? null : el('span', { class: 'demoted', text: 'demoted' })]],
+    ['lessons', 'lesson', (l) => [String(l.app || '') + ': ' + String(l.line || ''), '', null]],
+  ];
+  let any = false;
+  for (const [field, kind, describe] of groups) {
+    const rows = (payload && payload[field]) || [];
+    if (!rows.length) continue;
+    any = true;
+    host.appendChild(el('p', { class: 'microlabel cu-mem-group', text: field }));
+    for (const row of rows) {
+      const [main, sub, extra] = describe(row);
+      host.appendChild(cuMemoryItem(kind, row.key, main, sub, extra));
+    }
+  }
+  if (!any) {
+    host.appendChild(el('p', {
+      class: 'cu-empty',
+      text: 'nothing learned yet — a live run that completes a goal teaches its recipe',
+    }));
+  }
+}
+
+async function cuForget(kind, key) {
+  try {
+    const payload = await postJSON('/api/cu/memory/forget', { kind: kind, key: key });
+    cuRenderMemory(payload.memory);
+  } catch (err) {
+    cuShowError(err);
+  }
+}
+
+async function cuClearMemory() {
+  if (!window.confirm('Forget every plan, recipe and lesson the operator learned?')) return;
+  try {
+    const payload = await postJSON('/api/cu/memory/clear', { confirm: true });
+    cuRenderMemory(payload.memory);
+  } catch (err) {
+    cuShowError(err);
+  }
+}
+
 /* -------------------------------------------------------------- the log */
 
 function cuLineClass(event) {
@@ -1392,6 +1494,8 @@ function cuLineClass(event) {
   if (kind === 'llm_error' || kind === 'goal_stalled') return 'is-stop';
   if (kind === 'end') return text.indexOf('failed') === 0 ? 'is-stop' : 'is-end';
   if (kind === 'confirm' || kind === 'confirm_result') return 'is-gold';
+  if (kind === 'memory') return 'is-memory';
+  if (kind === 'verify' && text.indexOf('verified in code') === 0) return 'is-memory';
   if (CU_DIM_KINDS.indexOf(kind) >= 0) return 'is-dim';
   return '';
 }
@@ -1462,6 +1566,12 @@ function cuWire() {
     $(selector).addEventListener('change', cuSavePrefs);
   }
   $('#cu-dry').addEventListener('change', () => { cuSavePrefs(); cuUpdateButtons(); });
+  $('#cu-memory').addEventListener('change', () => { cuSavePrefs(); cuUpdateButtons(); });
+  $('#cu-memory-refresh').addEventListener('click', cuLoadMemory);
+  $('#cu-memory-clear').addEventListener('click', cuClearMemory);
+  $('#cu-memory-panel').addEventListener('toggle', () => {
+    if ($('#cu-memory-panel').open) cuLoadMemory();
+  });
 
   $('#cu-plan-btn').addEventListener('click', cuPlanNow);
   $('#cu-start').addEventListener('click', cuStart);
@@ -1483,6 +1593,7 @@ function cuBoot() {
   cuUpdateButtons();
   setView(location.hash === '#cu' ? 'cu' : (lsGet('jev.view', 'decide') === 'cu' ? 'cu' : 'decide'));
   cuLoadModels();
+  cuLoadMemory();
   // Poll from boot, not from the first click: a run started by `jevskill cu`
   // in a terminal is this page's business too.
   cuPoll();

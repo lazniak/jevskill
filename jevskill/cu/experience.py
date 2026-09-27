@@ -289,7 +289,8 @@ class RecipeStep:
     def describe(self) -> str:
         line = describe(self.op, self.identity, self.key)
         if self.op == "type" and self.text is not None:
-            line += " = %r" % display_template(self.text)[:60]
+            # Quoted by hand: repr() doubled every backslash of a Windows path.
+            line += ' = "%s"' % display_template(self.text)[:60]
         return line
 
 

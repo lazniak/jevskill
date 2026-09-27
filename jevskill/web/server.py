@@ -858,6 +858,8 @@ class _Handler(BaseHTTPRequestHandler):
                 self._json(self.console.operator().status(since))
             elif route == "/api/cu/models":
                 self._json(cu_models_payload())
+            elif route == "/api/cu/memory":
+                self._json(self.console.operator().experience.listing())
             elif route in ("/", "/index.html"):
                 self._static("index.html")
             elif route.startswith("/api/"):
@@ -875,7 +877,8 @@ class _Handler(BaseHTTPRequestHandler):
             return
         route = urlparse(self.path).path
         if route not in ("/api/decide", "/api/estimate", "/api/plan", "/api/cu/start",
-                         "/api/cu/plan", "/api/cu/stop", "/api/cu/confirm"):
+                         "/api/cu/plan", "/api/cu/stop", "/api/cu/confirm",
+                         "/api/cu/memory/forget", "/api/cu/memory/clear"):
             self._error(404, f"no such endpoint: {route}", "See GET / for the console.")
             return
         payload = self._read_body()
@@ -911,7 +914,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._unexpected(exc)
 
     def _computer_use(self, route: str, payload: dict) -> None:
-        """The four computer-use writes. Status codes are the contract:
+        """The computer-use writes — start, plan, stop, confirm, and forgetting
+        what the operator learned. Status codes are the contract:
 
         * ``409`` a run is active (start) or nothing is waiting (confirm)
         * ``501`` a live run cannot happen on this machine (the reason says why)
@@ -933,10 +937,22 @@ class _Handler(BaseHTTPRequestHandler):
                     budget_s=float(payload.get("budget_s", 90) or 90),
                     total_budget_s=float(payload.get("total_budget_s", 600) or 600),
                     usd_cap=float(payload.get("usd_cap", 0.5) or 0.0),
+                    memory=bool(payload.get("memory", True)),
                 )
                 self._json({"ok": True, "run_id": run_id, "status": operator.status()}, 202)
             elif route == "/api/cu/plan":
-                self._json(operator.plan(str(payload.get("command", "")), payload.get("model")))
+                self._json(operator.plan(str(payload.get("command", "")), payload.get("model"),
+                                         memory=bool(payload.get("memory", True))))
+            elif route == "/api/cu/memory/forget":
+                forgot = operator.experience.forget(str(payload.get("kind", "")),
+                                                    str(payload.get("key", "")))
+                self._json({"ok": True, "forgot": forgot,
+                            "memory": operator.experience.listing()})
+            elif route == "/api/cu/memory/clear":
+                if payload.get("confirm") is not True:
+                    raise ValueError("clearing the memory needs {\"confirm\": true}")
+                self._json({"ok": True, "cleared": operator.experience.clear(),
+                            "memory": operator.experience.listing()})
             elif route == "/api/cu/stop":
                 self._json({"ok": True, "status": operator.stop(
                     str(payload.get("reason") or "STOP button"))})
@@ -951,7 +967,8 @@ class _Handler(BaseHTTPRequestHandler):
         except LLMError as exc:
             self._error(502, str(exc), "The planning model's provider failed; pick another model or retry.")
         except (TypeError, ValueError) as exc:
-            self._error(400, str(exc), "command is a non-empty string; model an OpenRouter id or null.")
+            self._error(400, str(exc), "command is a non-empty string; model an OpenRouter id or "
+                                       "null; forget takes kind (recipe, plan, lesson) and key.")
 
     def _unexpected(self, exc: Exception) -> None:  # pragma: no cover - defensive
         # The hint promises a traceback in the terminal; print it, or the

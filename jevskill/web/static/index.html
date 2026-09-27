@@ -158,6 +158,9 @@
           <p class="cu-dry">
             <label class="switch" for="cu-dry"><input type="checkbox" id="cu-dry" checked> dry run — plan, then simulate; the desktop is not touched</label>
           </p>
+          <p class="cu-dry">
+            <label class="switch" for="cu-memory"><input type="checkbox" id="cu-memory" checked> memory — reuse what earlier runs learned; a remembered goal replays without Jev or the model</label>
+          </p>
         </details>
 
         <div class="btn-row cu-actions">
@@ -195,6 +198,16 @@
 
         <p class="microlabel cu-sub">event log</p>
         <div id="cu-log" class="cu-log mono" tabindex="0" aria-label="event log"></div>
+
+        <details id="cu-memory-panel" class="cu-memory">
+          <summary class="microlabel">memory <span class="mono cu-meta" id="cu-memory-count"></span></summary>
+          <p class="btn-row">
+            <button type="button" class="tiny" id="cu-memory-refresh">refresh</button>
+            <button type="button" class="tiny" id="cu-memory-clear">forget everything</button>
+          </p>
+          <p class="note mono" id="cu-memory-path"></p>
+          <div id="cu-memory-list"></div>
+        </details>
       </section>
 
     </div>
