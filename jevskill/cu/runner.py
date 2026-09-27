@@ -54,8 +54,13 @@ from ..errors import JevConfigError
 from ..stats import Ledger, ledger_path
 from . import act as act_module
 from .contract import RunOptions, RunResult, StepRecord
+from .experience import (Experience, Recipe, RecipeStep, Trajectory, command_key,
+                         describe, extract_slots, fill, has_markers, identity_of,
+                         literal_check, recipe_check, resolve)
+from .hashing import tree_hash
 from .killswitch import STOP_FILE_NAME, KillSwitch, Stopped
 from .llm import LLMError, OpenRouterLLM, cached_models, pricing_table
+from .reduce import candidates as reduce_candidates
 from .types import Snapshot
 
 CONSOLE_TITLE = "jev · console"
@@ -85,6 +90,14 @@ OPERATOR_CAP = 150
 #: The observe budget: the same dialog took 634 ms to walk once and 448 ms the
 #: next time; the loop's default of 600 ms marks that `over_budget`.
 OBSERVE_BUDGET_MS = 1500.0
+#: How often a launch looks for the new window. The old flow slept a fixed
+#: 1.5 s first and then waited for the user's pause before switching to it;
+#: a window read by handle needs neither, only to be found.
+LAUNCH_POLL_S = 0.1
+#: A replayed step whose recorded outcome was a new window (a dialog) gets this
+#: long to show it. Settle's usual 800 ms called a dialog that paints in about
+#: a second "unchanged" and would have failed a correct recipe.
+REPLAY_NEW_WINDOW_MS = 2000.0
 
 #: Programs a plan may start without asking. Anything else goes through the
 #: same confirm gate as a destructive click — a model that decides to launch
@@ -152,6 +165,15 @@ class Run:
     stop_reason: str = ""
     error: str = ""
     replans: int = 0
+    #: Use and feed the operator's memory (:mod:`jevskill.cu.experience`).
+    memory: bool = True
+    #: Where the plan came from: ``memory``, ``model``, ``user`` or ``command``.
+    plan_source: str = ""
+    #: What memory did for this run, counted rather than claimed.
+    learned: Dict[str, int] = field(default_factory=lambda: {
+        "replayed_goals": 0, "replayed_steps": 0, "replay_failures": 0,
+        "code_verified": 0, "memory_answers": 0, "recipes_learned": 0,
+        "lessons_learned": 0})
 
     @property
     def active(self) -> bool:
@@ -172,6 +194,7 @@ class Run:
             "stop_reason": self.stop_reason, "error": self.error,
             "limits": {"max_steps": self.max_steps, "budget_s": self.budget_s,
                        "total_budget_s": self.total_budget_s, "usd_cap": self.usd_cap},
+            "memory": dict(self.learned, enabled=self.memory, plan_source=self.plan_source),
         }
 
 
@@ -243,6 +266,12 @@ def _default_foreground_hwnd() -> int:
     from .observe import foreground_hwnd
 
     return int(foreground_hwnd())
+
+
+def _default_window_title(hwnd: int) -> str:
+    from .observe import window_title
+
+    return str(window_title(int(hwnd)) or "")
 
 
 def _default_top_windows() -> set:
@@ -349,7 +378,9 @@ class Operator:
                  ledger: Any = None,
                  observe_window: Optional[Callable[[int], Snapshot]] = None,
                  active_popup: Optional[Callable[[int], int]] = None,
-                 idle_seconds: Optional[Callable[[], float]] = None) -> None:
+                 idle_seconds: Optional[Callable[[], float]] = None,
+                 window_title: Optional[Callable[[int], str]] = None,
+                 experience: Optional[Experience] = None) -> None:
         self.ledger_root = ledger_root
         self._client_getter = client_getter
         self._llm_factory = llm_factory or self._default_llm
@@ -389,6 +420,22 @@ class Operator:
         self._confirm_answer: Optional[bool] = None
         self.run: Optional[Run] = None
         self._verify_cache: Dict[str, bool] = {}
+        self._window_title = window_title or _default_window_title
+        #: What the operator has learned (see :mod:`jevskill.cu.experience`).
+        #: Next to the ledger when a root is named — tests get a private one —
+        #: else machine-wide, like the macro cache.
+        self.experience = experience if experience is not None else \
+            Experience.for_ledger_root(ledger_root)
+        #: The current goal's actions and their observed effect.
+        self._trajectory: Optional[Trajectory] = None
+        #: Where the last composed text came from, so a recipe knows whether
+        #: it may be replayed literally (a quote) or must be written again.
+        self._text_source: str = ""
+        self._text_value: Optional[str] = None
+        #: The window the user had in front before a key chord took it; given
+        #: back when the run ends if the foreground is still the agent's.
+        self._user_front: int = 0
+        self._goal_replayed: bool = False
 
     # ------------------------------------------------------------------ public
     @property
@@ -407,8 +454,9 @@ class Operator:
             payload["kill_switch"] = self.kill.describe()
             return payload
 
-    def plan(self, command: str, model: Optional[str]) -> Dict[str, Any]:
-        """Plan without running. Calls the model; touches nothing."""
+    def plan(self, command: str, model: Optional[str], *, memory: bool = True) -> Dict[str, Any]:
+        """Plan without running. Touches nothing; calls the model unless the
+        command's plan is remembered (``memory=False`` asks the model anyway)."""
         command = (command or "").strip()
         if not command:
             raise ValueError("the command is empty")
@@ -416,17 +464,19 @@ class Operator:
             # A STOP that ended the previous run must not veto this planning
             # call: the switch is armed per run, and between runs it is silent.
             self.kill.reset()
-        llm = self._make_llm(model)
-        scratch = Run(id="plan", command=command, model=self._model_id(model))
+        remembered = self.experience.plan_for(command) if memory else None
+        llm = self._make_llm(model) if remembered is None else None
+        scratch = Run(id="plan", command=command, model=self._model_id(model),
+                      memory=bool(memory))
         steps, note = self._plan(scratch, llm, command)
         return {"steps": [s.to_dict() for s in steps], "note": note,
                 "model": scratch.model, "spend": scratch.spend,
-                "events": scratch.events}
+                "events": scratch.events, "source": scratch.plan_source}
 
     def start(self, command: str, model: Optional[str] = None, *, dry_run: bool = False,
               plan: Optional[Sequence[Any]] = None, max_steps: int = 25,
               budget_s: float = 90.0, total_budget_s: float = 600.0,
-              usd_cap: float = 0.5) -> str:
+              usd_cap: float = 0.5, memory: bool = True) -> str:
         command = (command or "").strip()
         if not command:
             raise ValueError("the command is empty")
@@ -443,17 +493,21 @@ class Operator:
                       command=command, model=self._model_id(model), dry_run=bool(dry_run),
                       max_steps=max(1, int(max_steps)), budget_s=max(5.0, float(budget_s)),
                       total_budget_s=max(10.0, float(total_budget_s)),
-                      usd_cap=max(0.0, float(usd_cap)))
+                      usd_cap=max(0.0, float(usd_cap)), memory=bool(memory))
             if plan:
                 run.plan = [self._coerce_step(item) for item in plan if item]
                 if not run.plan:
                     raise ValueError("the supplied plan has no usable steps")
+                run.plan_source = "user"
             self.run = run
             self._verify_cache = {}
             self._target = {"hwnd": 0, "pid": 0}
             self._abort_goal = ""
             self._exec_failures = 0
             self._agreed_done = ""
+            self._trajectory = None
+            self._user_front = 0
+            self._goal_replayed = False
             self._thread = threading.Thread(target=self._main, args=(run, llm),
                                             name="jev-operator", daemon=True)
             self._thread.start()
@@ -529,6 +583,9 @@ class Operator:
             self._event(run, "goal", "goal %d/%d: %s" % (index + 1, len(run.plan), step.goal),
                         {"index": index})
             self._before_goal(run, step, index)
+            self._trajectory = Trajectory(cap=OPERATOR_CAP)
+            self._goal_replayed = False
+            goal_started = time.perf_counter()
             result = self._run_goal(run, llm, step, index)
             step.stop_reason = result.stop_reason
             step.steps = len(result.steps)
@@ -549,9 +606,11 @@ class Operator:
                 if agreed:
                     step.stop_reason = "done"
                     step.note = agreed[:200]
-                self._event(run, "goal_done", "goal %d done after %d step%s%s" % (
+                self._event(run, "goal_done", "goal %d done after %d step%s%s%s" % (
                     index + 1, step.steps, "" if step.steps == 1 else "s",
+                    " from memory" if self._goal_replayed else "",
                     (" — %s judged it complete: %s" % (run.model, agreed)) if agreed else ""))
+                self._learn_goal(run, step, True, goal_started)
                 index += 1
                 continue
             step.note = (result.error or (result.steps[-1].note if result.steps else ""))[:200]
@@ -560,17 +619,93 @@ class Operator:
             verdict = self._replan(run, llm, index, result)
             if verdict == "completed":
                 step.status = "done"
+                self._learn_goal(run, step, True, goal_started)
                 index += 1
                 continue
+            self._learn_goal(run, step, False, goal_started)
             if verdict == "revised":
                 step.status = "failed"
                 index += 1
                 continue
             step.status = "failed"
+            self._forget_failed_plan(run)
             self._finish(run, "failed", stop_reason=result.stop_reason,
                          error=step.note or result.stop_reason)
             return
+        self._learn_plan(run)
         self._finish(run, "done")
+
+    # ------------------------------------------------------------------ memory
+    def _target_app(self) -> str:
+        """The pinned window's executable, the key recipes are filed under."""
+        hwnd = self._target.get("hwnd") or 0
+        if not hwnd or not self._target.get("pid"):
+            return ""
+        try:
+            return str(self._window_process(hwnd) or "").strip().casefold()
+        except Exception:
+            return ""
+
+    def _learn_goal(self, run: Run, step: PlanStep, done: bool, started: float) -> None:
+        """Keep what this goal taught: its recipe when it was done, and a
+        lesson for every action that changed nothing or was refused.
+
+        Only a real desktop teaches — a dry run's steps are simulated — and a
+        run with memory off neither reads nor writes it.
+        """
+        trajectory, self._trajectory = self._trajectory, None
+        if run.dry_run or not run.memory or trajectory is None:
+            return
+        trajectory.close()
+        app = self._target_app()
+        if not app:
+            return
+        try:
+            lessons = self.experience.learn_lessons(app, step.goal, trajectory)
+            run.learned["lessons_learned"] += lessons
+            if not done:
+                return
+            wall_ms = (time.perf_counter() - started) * 1000.0
+            recipe = self.experience.learn_recipe(
+                app, step.goal, run.command, trajectory, wall_ms=wall_ms,
+                launched=bool(step.launch), replayed=self._goal_replayed)
+        except Exception as exc:  # a memory that cannot write must not end a run
+            self._event(run, "memory", "could not record what goal %s taught: %s"
+                        % (step.goal[:60], type(exc).__name__))
+            return
+        if recipe is None:
+            return
+        if self._goal_replayed:
+            self._event(run, "memory", "recipe confirmed: %s (%d successes)" % (
+                step.goal[:80], recipe.successes))
+        else:
+            run.learned["recipes_learned"] += 1
+            self._event(run, "memory", "learned: %s — %s; next time it replays without "
+                        "a decision" % (step.goal[:80], "; ".join(
+                            s.describe() for s in recipe.steps[:4]) or "the launch alone"),
+                        {"steps": [s.to_dict() for s in recipe.steps]})
+
+    def _learn_plan(self, run: Run) -> None:
+        if run.dry_run or not run.memory:
+            return
+        done = [s.to_dict() for s in run.plan if s.status == "done"]
+        if not done or run.plan_source == "command":
+            return
+        try:
+            self.experience.learn_plan(run.command, done, model=run.model or "")
+        except Exception:
+            return
+        if run.plan_source != "memory":
+            self._event(run, "memory", "plan remembered: %d goal%s; the same command skips "
+                        "the planning call next time" % (len(done), "" if len(done) == 1 else "s"))
+
+    def _forget_failed_plan(self, run: Run) -> None:
+        if run.dry_run or not run.memory or run.plan_source != "memory":
+            return
+        try:
+            self.experience.plan_failed(run.command)
+        except Exception:
+            pass
 
     def _before_goal(self, run: Run, step: PlanStep, index: int) -> None:
         if run.dry_run:
@@ -591,47 +726,49 @@ class Operator:
                              {"op": "launch", "target": target, "name": target}):
                 raise Stopped("launch of %s refused" % target) if self.kill.event.is_set() \
                     else RuntimeError("launch refused: %s" % target)
-        before = self._hwnd_or_zero()
         known = self._windows_or_empty()
+        existing = {hwnd: self._title_of(hwnd) for hwnd in self._windows_of(target, known)}
         self._event(run, "launch", "launching %s" % target)
         self._launcher(target)
-        time.sleep(LAUNCH_SETTLE_S)
-        waited = self._wait_for_user_pause()
-        if waited >= 0.3:
-            # Measured live (2026-09-21): the launched Notepad was switched to
-            # while the user was typing elsewhere, and their next two
-            # keystrokes landed in it. The switch waits for a pause first.
-            self._event(run, "launch", "waited %.1f s for the user to pause before switching "
-                                       "windows" % waited)
-        deadline = time.time() + LAUNCH_WAIT_S
-        while time.time() < deadline and self._hwnd_or_zero() == before:
+        # The launched window is *found*, not switched to. It used to be
+        # brought to the front, after a fixed 1.5 s sleep and a wait for the
+        # user's hands to pause — measured live (2026-09-21), the user's next
+        # two keystrokes landed in the new Notepad anyway. Since the pinned
+        # window is read by handle, nothing needs it in front until an action
+        # needs the keyboard, and that action waits for the pause itself.
+        # A new top-level window first; failing that, a window the program
+        # already had — Windows 11 Notepad is single-instance and answers a
+        # second launch with a new tab — once its title shows the new tab.
+        started = time.time()
+        deadline = started + LAUNCH_WAIT_S
+        found = 0
+        while not found:
             self.kill.raise_if_tripped()
-            # Windows refuses a background process the foreground: the new
-            # window flashes in the taskbar while whatever the user had in front
-            # stays there — and "act on the foreground window" would act on
-            # *that*. So the window is found and switched to: a *new* top-level
-            # window first; failing that, an existing window of the launched
-            # program — Windows 11 Notepad is single-instance and answers a
-            # second launch with a new tab in the window it already has.
             current = self._windows_or_empty()
-            candidates = sorted(current - known) or self._windows_of(target, current)
-            for hwnd in candidates:
-                try:
-                    switched = bool(self._bring_to_front(hwnd))
-                except Exception as exc:
-                    switched = False
-                    self._event(run, "switch", "switching to window %d raised %s"
-                                % (hwnd, type(exc).__name__))
-                    continue
-                self._event(run, "switch", "switching to window %d: %s"
-                            % (hwnd, "ok" if switched else "refused"))
-                if switched:
-                    break
-            time.sleep(0.25)
-        if self._hwnd_or_zero() == before:
-            raise RuntimeError("%s started but did not come to the front; click its window "
-                               "and start again without the launch" % target)
-        self._pin(run, self._hwnd_or_zero())
+            fresh = sorted(current - known)
+            if fresh:
+                owned = self._windows_of(target, set(fresh))
+                found = owned[0] if owned else fresh[0]
+                break
+            mine = self._windows_of(target, current)
+            changed = [h for h in mine if h in existing and self._title_of(h) != existing[h]]
+            if changed:
+                found = changed[0]
+                break
+            if mine and time.time() - started >= LAUNCH_SETTLE_S:
+                found = mine[0]
+                break
+            if time.time() >= deadline:
+                break
+            time.sleep(LAUNCH_POLL_S)
+        if not found:
+            raise RuntimeError("%s started but no window of it appeared within %.0f s; open it "
+                               "yourself and start again without the launch"
+                               % (target, LAUNCH_WAIT_S))
+        self._event(run, "launch", "found %s's window in %.1f s — working in it by handle, "
+                                   "without taking the foreground"
+                    % (target, time.time() - started))
+        self._pin(run, found)
 
     def _wait_for_target_window(self, run: Run) -> None:
         deadline = time.time() + WINDOW_WAIT_S
@@ -659,8 +796,20 @@ class Operator:
         except Exception:
             pid = 0
         self._target = {"hwnd": int(hwnd or 0), "pid": pid}
-        self._event(run, "window", "working in: %s" % (self._title_or_empty() or "?"),
+        self._event(run, "window", "working in: %s" % (self._title_of(hwnd) or "?"),
                     {"hwnd": self._target["hwnd"], "pid": pid})
+
+    def _title_of(self, hwnd: int) -> str:
+        """A window's own title; the foreground's when it is that window and
+        its own cannot be read (off Windows, in tests without a reader)."""
+        title = ""
+        try:
+            title = str(self._window_title(int(hwnd)) or "") if hwnd else ""
+        except Exception:
+            title = ""
+        if not title and hwnd and self._hwnd_or_zero() == int(hwnd):
+            title = self._title_or_empty()
+        return title
 
     def _ensure_target_in_front(self, what: str) -> None:
         """Before synthetic input: is the pinned app in front?
@@ -680,6 +829,10 @@ class Operator:
             front_pid = 0
         if front_pid == target["pid"]:
             return
+        if front and not self._user_front:
+            # Whatever the user had in front goes back to them when the run
+            # ends (`_give_back`), unless they have moved on by then.
+            self._user_front = int(front)
         waited = self._wait_for_user_pause()
         switched = False
         try:
@@ -750,17 +903,34 @@ class Operator:
         self._abort_goal = ""
         self._exec_failures = 0
         self._agreed_done = ""
+        # With memory, a Jev-only run still gets a verifier and an escalation
+        # handler: code-only ones. The verifier answers True when the screen
+        # proves the goal and abstains (None) otherwise; the handler answers
+        # from a recipe or not at all. Neither ever calls a model.
+        use_hooks = llm is not None or run.memory
         hooks = dict(
             task_id="%s:%d" % (run.id, index), run=0,
             observe=self._observe_hook, ledger=self._ledger_or_none(),
             on_step=functools.partial(self._on_step, run, step),
             confirm=functools.partial(self._confirm_hook, run),
             compose_text=functools.partial(self._compose_hook, run, llm, step),
-            escalate=(functools.partial(self._escalate_hook, run, llm, step) if llm else None),
-            verify=(functools.partial(self._verify_hook, run, llm, step) if llm else None),
+            escalate=(functools.partial(self._escalate_hook, run, llm, step)
+                      if use_hooks else None),
+            verify=(functools.partial(self._verify_hook, run, llm, step)
+                    if use_hooks else None),
         )
         if run.dry_run:
             return self._simulate(step.goal, options, **hooks)
+        backend = self._backend_factory()
+        replayed: List[StepRecord] = []
+        recipe = self._recipe_for(run, step)
+        if recipe is not None:
+            outcome = self._replay(run, llm, step, recipe, backend)
+            if outcome.stop_reason in ("done", "blocked"):
+                return outcome
+            # A step of the recipe did not hold: carry on from this screen the
+            # ordinary way, with what the replay did already on the record.
+            replayed = list(outcome.steps)
         if llm is not None:
             # The planning model composes the text a field needs, for that
             # field. Jev's post-type sanity check is for text nobody composed;
@@ -774,9 +944,292 @@ class Operator:
         loop = self._run_loop
         if loop is None:
             from .loop import run as loop  # type: ignore[no-redef]
-        backend = self._backend_factory()
-        return loop(step.goal, options, client=self._client(), cap=OPERATOR_CAP,
-                    execute=functools.partial(self._execute_hook, backend=backend), **hooks)
+        result = loop(step.goal, options, client=self._client(), cap=OPERATOR_CAP,
+                      execute=functools.partial(self._execute_hook, backend=backend), **hooks)
+        if replayed:
+            result.steps = replayed + list(result.steps)
+        return result
+
+    # ------------------------------------------------------------ the replay
+    def _recipe_for(self, run: Run, step: PlanStep) -> Optional[Recipe]:
+        if not run.memory:
+            return None
+        app = self._target_app()
+        if not app:
+            return None
+        try:
+            return self.experience.recipe_for(app, step.goal)
+        except Exception:
+            return None
+
+    def _slots(self, run: Run, step: PlanStep, recipe: Optional[Recipe]):
+        """``(goal slots, command slots or None)`` for filling ``recipe``.
+
+        Command slots are only offered when the command has the template the
+        recipe was learned under: the same goal can come from a different
+        command, whose values sit in different positions, and a filled
+        ``⟦c1⟧`` would then be the wrong value typed into the right field.
+        """
+        goal_slots = extract_slots(step.goal)
+        key, values = command_key(run.command)
+        same = recipe is None or not recipe.command or recipe.command == key
+        return goal_slots, (values if same else None)
+
+    def _recipe_text(self, run: Run, llm: Any, step: PlanStep, rstep: RecipeStep,
+                     element: Any, goal_slots, command_slots) -> str:
+        """The text a replayed ``type`` enters: the template filled with this
+        command's values, or — a composed text that cannot be filled safely —
+        written again by the compose hook."""
+        text = fill(rstep.text, goal_slots, command_slots)
+        literal_ok = rstep.text_source != "compose" or has_markers(rstep.text) or \
+            command_slots is not None
+        if text is not None and literal_ok:
+            self._text_source = rstep.text_source or "literal"
+            self._text_value = text
+            return text
+        return self._compose_hook(run, llm, step, step.goal, element)
+
+    def _replay(self, run: Run, llm: Any, step: PlanStep, recipe: Recipe,
+                backend: Any) -> RunResult:
+        """Perform a remembered goal: no Jev call, no model call, every step checked.
+
+        Each step's control must resolve on the current screen, the action must
+        execute, and the screen must change — the same evidence the loop asks
+        of a macro. A destructive control still goes through the confirm gate:
+        a recipe learned yesterday is not today's permission. The goal counts
+        as done only when the screen matches how it looked when it was learned
+        (:func:`jevskill.cu.experience.recipe_check`), or the verifier says so.
+        Anything short of that returns what was done, and the loop carries on.
+        """
+        from .loop import TextNeeded
+
+        started = time.perf_counter()
+        goal_slots, command_slots = self._slots(run, step, recipe)
+        result = RunResult(task_id="%s:memory" % run.id, stop_reason="", steps=[])
+        app = self._target_app()
+        self._event(run, "memory", "replaying from memory: %d step%s, %d earlier success%s" % (
+            len(recipe.steps), "" if len(recipe.steps) == 1 else "s", recipe.successes,
+            "" if recipe.successes == 1 else "es"),
+            {"steps": [s.describe() for s in recipe.steps]})
+        ledger = self._ledger_or_none()
+
+        def fail(why: str, stop: str = "") -> RunResult:
+            run.learned["replay_failures"] += 1
+            if not stop:
+                try:
+                    self.experience.recipe_failed(app, step.goal, why)
+                except Exception:
+                    pass
+            self._event(run, "memory", "replay stopped: %s — %s" % (
+                why, "the goal ends there" if stop else "Jev carries on from this screen"))
+            result.stop_reason = stop
+            result.error = why
+            result.wall_ms = (time.perf_counter() - started) * 1000.0
+            return result
+
+        for number, rstep in enumerate(recipe.steps, start=1):
+            self._check_budget(run)
+            mark = time.perf_counter()
+            snapshot = self._observe_hook()
+            observe_ms = (time.perf_counter() - mark) * 1000.0
+            cands = reduce_candidates(getattr(snapshot, "elements", []) or [], OPERATOR_CAP)
+            element = None
+            if rstep.identity:
+                element = resolve(rstep.identity, cands, goal_slots=goal_slots,
+                                  command_slots=command_slots)
+                if element is None:
+                    return fail("step %d's control (%s) is not on the screen"
+                                % (number, rstep.describe()))
+            action = act_module.Action(op=rstep.op, target=element.id if element else None,
+                                       key=rstep.key, source="macro", note="memory")
+            if rstep.op == "type":
+                try:
+                    action.text = self._recipe_text(run, llm, step, rstep, element,
+                                                    goal_slots, command_slots)
+                except TextNeeded as exc:
+                    return fail("step %d needs text: %s" % (number, exc))
+            if self._replay_needs_confirm(step.goal, action, element, cands, snapshot):
+                if not self._confirm_hook(run, "%s %r?" % (action.op, getattr(element, "name", None)
+                                                           or action.key or ""), action, element):
+                    return fail("the destructive gate refused step %d" % number, stop="blocked")
+            ignore = act_module.settle_ignore_for(action.op)
+            pre = tree_hash(cands, ignore=ignore)
+            mark = time.perf_counter()
+            done = self._execute_hook(action, snapshot, backend=backend)
+            act_ms = (time.perf_counter() - mark) * 1000.0
+            record = StepRecord(index=len(result.steps), t_ms=0.0,
+                                stages_ms={"observe": observe_ms, "act": act_ms},
+                                candidates=len(cands), op=action.op, target=action.target,
+                                decided_by="macro", note="memory replay")
+            if not getattr(done, "ok", False):
+                record.note = "memory replay; did not execute: %s" % getattr(done, "error", "")
+                self._record_replay_step(run, step, result, record, ledger)
+                return fail("step %d did not execute: %s" % (number, getattr(done, "error", "")))
+            record.executed = True
+            timeout = REPLAY_NEW_WINDOW_MS if rstep.outcome == "new_window" else \
+                max(act_module.SETTLE_TIMEOUT_MS, act_module.settle_cap_for(element))
+            mark = time.perf_counter()
+            _after, changed, _waited = act_module.settle(
+                self._observe_hook, pre, timeout_ms=timeout,
+                key=lambda snap, ignore=ignore: tree_hash(
+                    reduce_candidates(getattr(snap, "elements", []) or [], OPERATOR_CAP),
+                    ignore=ignore))
+            record.stages_ms["settle"] = (time.perf_counter() - mark) * 1000.0
+            record.tree_changed = bool(changed)
+            self._record_replay_step(run, step, result, record, ledger)
+            if not changed:
+                return fail("step %d (%s) changed nothing" % (number, rstep.describe()))
+            run.learned["replayed_steps"] += 1
+
+        snapshot = self._observe_hook()
+        verified, why = self._code_verify(run, step, snapshot)
+        if not verified and llm is not None:
+            verified = self._verify_hook(run, llm, step, step.goal, snapshot) is True
+            why = "%s judged it done" % run.model
+        if not verified:
+            # Not a failure of the recipe: every step held. The loop will look
+            # at the screen and, if the goal is done, say so for one decision.
+            self._event(run, "memory", "replayed; the end could not be confirmed in code — "
+                                       "Jev looks at the screen")
+            result.stop_reason = ""
+            result.wall_ms = (time.perf_counter() - started) * 1000.0
+            return result
+        self._goal_replayed = True
+        run.learned["replayed_goals"] += 1
+        result.stop_reason = "done"
+        result.wall_ms = (time.perf_counter() - started) * 1000.0
+        self._event(run, "memory", "goal replayed in %.1f s (learned in %.1f s) — %s" % (
+            result.wall_ms / 1000.0, recipe.learned_ms / 1000.0, why))
+        return result
+
+    def _record_replay_step(self, run: Run, step: PlanStep, result: RunResult,
+                            record: StepRecord, ledger: Any) -> None:
+        from .loop import _record_ledger, _StepOutcome
+
+        record.t_ms = sum(record.stages_ms.values())
+        result.steps.append(record)
+        # One row of the loop's shape, so `jevskill stats` counts a replayed
+        # step next to a decided one instead of in a report of its own.
+        _record_ledger(ledger, step.goal, result, _StepOutcome(record))
+        self._on_step(run, step, record)
+
+    @staticmethod
+    def _replay_needs_confirm(goal: str, action: Any, element: Any, cands: Sequence[Any],
+                              snapshot: Any) -> bool:
+        """The loop's destructive rules, applied to a replayed step."""
+        if element is not None and act_module.is_destructive_name(getattr(element, "name", "")):
+            return True
+        if action.op == "key" and action.key:
+            chord = act_module.chord_for(goal, cands, target=action.target, snapshot=snapshot)
+            try:
+                last = act_module.parse_chord(action.key)[-1]
+            except Exception:
+                return True
+            return bool(chord.requires_confirm and last in ("enter", "return", "delete"))
+        return False
+
+    def _code_verify(self, run: Run, step: PlanStep, snapshot: Any):
+        """``(True, why)`` when the screen proves the goal, else ``(None, "")``.
+
+        Two sources, both code: how the screen looked when this goal was last
+        done (the recipe), and the quoted values of ``done_when``. The model is
+        asked only when neither can tell — it took 2-3 s per verify in the
+        measured run, and a title reading ``hello.txt - Notatnik`` needs no
+        opinion.
+        """
+        if snapshot is None:
+            return None, ""
+        if run.memory:
+            app = self._target_app()
+            recipe = None
+            try:
+                recipe = self.experience.recipe_for(app, step.goal, usable_only=False) if app else None
+            except Exception:
+                recipe = None
+            if recipe is not None:
+                goal_slots, command_slots = self._slots(run, step, recipe)
+                if recipe_check(recipe, snapshot, goal_slots=goal_slots,
+                                command_slots=command_slots):
+                    return True, "the screen matches how this goal ended before"
+        if literal_check(step.done_when, snapshot):
+            return True, "done_when's quoted value is on the screen"
+        return None, ""
+
+    def _memory_answer(self, run: Run, llm: Any, step: PlanStep,
+                       context: Dict[str, Any]) -> Any:
+        """Answer an escalation from the recipe, without a model.
+
+        The replay stopped, or this goal was never replayed, but a recipe for
+        it exists: its next step whose control is on this screen, and which
+        this goal has not already tried, is a better answer than a model call
+        — it is what worked the last time this exact goal was done. The loop
+        validates it and gates it like any escalation answer.
+        """
+        if not run.memory:
+            return None
+        recipe = self._recipe_for(run, step)
+        trajectory = self._trajectory
+        if recipe is None or trajectory is None or not recipe.steps:
+            return None
+        snapshot = context.get("snapshot")
+        cands = context.get("candidates") or reduce_candidates(
+            getattr(snapshot, "elements", []) or [], OPERATOR_CAP)
+        goal_slots, command_slots = self._slots(run, step, recipe)
+        tried = {(a.op, tuple(a.identity) if a.identity else None, a.key)
+                 for a in trajectory.attempts + ([trajectory.pending] if trajectory.pending else [])}
+        for rstep in recipe.steps:
+            element = None
+            if rstep.identity:
+                element = resolve(rstep.identity, cands, goal_slots=goal_slots,
+                                  command_slots=command_slots)
+                if element is None:
+                    continue
+            identity = identity_of(element)
+            if (rstep.op, tuple(identity) if identity else None, rstep.key) in tried:
+                continue
+            action = act_module.Action(op=rstep.op, target=element.id if element else None,
+                                       key=rstep.key, source="escalation", note="memory")
+            if rstep.op == "type":
+                try:
+                    action.text = self._recipe_text(run, llm, step, rstep, element,
+                                                    goal_slots, command_slots)
+                except Exception:
+                    continue
+            run.learned["memory_answers"] += 1
+            self._event(run, "memory", "answered from memory, no model call: %s"
+                        % rstep.describe())
+            return action
+        return None
+
+    def _memory_context(self, run: Run, step: PlanStep) -> Dict[str, Any]:
+        """What a model is told about this goal's history, when there is any.
+
+        Measured live (2026-09-21): the escalation model was asked, in two
+        separate attempts, to scroll a navigation pane that refused ScrollItem
+        both times, and navigated folders it could not see instead of typing a
+        path. It was never told what had already been tried.
+        """
+        out: Dict[str, Any] = {}
+        trajectory = self._trajectory
+        if trajectory is not None:
+            tried = trajectory.tried()
+            if tried:
+                out["tried"] = tried
+        if not run.memory:
+            return out
+        app = self._target_app()
+        if not app:
+            return out
+        try:
+            lessons = self.experience.lessons_for(app, step.goal)
+            recipe = self.experience.recipe_for(app, step.goal, usable_only=False)
+        except Exception:
+            return out
+        if lessons:
+            out["lessons"] = lessons
+        if recipe is not None and recipe.steps:
+            out["remembered"] = [s.describe() for s in recipe.steps]
+        return out
 
     # ------------------------------------------------------------------- hooks
     def _observe_hook(self) -> Snapshot:
@@ -791,9 +1244,17 @@ class Operator:
             # (2026-09-21): observing "the foreground" pulled the window in
             # front of the user's Discord three times in 40 s, and later ended
             # a run because the user was reading the console.
-            return self._observe_window(hwnd)
-        self._ensure_target_in_front("observation")
-        return self._observe()
+            snapshot = self._observe_window(hwnd)
+        else:
+            self._ensure_target_in_front("observation")
+            snapshot = self._observe()
+        trajectory = self._trajectory
+        if trajectory is not None:
+            try:
+                trajectory.observed(snapshot)
+            except Exception:
+                pass
+        return snapshot
 
     def _window_to_observe(self) -> int:
         """The pinned process's active window: the foreground when it is theirs
@@ -840,6 +1301,20 @@ class Operator:
             self._event(self.run, "act_error", "%s %s did not execute: %s" % (
                 getattr(action, "op", "?"), getattr(action, "key", None) or getattr(action, "target", "") or "",
                 getattr(result, "error", "") or "no error text"))
+        trajectory = self._trajectory
+        if trajectory is not None:
+            source = ""
+            if getattr(action, "op", "") == "type":
+                text = getattr(action, "text", None)
+                # Text that did not come through the compose hook came from an
+                # escalation answer: model-written, so replayed like a composed one.
+                source = self._text_source if (text is not None and text == self._text_value) \
+                    else "compose"
+            try:
+                trajectory.acted(action, snapshot, bool(getattr(result, "ok", False)),
+                                 str(getattr(result, "error", "") or ""), source)
+            except Exception:
+                pass
         return result
 
     def _on_step(self, run: Run, step: PlanStep, record: StepRecord) -> None:
@@ -909,6 +1384,7 @@ class Operator:
             literal = quoted_text(text)
             if literal is not None:
                 self._event(run, "text", "typing the quoted text from the %s" % source)
+                self._text_source, self._text_value = "literal", literal
                 return literal
         if llm is None:
             # Jev only: the command's own quote is all there is. With a model
@@ -918,6 +1394,7 @@ class Operator:
             literal = quoted_text(run.command)
             if literal is not None:
                 self._event(run, "text", "typing the quoted text from the command")
+                self._text_source, self._text_value = "literal", literal
                 return literal
             from .loop import TextNeeded
 
@@ -940,12 +1417,20 @@ class Operator:
 
             raise TextNeeded("the planning model did not return text")
         self._event(run, "text", "text from %s (%d chars)" % (run.model, len(text)))
+        self._text_source, self._text_value = "compose", text
         return text
 
     def _verify_hook(self, run: Run, llm: Any, step: PlanStep, goal: str,
-                     snapshot: Any) -> bool:
-        from .hashing import tree_hash
-
+                     snapshot: Any) -> Optional[bool]:
+        verified, why = self._code_verify(run, step, snapshot)
+        if verified:
+            run.learned["code_verified"] += 1
+            self._event(run, "verify", "verified in code, no model call — %s" % why)
+            return True
+        if llm is None:
+            # Jev only: code could not tell, and there is nobody else to ask.
+            # Abstaining keeps the loop's own rule (two `done` in a row).
+            return None
         key = "%s|%s" % (step.goal, tree_hash(list(getattr(snapshot, "elements", []) or [])))
         if key in self._verify_cache:
             return self._verify_cache[key]
@@ -969,6 +1454,11 @@ class Operator:
         snapshot = context.get("snapshot")
         candidates = context.get("candidates") or []
         decision = context.get("decision")
+        remembered = self._memory_answer(run, llm, step, context)
+        if remembered is not None:
+            return remembered
+        if llm is None:
+            return None
         system = (
             "A fast decision model drives a Windows UI agent one step at a time and "
             "just failed on this step. Choose the single next action from the elements "
@@ -977,15 +1467,24 @@ class Operator:
             "satisfied on this screen, or none when nothing safe applies. "
             "`target` must be an element id from the list (null for key/scroll/wait/done). "
             "Never choose an action that deletes, sends, pays or overwrites unless the goal "
-            "says so. Reply with JSON only: {\"op\": \"...\", \"target\": \"e3\"|null, "
-            "\"text\": null, \"key\": null, \"why\": \"...\"}; keep `why` under 25 words.")
-        user = json.dumps({"command": run.command, "goal": step.goal, "done_when": step.done_when,
-                           "reason": context.get("reason"), "step": context.get("step"),
-                           "last_action": context.get("last_action"),
-                           "model_said": {"op": getattr(decision, "op", None),
-                                          "target": getattr(decision, "target", None),
-                                          "confidence": round(float(getattr(decision, "confidence", 0) or 0), 3)},
-                           "screen": self._screen(snapshot, candidates)}, ensure_ascii=False)
+            "says so. `tried` is what this goal already did and what happened: do not repeat "
+            "an action that changed nothing or did not execute. `lessons` are failures from "
+            "earlier runs on this machine; `remembered` is what completed this goal before. "
+            "Prefer clicking a visible control, a menu or typing into a field over a key "
+            "chord: those go through UI Automation while the user keeps working, a chord "
+            "takes the keyboard from them. Reply with JSON only: {\"op\": \"...\", "
+            "\"target\": \"e3\"|null, \"text\": null, \"key\": null, \"why\": \"...\"}; keep "
+            "`why` under 25 words.")
+        payload: Dict[str, Any] = {
+            "command": run.command, "goal": step.goal, "done_when": step.done_when,
+            "reason": context.get("reason"), "step": context.get("step"),
+            "last_action": context.get("last_action"),
+            "model_said": {"op": getattr(decision, "op", None),
+                           "target": getattr(decision, "target", None),
+                           "confidence": round(float(getattr(decision, "confidence", 0) or 0), 3)},
+            "screen": self._screen(snapshot, candidates)}
+        payload.update(self._memory_context(run, step))
+        user = json.dumps(payload, ensure_ascii=False)
         reply = self._llm(run, llm, "escalate", system, user)
         data = reply.json() if reply is not None else None
         if reply is not None and not isinstance(data, dict):
@@ -1028,10 +1527,37 @@ class Operator:
 
     # --------------------------------------------------------------- planning
     def _plan(self, run: Run, llm: Any, command: str):
+        remembered = None
+        if run.memory:
+            try:
+                remembered = self.experience.plan_for(command)
+            except Exception:
+                remembered = None
+        if remembered is not None:
+            # The planning call was 6.3 s of the measured 60.1 s run, and it
+            # re-derived goals a successful run had already found. Values are
+            # the new command's own (see experience.fill).
+            items, memory = remembered
+            run.plan_source = "memory"
+            self._event(run, "memory", "plan from memory: %d goal%s, %d earlier success%s — "
+                                       "no planning call" % (
+                                           len(items), "" if len(items) == 1 else "s",
+                                           memory.successes, "" if memory.successes == 1 else "es"))
+            return [self._coerce_step(item) for item in items], \
+                "remembered from %d successful run%s" % (
+                    memory.successes, "" if memory.successes == 1 else "s")
         if llm is None:
+            run.plan_source = "command"
             return [PlanStep(goal=command, done_when="")], "no planning model: the command is the goal"
-        context = {"command": command, "os": "Windows",
-                   "foreground": (self._title_or_empty() if not run.dry_run else "")}
+        context: Dict[str, Any] = {"command": command, "os": "Windows",
+                                   "foreground": (self._title_or_empty() if not run.dry_run else "")}
+        if run.memory:
+            try:
+                known = self.experience.skills_for()
+            except Exception:
+                known = []
+            if known:
+                context["known_goals"] = known
         reply = self._llm(run, llm, "plan", (
             "You plan desktop tasks for a UI agent on Windows. The agent sees the UI "
             "Automation tree of the foreground window (control roles, names, values) and "
@@ -1048,7 +1574,12 @@ class Operator:
             "dialog, prefer typing a full path (\"C:\\\\Users\\\\<user>\\\\Desktop\\\\name.txt\", "
             "using %%USERPROFILE%% when the user name is unknown) into the file-name field and "
             "pressing Save over navigating folders — the agent cannot see a folder tree "
-            "well. Do not add "
+            "well. Prefer clicking visible controls and menus over keyboard shortcuts: a "
+            "click or a typed value goes through UI Automation while the user keeps "
+            "working, a shortcut takes the keyboard from them. `known_goals`, when "
+            "present, are goals this agent has completed on this machine before; when one "
+            "fits, reuse its wording exactly, with «n» replaced by the value — those "
+            "replay from memory in a fraction of the time. Do not add "
             "steps that delete, send, pay or overwrite unless the command says so. Reply "
             "with JSON only: {\"steps\": [{\"goal\": \"...\", \"done_when\": \"...\", "
             "\"launch\": null}], \"note\": \"...\"}" % MAX_PLAN_STEPS),
@@ -1058,24 +1589,45 @@ class Operator:
         if not steps:
             self._event(run, "plan_fallback", "the model returned no usable plan; "
                                               "running the command as one goal")
+            run.plan_source = "command"
             return [PlanStep(goal=command)], ""
+        run.plan_source = "model"
         note = str(data.get("note", ""))[:300] if isinstance(data, dict) else ""
         return steps, note
 
     def _replan(self, run: Run, llm: Any, index: int, result: RunResult) -> str:
-        """``"completed"``, ``"revised"`` (plan changed, move on) or ``"give_up"``."""
+        """``"completed"``, ``"revised"`` (plan changed, move on) or ``"give_up"``.
+
+        The screen is checked in code first. Measured live (2026-09-21): the
+        save goal ended `escalated` *after* the file was saved (Jev proposed
+        `type none` on the saved window) and a re-plan call spent 1.8 s to read
+        ``hello.txt - Notatnik`` off the title.
+        """
+        step = run.plan[index]
+        snapshot = None
+        if not run.dry_run:
+            try:
+                snapshot = self._observe_hook()
+            except Stopped:
+                raise
+            except Exception:
+                snapshot = None
+            verified, why = self._code_verify(run, step, snapshot)
+            if verified:
+                run.learned["code_verified"] += 1
+                self._event(run, "replan", "goal %d is complete — verified in code, no model "
+                                           "call: %s" % (index + 1, why))
+                return "completed"
         if llm is None or run.replans >= MAX_REPLANS:
             return "give_up"
         run.replans += 1
-        step = run.plan[index]
         remaining = [s.to_dict() for s in run.plan[index + 1:]]
-        screen = {}
-        try:
-            screen = self._screen(self._observe_hook()) if not run.dry_run else {"dry_run": True}
-        except Stopped:
-            raise
-        except Exception:
-            pass
+        screen: Dict[str, Any] = {"dry_run": True} if run.dry_run else {}
+        if snapshot is not None:
+            try:
+                screen = self._screen(snapshot)
+            except Exception:
+                pass
         reply = self._llm(run, llm, "replan", (
             "A sub-goal of a desktop task ended without the agent reporting done. Decide: "
             "if the screen shows the sub-goal is in fact complete, answer completed=true. "
@@ -1083,9 +1635,10 @@ class Operator:
             "from this screen (same rules: one window each, quoted text verbatim, optional "
             "`launch`). If the task cannot continue safely, set give_up to the reason. Reply "
             "with JSON only: {\"completed\": false, \"steps\": [...], \"give_up\": null}"),
-            json.dumps({"command": run.command, "failed_goal": step.to_dict(),
-                        "stop_reason": result.stop_reason, "error": result.error,
-                        "remaining": remaining, "screen": screen}, ensure_ascii=False))
+            json.dumps(dict({"command": run.command, "failed_goal": step.to_dict(),
+                             "stop_reason": result.stop_reason, "error": result.error,
+                             "remaining": remaining, "screen": screen},
+                            **self._memory_context(run, step)), ensure_ascii=False))
         data = reply.json() if reply is not None else None
         if not isinstance(data, dict):
             return "give_up"
@@ -1309,7 +1862,33 @@ class Operator:
     def _set_state(self, run: Run, state: str) -> None:
         run.state = state
 
+    def _give_back(self, run: Run) -> None:
+        """Return the foreground to the window the user had before a key chord
+        took it — only if the agent's window still holds it. A user who has
+        already clicked elsewhere is not yanked back to where they were."""
+        user, self._user_front = self._user_front, 0
+        if run.dry_run or not user or not self._target.get("pid"):
+            return
+        front = self._hwnd_or_zero()
+        try:
+            ours = bool(front) and int(self._window_pid(front) or 0) == self._target["pid"]
+        except Exception:
+            ours = False
+        if not ours or front == user:
+            return
+        try:
+            back = bool(self._bring_to_front(user))
+        except Exception:
+            back = False
+        self._event(run, "focus", "%s the foreground to %s" % (
+            "gave back" if back else "could not give back", self._title_of(user) or "the user's window"))
+
     def _finish(self, run: Run, state: str, *, stop_reason: str = "", error: str = "") -> None:
+        if run.ended_at is None:
+            try:
+                self._give_back(run)
+            except Exception:
+                pass
         with self._lock:
             if run.ended_at is not None:
                 return
