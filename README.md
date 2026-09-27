@@ -26,7 +26,7 @@ tokens on decisions — and start making them for **$0.000013** in **325 ms**.
 **Jev** is TypeSafe's *System One* decision model, and it is the whole engine here.
 Official model page: **[typesafe.ai](https://typesafe.ai/)** · [API docs](https://docs.typesafe.ai/)
 
-[![tests](https://img.shields.io/badge/tests-1410%20passing-brightgreen)](#-does-it-actually-help-ab-tested)
+[![tests](https://img.shields.io/badge/tests-1753%20passing-brightgreen)](#-does-it-actually-help-ab-tested)
 [![A/B](https://img.shields.io/badge/A%2FB-99.3%25%20fewer%20tokens-blue)](#-does-it-actually-help-ab-tested)
 [![cost](https://img.shields.io/badge/decision-%240.000013-success)](#-cost-per-decision)
 [![license](https://img.shields.io/badge/license-MIT-informational)](LICENSE)
@@ -769,6 +769,42 @@ jevskill cu run "Open Notepad and type \"hello\"" --dry-run      # simulate
 jevskill cu stop                                                  # from another terminal
 ```
 
+**It learns from its own runs.** A goal that finished is kept as a *recipe* —
+the actions that changed the screen, keyed by the controls' identity, with the
+quoted text and file names as slots — and the next time that goal comes up,
+with any values, it replays **without a Jev decision or a model call**, every
+step still checked (the control must resolve, the screen must change, a
+destructive control still asks). A finished command remembers its plan; an
+action that changed nothing becomes a *lesson* the model is shown before it
+proposes the same thing again; and a goal's end is checked **in code** — how
+the screen looked when it was last done, the quoted values of `done_when` —
+before any model is asked. The panel lists what was learned and forgets any of
+it (`jevskill cu memory` in the terminal; `--no-memory` to run without it).
+
+**Long missions are a tree.** A command too big for eight one-window goals comes
+back as up to 12 **phases** — one milestone in one program each, with its own
+end state and optional checks in code (a file exists, contains a text, a title
+shows a name). A phase is broken down into goals only when the run reaches it,
+from the screen it sees then, or from memory of how that phase was broken down
+before; a goal that stalls is repaired **inside its phase**, and the level above
+is asked only when the phase cannot recover. Only goals act on the desktop —
+planning, repair and resume only read, and the backend refuses a call from
+anywhere else. **Pause** holds at the next goal boundary; every run checkpoints
+to `cu_runs/<run_id>/` next to the ledger, and a stopped or interrupted run
+**resumes** where it left off — a goal that had already typed or saved is
+checked on the screen first, never blindly redone.
+
+```bash
+jevskill cu run "…a long command…" --model anthropic/claude-sonnet-5 --max-llm-calls 80 --total-budget-s 1800
+jevskill cu runs                  # stopped / interrupted runs that can be resumed
+jevskill cu resume 20260927-221530-a1b2c3
+```
+
+Both are tested offline only (`tests/test_cu_memory.py`, `tests/test_cu_mission.py`
+drive the real operator over a simulated Notepad): the second run of a
+remembered command makes no model call and no loop run and saves the same file.
+**No speed-up is claimed** until a live run measures one.
+
 Measured live on 2026-09-21: *Open Notepad, type "hello world"* was done in
 13.9 s from the panel (`bench/cu_live_first_run.json`); the full command with
 *save as hello.txt on the desktop* saved the file in 60 s on the sixth attempt
@@ -796,7 +832,8 @@ jevskill/              the Python package — the measurement half
   jevtask.py           batching: N items, one question set, measured saving
   web/                 the local console, two views (decide · computer use): stdlib server (127.0.0.1 only) + static/ page, no build step
   cu/                  computer use: observe (Windows UIA, `[cu]` extra) · reduce · hashing · decide · act · loop · macros · contract · speculate · consistency · beam
-                       runner (the operator: command → sub-goals, an LLM between Jev steps) · killswitch (STOP · Ctrl+Alt+Esc · corner · stop file) · llm (OpenRouter, any model)
+                       runner (the operator: command → plan tree, an LLM between Jev steps) · killswitch (STOP · Ctrl+Alt+Esc · corner · stop file) · llm (OpenRouter, any model)
+                       experience (recipes · plans · lessons, replayed and checked in code) · agenda (the plan tree) · journal (checkpoints, resume)
 bench/
   run.py               E1–E7 microbenchmarks (latency, fan-out, REDUCE, guards)
   ab.py                the A/B evaluation vs the model doing it alone
@@ -807,14 +844,15 @@ bench/
   cu_observe_bench.py  UIA walk: comtypes CacheRequest vs uiautomation vs pywinauto → cu_observe_results.json
   cu_tasks.json        10 Windows computer-use tasks with oracles (+ cu_tasks.md)
   cu_run.py            the task harness: --dry-run (default, synthetic) · --live; cu_report.py renders it
+  cu_learn_live.py     live, needs --live: one command twice, memory on → cu_learn_live.json (not run yet)
   web_live.json        the one live decision behind CHANGELOG 0.13.0 "Measured live": a ledger row, which=web
-tests/                 1410 tests, offline, green
+tests/                 1753 tests, offline, green
 docs/install.md        install guide an agent reads and executes
 docs/DESIGN.md         architecture + the mistakes that shaped it
 AGENTS.md              conventions for agents working on this repo
 ```
 
-## 🧭 Status & known limits — `v0.14.0`
+## 🧭 Status & known limits — `v0.15.0`
 
 CLI, skill, bundled scripts, ledger, reference docs and the computer-use half
 (`jevskill.cu`: observe · reduce · hashing · decide · act · loop · macros) are
@@ -833,6 +871,10 @@ complete and offline-tested. What is **not** proven, stated plainly:
   that never saw the field, a foreground fought over — each fixed with a test)
   and succeeded in 60.1 s for $0.058. That is one command; the escalation rate
   over more commands, and how often a first attempt succeeds, are not measured.
+* **Memory and long missions are proven offline only.** Recipes, remembered
+  plans, lessons, code verification, the plan tree, phase repair, pause and
+  resume run in tests against a simulated Notepad; none of it has run on a live
+  desktop yet, so their effect on time and cost is unmeasured and not claimed.
 * **No computer-use benchmark result exists yet.** `bench/cu_tasks.json` has the
   ten tasks and their oracles; `bench/cu_run.py --dry-run` proves the harness,
   and every dry-run number is marked synthetic.

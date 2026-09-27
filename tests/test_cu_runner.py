@@ -293,9 +293,9 @@ class TestOperatorDryRun:
         assert not operator.kill.event.is_set()
         assert operator.plan("open notepad", "fake/model")["steps"]
 
-    def test_a_launched_app_that_stays_behind_fails_the_run_before_any_action(self, tmp_path):
-        # A background process may be refused the foreground; acting on
-        # "whatever is in front" would then act on the wrong window.
+    def test_a_launch_whose_window_never_appears_fails_the_run_before_any_action(self, tmp_path):
+        # No new window and no window of the program: acting on "whatever is
+        # in front" would act on the wrong window, so the run ends first.
         launched = []
         acted = []
 
@@ -314,14 +314,16 @@ class TestOperatorDryRun:
         operator.wait(20)
         status = operator.status()
         assert launched == ["notepad.exe"]
-        assert acted == [], "the loop ran although the launched window never came to the front"
+        assert acted == [], "the loop ran although the launched window never appeared"
         assert status["state"] == "failed"
-        assert "did not come to the front" in status["error"]
+        assert "no window of it appeared" in status["error"]
 
-    def test_a_launched_window_that_opens_behind_is_switched_to(self, tmp_path):
+    def test_a_launched_window_that_opens_behind_is_pinned_without_taking_the_foreground(
+            self, tmp_path):
         # Measured live 2026-09-21: notepad.exe started by the console process
-        # opened *behind* the user's window. The operator must find the new
-        # top-level window and switch to it rather than act on the old one.
+        # opened *behind* the user's window, and switching to it put the
+        # user's next two keystrokes into Notepad. The new top-level window is
+        # found and worked in by handle; nothing is brought to the front.
         desktop = {"front": 4242, "windows": {4242}}
         brought = []
 
@@ -343,16 +345,19 @@ class TestOperatorDryRun:
             tmp_path, platform_check=lambda: {"ok": True, "reason": ""},
             launcher=launch, foreground_hwnd=lambda: desktop["front"],
             top_windows=lambda: set(desktop["windows"]), bring_to_front=bring,
-            foreground_title=lambda: "Untitled - Notepad", run_loop=fake_loop,
+            foreground_title=lambda: "Discord", run_loop=fake_loop,
+            window_title=lambda h: {7777: "Untitled - Notepad"}.get(h, "Discord"),
             backend_factory=lambda: object())
         operator.start("open notepad", None,
                        plan=[{"goal": "Open Notepad", "launch": "notepad.exe"}])
         operator.wait(20)
         status = operator.status()
-        assert brought == [7777]
+        assert brought == [], "the launch took the foreground"
+        assert desktop["front"] == 4242
         assert acted == ["Open Notepad"]
         assert status["state"] == "done", status["error"]
-        assert any(e["kind"] == "window" and "Notepad" in e["text"] for e in status["events"])
+        window = [e for e in status["events"] if e["kind"] == "window"]
+        assert window and "Notepad" in window[0]["text"] and window[0]["data"]["hwnd"] == 7777
 
     def test_the_loop_gets_the_operator_cap_and_the_pinned_hooks(self, tmp_path):
         from jevskill.cu.runner import OPERATOR_CAP
@@ -368,18 +373,24 @@ class TestOperatorDryRun:
             foreground_hwnd=lambda: 100, window_pid=lambda h: 5,
             foreground_title=lambda: "Notepad", run_loop=fake_loop,
             observe=lambda: object(), backend_factory=lambda: object())
-        operator.start("do it", None, plan=[{"goal": "Open the dialog"}])
+        operator.start("do it", None, plan=[{"goal": "Open the dialog"}], memory=False)
         operator.wait(20)
         assert operator.status()["state"] == "done"
         assert seen["cap"] == OPERATOR_CAP == 150
         assert callable(seen["observe"]) and callable(seen["execute"]) and callable(seen["confirm"])
-        assert seen["escalate"] is None and seen["verify"] is None  # no planning model
+        # No planning model and no memory: nothing to verify or escalate with.
+        assert seen["escalate"] is None and seen["verify"] is None
+        seen.clear()
+        operator.start("do it", None, plan=[{"goal": "Open the dialog"}])
+        operator.wait(20)
+        # With memory, Jev-only still gets code-only hooks — they never call a model.
+        assert callable(seen["escalate"]) and callable(seen["verify"])
 
     def test_a_single_instance_app_is_found_by_its_process_name(self, tmp_path):
         # Windows 11 Notepad answers a second notepad.exe with a new tab in its
-        # existing window: no new top-level window, so the existing one must be
-        # matched by process name and switched to.
-        desktop = {"front": 4242}
+        # existing window: no new top-level window, so the existing one is
+        # matched by process name — as soon as its title shows the new tab.
+        desktop = {"front": 4242, "titles": {3131: "notes.txt - Notepad"}}
         brought = []
 
         def bring(hwnd):
@@ -387,19 +398,28 @@ class TestOperatorDryRun:
             desktop["front"] = hwnd
             return True
 
+        def launch(_target):
+            desktop["titles"][3131] = "Untitled - Notepad"   # the new tab
+
         operator = make_operator(
             tmp_path, platform_check=lambda: {"ok": True, "reason": ""},
-            launcher=lambda _t: None, foreground_hwnd=lambda: desktop["front"],
+            launcher=launch, foreground_hwnd=lambda: desktop["front"],
             top_windows=lambda: {4242, 3131, 9999},
             window_process=lambda h: {3131: "Notepad.exe", 9999: "chrome.exe"}.get(h, ""),
-            bring_to_front=bring, foreground_title=lambda: "Untitled - Notepad",
+            window_title=lambda h: desktop["titles"].get(h, "Discord"),
+            bring_to_front=bring, foreground_title=lambda: "Discord",
             run_loop=lambda goal, opts=None, **h: RunResultStub("done"),
             backend_factory=lambda: object())
+        started = time.time()
         operator.start("open notepad", None,
                        plan=[{"goal": "Open Notepad", "launch": "notepad.exe"}])
         operator.wait(20)
-        assert brought == [3131]
-        assert operator.status()["state"] == "done", operator.status()["error"]
+        status = operator.status()
+        assert brought == []
+        assert status["state"] == "done", status["error"]
+        window = [e for e in status["events"] if e["kind"] == "window"]
+        assert window[0]["data"]["hwnd"] == 3131 and "Untitled" in window[0]["text"]
+        assert time.time() - started < 1.4, "the changed title should end the wait early"
 
     def test_a_key_refuses_to_act_when_the_user_holds_the_foreground(self, tmp_path):
         # Measured live 2026-09-21: the user clicked Chrome mid-run and the loop,
@@ -436,7 +456,9 @@ class TestOperatorDryRun:
         operator.start("press it", None, plan=[{"goal": "Press the key"}])
         operator.wait(20)
         status = operator.status()
-        assert observed == [100]
+        # Every read was by handle; the second is the end-of-goal check in code
+        # before a re-plan would be considered.
+        assert observed and set(observed) == {100}
         assert brought == [100]
         assert status["state"] == "failed"
         assert "lost the foreground" in status["error"]
@@ -601,7 +623,7 @@ class TestOperatorDryRun:
         status = operator.status()
         assert status["state"] == "done", status["error"]
         assert observed == [100, 150, 150]
-        assert brought == [100], "only the launch switched windows; no observation did"
+        assert brought == [], "neither the launch nor an observation switched windows"
         assert not [e for e in status["events"] if e["kind"] == "refocus"]
 
     def test_a_key_chord_waits_for_the_user_to_pause_before_taking_the_window(self, tmp_path):
@@ -641,9 +663,12 @@ class TestOperatorDryRun:
         operator.wait(20)
         status = operator.status()
         assert status["state"] == "done", status["error"]
-        assert brought == [100] and pressed == ["ctrl+shift+s"]
+        # Taken once for the chord, and given back to Discord when the run ended.
+        assert brought == [100, 200] and pressed == ["ctrl+shift+s"]
         refocus = [e["text"] for e in status["events"] if e["kind"] == "refocus"]
         assert len(refocus) == 1 and "brought back after waiting" in refocus[0]
+        focus = [e["text"] for e in status["events"] if e["kind"] == "focus"]
+        assert len(focus) == 1 and focus[0].startswith("gave back")
 
     def test_a_uia_pattern_action_needs_no_foreground(self, tmp_path):
         # SetValue and Invoke act on a background window; only synthetic input
@@ -714,34 +739,38 @@ class TestOperatorDryRun:
 
         assert runner_module.ELEMENTS_FOR_LLM == runner_module.OPERATOR_CAP == 150
 
-    def test_a_launch_waits_for_the_user_to_pause_before_switching_windows(self, tmp_path):
+    def test_a_launch_never_takes_the_foreground_so_it_never_waits_for_a_pause(self, tmp_path):
         # Measured live 2026-09-21: Notepad was switched to while the user typed
-        # elsewhere and their next two keystrokes ("ac") landed in it.
+        # elsewhere and their next two keystrokes ("ac") landed in it. Waiting
+        # for a pause narrowed that; not switching at all removes it, and the
+        # launch no longer spends the wait either.
         desktop = {"front": 300, "pids": {100: 5, 300: 7}, "windows": set()}
-        idle = iter([0.1, 0.2, 0.3, 5.0])
-        brought = []
+        asked, brought = [], []
 
-        def bring(hwnd):
-            brought.append(hwnd)
-            desktop["front"] = hwnd
-            return True
+        def idle():
+            asked.append(1)
+            return 0.1   # the user never stops typing
 
         operator = make_operator(
             tmp_path, platform_check=lambda: {"ok": True, "reason": ""},
             launcher=lambda _t: desktop["windows"].add(100),
             top_windows=lambda: set(desktop["windows"]),
             foreground_hwnd=lambda: desktop["front"], window_pid=lambda h: desktop["pids"][h],
-            bring_to_front=bring, foreground_title=lambda: "Discord",
+            bring_to_front=lambda h: brought.append(h) or True,
+            foreground_title=lambda: "Discord",
             run_loop=lambda goal, opts=None, **hooks: RunResultStub("done"),
-            observe_window=lambda hwnd: object(), idle_seconds=lambda: next(idle, 99.0),
+            observe_window=lambda hwnd: object(), idle_seconds=idle,
             backend_factory=lambda: object())
+        started = time.time()
         operator.start("open it", None, plan=[{"goal": "Open Notepad", "launch": "notepad.exe"}])
         operator.wait(20)
         status = operator.status()
         assert status["state"] == "done", status["error"]
-        assert brought == [100]
+        assert brought == [] and asked == []
+        assert desktop["front"] == 300
+        assert time.time() - started < 1.4
         launch = [e["text"] for e in status["events"] if e["kind"] == "launch"]
-        assert any("waited" in text and "before switching windows" in text for text in launch)
+        assert any("without taking the foreground" in text for text in launch)
 
     def test_text_the_model_composed_is_not_cleared_by_the_sanity_check(self, tmp_path):
         # Measured live 2026-09-21: Jev scored a correct %USERPROFILE% path at

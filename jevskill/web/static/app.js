@@ -885,23 +885,38 @@ function wire() {
 
 const CU_POLL_BUSY_MS = 400;
 const CU_POLL_IDLE_MS = 3000;
-const CU_ACTIVE = ['planning', 'waiting_window', 'running', 'waiting_confirm'];
+/* A paused run is still active: it holds the desktop's attention (the window
+ * stays pinned, the kill switch stays armed) and STOP still ends it. */
+const CU_ACTIVE = ['planning', 'waiting_window', 'running', 'waiting_confirm', 'paused'];
 const CU_GLYPH = {
   pending: '○', running: '◐', done: '●', failed: '✕', stopped: '■', skipped: '–',
+  interrupted: '◌',
 };
 const CU_STATE_TEXT = {
   idle: 'idle', planning: 'planning', waiting_window: 'waiting for window',
-  running: 'running', waiting_confirm: 'waiting for confirm',
+  running: 'running', waiting_confirm: 'waiting for confirm', paused: 'paused',
   done: 'done', stopped: 'stopped', failed: 'failed',
 };
 /* Kinds that are the machinery talking, not the run making progress. */
-const CU_DIM_KINDS = ['llm', 'verify', 'escalate', 'replan', 'text'];
+const CU_DIM_KINDS = ['llm', 'verify', 'escalate', 'replan', 'text', 'expand'];
+/* What proved a goal or a phase done, in the words the tree shows. The short
+ * form tags a leaf; the long one ends a phase's summary line. */
+const CU_EVIDENCE = {
+  code: ['code', 'verified in code'], replay: ['replay', 'replayed from memory'],
+  jev: ['jev', 'Jev said done'], model: ['model', 'judged by the model'],
+  children: ['children', 'its goals finished'], user: ['user', 'confirmed by you'],
+};
+/* The run's checkpoint is rewritten at least every 5 s while it works; past
+ * this, the process that owns it may be gone (the server's STALE_S). */
+const CU_STALE_S = 30;
+const CU_RESUME_DISMISSED = 'jev.cu.resume.dismissed';
 
 const cu = {
   since: 0, runId: null, busy: false, lost: false, sending: false,
   timer: null, immediate: false,
-  models: null, preview: null, previewFor: '', note: '',
+  models: null, preview: null, previewTree: null, previewFor: '', note: '',
   lines: [], stick: true, confirmKey: '', killKey: '', last: null,
+  planKey: '', phaseOpen: {}, pauseAsked: false, truncated: false, resumeKey: '',
 };
 
 /* localStorage throws outright in some privacy modes; a console that cannot
@@ -1035,9 +1050,21 @@ function cuCap() {
   return raw === '' || !isFinite(value) || value < 0 ? 0.5 : value;
 }
 
+/* Empty means "let the operator decide" (40 calls, raised per phase of a long
+ * command); anything typed is sent as typed, so an out-of-range number gets
+ * the server's 400 explaining the range instead of a silent clamp. */
+function cuMaxLlmCalls() {
+  const raw = $('#cu-max-llm').value.trim();
+  if (raw === '') return null;
+  const value = Number(raw);
+  return isFinite(value) ? Math.round(value) : null;
+}
+
 function cuRestorePrefs() {
   for (const [selector, key] of [['#cu-max-steps', 'jev.cu.max_steps'],
                                  ['#cu-budget', 'jev.cu.budget_s'],
+                                 ['#cu-total-budget', 'jev.cu.total_budget_s'],
+                                 ['#cu-max-llm', 'jev.cu.max_llm_calls'],
                                  ['#cu-cap', 'jev.cu.usd_cap']]) {
     const stored = lsGet(key, null);
     if (stored !== null && stored !== '' && isFinite(Number(stored))) $(selector).value = stored;
@@ -1045,13 +1072,19 @@ function cuRestorePrefs() {
   // Dry run is the default, and stays the default until it is switched off by
   // hand: the cheap mistake is a simulation nobody wanted.
   $('#cu-dry').checked = lsGet('jev.cu.dry', '1') !== '0';
+  $('#cu-memory').checked = lsGet('jev.cu.memory', '1') !== '0';
+  $('#cu-flat').checked = lsGet('jev.cu.flat', '0') === '1';
 }
 
 function cuSavePrefs() {
   lsSet('jev.cu.max_steps', $('#cu-max-steps').value);
   lsSet('jev.cu.budget_s', $('#cu-budget').value);
+  lsSet('jev.cu.total_budget_s', $('#cu-total-budget').value);
+  lsSet('jev.cu.max_llm_calls', $('#cu-max-llm').value.trim());
   lsSet('jev.cu.usd_cap', $('#cu-cap').value);
   lsSet('jev.cu.dry', $('#cu-dry').checked ? '1' : '0');
+  lsSet('jev.cu.memory', $('#cu-memory').checked ? '1' : '0');
+  lsSet('jev.cu.flat', $('#cu-flat').checked ? '1' : '0');
 }
 
 function cuUpdateButtons() {
@@ -1061,15 +1094,28 @@ function cuUpdateButtons() {
   const start = $('#cu-start');
   start.textContent = dry ? 'simulate' : 'start';
   start.disabled = cu.busy || cu.sending || !command;
-  $('#cu-plan-btn').disabled = cu.busy || cu.sending || !command || !model;
+  // Without a model, plan still answers from memory when memory is on.
+  const memory = $('#cu-memory').checked;
+  $('#cu-plan-btn').disabled = cu.busy || cu.sending || !command || (!model && !memory);
   const stop = $('#cu-stop');
   stop.disabled = !cu.busy;
   stop.classList.toggle('is-armed', cu.busy);
+  // Pause acts at the next goal boundary, never inside a goal, so between the
+  // click and the boundary the button offers to take the request back.
+  const paused = !!(cu.busy && cu.last && cu.last.paused);
+  const pause = $('#cu-pause');
+  pause.disabled = !cu.busy || cu.sending;
+  pause.textContent = paused ? 'continue' : (cu.busy && cu.pauseAsked ? 'cancel pause' : 'pause');
+  pause.setAttribute('aria-pressed', String(paused || (cu.busy && cu.pauseAsked)));
+  const resumeModel = $('#cu-resume-model');
+  if (resumeModel) resumeModel.textContent = cuResumeModelText();
 
   let hint = cu.note || '';
-  if (!command) hint = 'write a command first';
+  if (!command && !cu.busy) hint = 'write a command first';
+  else if (paused) hint = 'paused between goals — continue picks up at the next goal; STOP ends the run';
+  else if (cu.busy && cu.pauseAsked) hint = 'pausing at the next goal boundary — a goal is never cut in half';
   else if (cu.busy) hint = 'a run is active — STOP takes the desktop back';
-  else if (!model) hint = 'plan needs a planning model';
+  else if (!model && !memory) hint = 'plan needs a planning model or memory';
   else if (!hint && cu.preview) hint = 'plan ready — start runs exactly these steps';
   $('#cu-hint').textContent = hint;
 }
@@ -1106,11 +1152,16 @@ async function cuStart() {
     dry_run: $('#cu-dry').checked,
     max_steps: cuNumber('#cu-max-steps', 25),
     budget_s: cuNumber('#cu-budget', 90),
-    total_budget_s: 600,
+    total_budget_s: cuNumber('#cu-total-budget', 600),
     usd_cap: cuCap(),
+    memory: $('#cu-memory').checked,
+    hierarchical: !$('#cu-flat').checked,
   };
+  const calls = cuMaxLlmCalls();
+  if (calls !== null) body.max_llm_calls = calls;
   // What the user read is what runs: a plan shown in the list is sent back
-  // verbatim rather than planned again behind their back.
+  // verbatim rather than planned again behind their back — phases included,
+  // since a previewed phase carries its children once broken down.
   if (cu.preview && cu.previewFor === command) body.plan = cu.preview;
   try {
     await postJSON('/api/cu/start', body);
@@ -1133,11 +1184,16 @@ async function cuPlanNow() {
   button.textContent = 'planning…';
   $('#cu-error').textContent = '';
   try {
-    const payload = await postJSON('/api/cu/plan', { command: command, model: cuModel() });
+    const payload = await postJSON('/api/cu/plan', {
+      command: command, model: cuModel(), memory: $('#cu-memory').checked,
+      hierarchical: !$('#cu-flat').checked,
+    });
     cu.preview = (payload.steps || []).map((step) => Object.assign({}, step, { status: 'pending' }));
+    cu.previewTree = payload.tree || null;
     cu.previewFor = command;
-    cu.note = payload.note || '';
-    cuRenderPlanSteps(cu.preview);
+    cu.note = (payload.source === 'memory' ? 'from memory — no planning call. ' : '') +
+      (payload.note || '');
+    cuRenderPlan(cu.last);
     cuAppendEvents(payload.events || []);
   } catch (err) {
     cuShowError(err);
@@ -1156,6 +1212,115 @@ async function cuStop() {
     cuShowError(err);
   }
   cuPollSoon();
+}
+
+/* Pause is a request, honoured at the next goal boundary; the same button
+ * takes it back before then, and continues once the run is holding. */
+async function cuPause() {
+  if ($('#cu-pause').disabled) return;
+  const holding = !!(cu.last && cu.last.paused) || cu.pauseAsked;
+  try {
+    await postJSON('/api/cu/pause', { pause: !holding });
+    cu.pauseAsked = !holding;
+  } catch (err) {
+    cuShowError(err);
+  }
+  cuUpdateButtons();
+  cuPollSoon();
+}
+
+/* What a resume sends. `model` is always present: the server reads an absent
+ * key as "keep the checkpoint's model" and null as Jev only, and this page used
+ * to send null for both — so "none — Jev only" quietly went back to the run's
+ * paid model. The limits are this page's, the same fields start reads, because
+ * a run stopped by its total budget or spend cap stops again before its first
+ * goal when resumed under the limit that stopped it. An empty "max LLM calls"
+ * is null, which keeps the checkpoint's allowance. */
+function cuResumeBody(runId) {
+  return {
+    run_id: runId,
+    model: cuModel(),
+    total_budget_s: cuNumber('#cu-total-budget', 600),
+    usd_cap: cuCap(),
+    max_llm_calls: cuMaxLlmCalls(),
+  };
+}
+
+/* The card says which model a resume will use: the picker's, not the run's. */
+function cuResumeModelText() {
+  const model = cuModel();
+  return 'resume uses the planning model picked above — now ' +
+    (model ? model : 'none (Jev only)') +
+    ' — and this page\'s total budget, spend cap and max LLM calls';
+}
+
+/* A run stopped by one of its own limits: which field to raise first. The
+ * phrases are the operator's stop reasons (`_check_budget` in cu/runner.py). */
+function cuResumeLimitHint(reason) {
+  const text = String(reason || '');
+  if (text.indexOf('total budget of') >= 0) {
+    return 'stopped by its total budget — raise "total budget (s)" above the time it has used, then resume';
+  }
+  if (text.indexOf('spend cap of') >= 0) {
+    return 'stopped by its spend cap — raise "spend cap USD" above what it has spent, then resume';
+  }
+  return '';
+}
+
+/* A run resumes in the mode it started in, whatever the dry-run switch says —
+ * so the card names the mode, and a live one says what that means. A missing
+ * flag (an old checkpoint) resumes live, so it is labelled live. */
+function cuResumeMode(row) {
+  return row && row.dry_run ? 'dry run — simulated' : 'live — moves the desktop';
+}
+
+/* Resume continues a checkpointed run under its own id, so `since` carries on
+ * from where this page (or another console) left the log. A refusal (a spent
+ * budget or cap, a finished run, a missing key) is written into the run's own
+ * row, next to the button that was pressed. */
+async function cuResume(runId, button, message) {
+  if (cu.busy || cu.sending) return;
+  cu.sending = true;
+  if (button) button.disabled = true;
+  if (message) { message.textContent = ''; message.classList.add('hidden'); }
+  cuUpdateButtons();
+  $('#cu-error').textContent = '';
+  try {
+    await postJSON('/api/cu/resume', cuResumeBody(runId));
+    cu.note = '';
+  } catch (err) {
+    const payload = (err && err.payload) || {};
+    if (message) {
+      message.textContent = (payload.error || (err && err.message) || 'resume failed') +
+        (payload.hint ? ' — ' + payload.hint : '');
+      message.classList.remove('hidden');
+    }
+    // A server-side failure (no key, a provider down) keeps its full box too.
+    if (!message || Number(err && err.status) >= 500) cuShowError(err);
+    if (button) button.disabled = false;
+  } finally {
+    cu.sending = false;
+    cuUpdateButtons();
+    cuPollSoon();
+  }
+}
+
+function cuDismissed() {
+  try {
+    const list = JSON.parse(lsGet(CU_RESUME_DISMISSED, '[]'));
+    return Array.isArray(list) ? list.map(String) : [];
+  } catch (_) { return []; }
+}
+
+/* Dismissing hides the card on this browser only; the checkpoints stay on
+ * disk and `jevskill cu runs` still lists them. */
+function cuDismissResume(ids) {
+  const kept = cuDismissed();
+  for (const id of ids) if (kept.indexOf(id) < 0) kept.push(id);
+  // Bounded: the server keeps 50 run directories, so older ids are gone anyway.
+  lsSet(CU_RESUME_DISMISSED, JSON.stringify(kept.slice(-100)));
+  cu.resumeKey = '';
+  cuRenderResume(cu.last);
 }
 
 async function cuAnswer(allow) {
@@ -1193,27 +1358,41 @@ async function cuPoll() {
 }
 
 function cuApply(payload, sent) {
+  const wasBusy = cu.busy;
   cu.last = payload;
   cu.busy = !!payload.busy;
+  // A run that just ended may have taught something: show it.
+  if (wasBusy && !cu.busy) cuLoadMemory();
+  if (!cu.busy) cu.pauseAsked = false;
   const runId = payload.run || null;
   let skipEvents = false;
   if (runId !== cu.runId) {
     // A different run (this page started it, or `jevskill cu` did): the log on
-    // screen belongs to the previous one, and `since` is counted per run.
+    // screen belongs to the previous one, and `since` is counted per run. A
+    // resumed run keeps its id, so its log simply carries on.
     cu.runId = runId;
     cu.since = 0;
     cu.preview = null;
+    cu.previewTree = null;
     cu.previewFor = '';
+    cu.phaseOpen = {};
+    cu.pauseAsked = false;
+    cu.truncated = false;
     cuClearLog();
     if (sent !== 0) { skipEvents = true; cu.immediate = true; }
   }
   if (!skipEvents) {
+    // The server keeps the last 2,000 events in memory; the rest, and every
+    // earlier segment of a resumed run, are in the run's events.jsonl.
+    if (payload.events_truncated) cu.truncated = true;
     cuAppendEvents(payload.events || []);
     cu.since = Number(payload.next || 0);
   }
+  $('#cu-log-note').classList.toggle('hidden', !cu.truncated);
   cuRenderStatus(payload);
   cuRenderPlan(payload);
   cuRenderConfirm(payload);
+  cuRenderResume(payload);
   cuRenderHowToStop(payload.kill_switch);
   cuUpdateButtons();
 }
@@ -1238,6 +1417,20 @@ function cuRenderStatus(payload) {
   pill.textContent = label;
   pill.classList.toggle('is-live', CU_ACTIVE.includes(state));
 
+  // A live run rewrites its checkpoint every few seconds; a heartbeat this old
+  // on an active run means its process may have died (or is stuck in one
+  // long call) — say so rather than keep showing "running".
+  const age = payload.heartbeat_age_s;
+  const stale = CU_ACTIVE.includes(state) && age !== null && age !== undefined &&
+    Number(age) > CU_STALE_S;
+  const badge = $('#cu-stale');
+  badge.classList.toggle('hidden', !stale);
+  if (stale) badge.textContent = 'no heartbeat for ' + Math.round(Number(age)) + ' s';
+
+  const progress = cuProgressText(payload);
+  $('#cu-progress').textContent = progress;
+  $('#cu-progress').classList.toggle('hidden', !progress);
+
   $('#cu-sim').classList.toggle('hidden', !(payload.run && payload.dry_run));
   $('#cu-elapsed').textContent = payload.run ? Number(payload.elapsed_s || 0).toFixed(1) + ' s' : '';
 
@@ -1245,7 +1438,7 @@ function cuRenderStatus(payload) {
   const calls = Number(spend.jev_calls || 0) + Number(spend.llm_calls || 0);
   $('#cu-spend').textContent = payload.run
     ? 'jev ' + cuMoney(spend.jev_usd) + ' · llm ' + cuMoney(spend.llm_usd) +
-      ' · ' + calls + (calls === 1 ? ' call' : ' calls')
+      ' · ' + calls + (calls === 1 ? ' call' : ' calls') + cuMemoryText(payload.memory)
     : '';
 
   const platform = payload.platform || { ok: true, reason: '' };
@@ -1288,8 +1481,222 @@ function cuRenderPlanSteps(steps) {
   steps.forEach((step, index) => host.appendChild(cuStepRow(step, index)));
 }
 
+/* A tree is drawn as one only when the command has a phase under it; a plan
+ * of goals alone — every short command — keeps the flat list it always had. */
+function cuHasPhases(tree) {
+  return !!(tree && (tree.children || []).some((child) => child && child.kind === 'phase'));
+}
+
 function cuRenderPlan(payload) {
-  cuRenderPlanSteps(cu.preview || (payload && payload.plan) || []);
+  let key;
+  let draw;
+  if (cu.preview) {
+    const tree = cu.previewTree;
+    key = JSON.stringify(['preview', cu.preview, tree]);
+    draw = cuHasPhases(tree) ? () => cuRenderTree(tree, [], 0)
+                             : () => cuRenderPlanSteps(cu.preview);
+  } else {
+    const tree = payload && payload.tree;
+    const plan = (payload && payload.plan) || [];
+    const progress = (payload && payload.progress) || {};
+    key = JSON.stringify(['run', plan, tree, progress.current_path || []]);
+    draw = cuHasPhases(tree)
+      ? () => cuRenderTree(tree, progress.current_path || [], Number(progress.paused_s || 0))
+      : () => cuRenderPlanSteps(plan);
+  }
+  // Polled every 400 ms: redrawing an unchanged tree would close a phase the
+  // reader just opened and steal the focus from its summary.
+  if (key === cu.planKey) return;
+  cu.planKey = key;
+  draw();
+}
+
+function cuRenderTree(root, path, pausedS) {
+  const host = $('#cu-plan');
+  host.textContent = '';
+  const counter = { i: 0 };
+  for (const child of root.children || []) host.appendChild(cuTreeNode(child, path, pausedS, counter));
+}
+
+/* The leaves under a phase that still count: a superseded goal was replaced
+ * by a repair and is shown struck through, not counted. */
+function cuTreeLeaves(node, out) {
+  for (const child of node.children || []) {
+    if (!child || child.superseded) continue;
+    if (child.kind === 'phase') cuTreeLeaves(child, out);
+    else out.push(child);
+  }
+  return out;
+}
+
+/* Active seconds of a phase: what the server measured once it closed, else
+ * the clock since it started minus the pauses since then (same machine, same
+ * clock — the console is local). */
+function cuPhaseSeconds(node, pausedS) {
+  const spend = node.spend || {};
+  if (Number(spend.active_s) > 0) return Number(spend.active_s);
+  const started = Number(node.started_at || 0);
+  if (!started) return 0;
+  const end = Number(node.ended_at || 0) || Date.now() / 1000;
+  return Math.max(0, end - started - Math.max(0, pausedS - Number(node.paused_mark || 0)));
+}
+
+function cuPhaseSummary(node, pausedS) {
+  if (!node.expanded) {
+    return 'not yet broken down' + (node.app ? ' · ' + node.app : '');
+  }
+  const leaves = cuTreeLeaves(node, []);
+  const done = leaves.filter((leaf) => leaf.status === 'done').length;
+  const parts = [done + '/' + leaves.length + (leaves.length === 1 ? ' goal' : ' goals')];
+  const seconds = cuPhaseSeconds(node, pausedS);
+  if (seconds >= 1) parts.push(Math.round(seconds) + ' s');
+  const spend = node.spend || {};
+  const usd = Number(spend.llm_usd || 0) + Number(spend.jev_usd || 0);
+  if (usd > 0) parts.push('$' + usd.toFixed(4));
+  if (node.status === 'done' && CU_EVIDENCE[node.evidence]) parts.push(CU_EVIDENCE[node.evidence][1]);
+  else if (node.status === 'failed' && node.stop_reason) parts.push(String(node.stop_reason));
+  return parts.join(' · ');
+}
+
+function cuTreeNode(node, path, pausedS, counter) {
+  if (node.kind !== 'phase') {
+    const step = Object.assign({}, node.step || {}, {
+      goal: node.goal, done_when: node.done_when, launch: node.launch,
+    });
+    // The node is the truth for a tree; the flat view's status is only a
+    // fallback for a leaf the run left "running" when it ended.
+    let status = String(node.status || step.status || 'pending');
+    if (status === 'running' && step.status && step.status !== 'running') status = step.status;
+    step.status = status;
+    const row = cuStepRow(step, counter.i++);
+    if (node.superseded) {
+      row.classList.add('is-superseded');
+      row.title = 'replaced by a repair';
+    }
+    const evidence = status === 'done' && CU_EVIDENCE[node.evidence];
+    if (evidence) {
+      // Right after the goal, on its line — not under `done_when`, which is a block.
+      const main = row.children[1];
+      main.insertBefore(el('span', {
+        class: 'cu-evidence is-' + node.evidence, title: evidence[1], text: evidence[0],
+      }), main.children[1] || null);
+    }
+    return row;
+  }
+  const status = String(node.status || 'pending');
+  const auto = status === 'running' || path.indexOf(node.goal) >= 0;
+  const id = String(node.id || '');
+  const details = el('details', { class: 'cu-phase is-' + status });
+  details.open = Object.prototype.hasOwnProperty.call(cu.phaseOpen, id) ? cu.phaseOpen[id] : auto;
+  // Remember only what the reader changed: a phase they opened stays open,
+  // one they closed stays closed, and anything untouched follows the run.
+  details.addEventListener('toggle', () => {
+    if (details.open === auto) delete cu.phaseOpen[id];
+    else cu.phaseOpen[id] = details.open;
+  });
+  details.appendChild(el('summary', {}, [
+    el('span', {
+      class: 'cu-glyph', role: 'img', title: status, 'aria-label': status,
+      text: CU_GLYPH[status] || '·',
+    }),
+    el('span', { class: 'cu-phase-goal', text: String(node.goal || 'phase ' + id) }),
+    el('span', { class: 'cu-phase-meta', text: cuPhaseSummary(node, pausedS) }),
+  ]));
+  const body = el('div', { class: 'cu-phase-body' });
+  if (node.done_when) body.appendChild(el('p', { class: 'cu-when', text: String(node.done_when) }));
+  for (const child of node.children || []) body.appendChild(cuTreeNode(child, path, pausedS, counter));
+  if (!(node.children || []).length) {
+    body.appendChild(el('p', {
+      class: 'cu-empty',
+      text: 'broken down into goals when the run reaches it, from the screen it sees then',
+    }));
+  }
+  details.appendChild(body);
+  return details;
+}
+
+/* "phase 2/5 · 6 of 9 known goals done · 3 phases not yet broken down" — a
+ * flat run says nothing new here: the pill already counts its goals. */
+function cuProgressText(payload) {
+  const progress = payload && payload.progress;
+  if (!payload || !payload.run || !progress || !Number(progress.phases_total)) return '';
+  const tree = payload.tree || {};
+  const phases = (tree.children || []).filter((child) => child && child.kind === 'phase' &&
+                                                    !child.superseded);
+  const path = progress.current_path || [];
+  const parts = [];
+  if (phases.length) {
+    let at = phases.findIndex((phase) => path.length && phase.goal === path[0]);
+    if (at < 0) at = Math.min(phases.length - 1, phases.filter((p) => p.status === 'done').length);
+    parts.push('phase ' + (at + 1) + '/' + phases.length);
+  }
+  const unexpanded = Number(progress.unexpanded_phases || 0);
+  const known = Number(progress.leaves_known || 0);
+  if (known) {
+    parts.push(Number(progress.leaves_done || 0) + ' of ' + known +
+               (unexpanded ? ' known' : '') + (known === 1 ? ' goal done' : ' goals done'));
+  }
+  if (unexpanded) {
+    parts.push(unexpanded + (unexpanded === 1 ? ' phase' : ' phases') + ' not yet broken down');
+  }
+  return parts.join(' · ');
+}
+
+/* Idle only: runs a STOP, a crash or a failure left with work to do. The card
+ * never deletes anything; dismissing it is a note in this browser. */
+function cuRenderResume(payload) {
+  const box = $('#cu-resume');
+  const dismissed = cuDismissed();
+  const rows = (!cu.busy && payload && Array.isArray(payload.resumable) ? payload.resumable : [])
+    .filter((row) => row && row.run_id && dismissed.indexOf(String(row.run_id)) < 0);
+  const key = JSON.stringify(rows.map((row) => [row.run_id, row.state, row.interrupted, row.progress,
+                                                row.dry_run, row.stop_reason, row.error]));
+  if (key === cu.resumeKey) return;
+  cu.resumeKey = key;
+  box.textContent = '';
+  box.classList.toggle('hidden', !rows.length);
+  if (!rows.length) return;
+  const dismiss = el('button', {
+    type: 'button', class: 'tiny', text: 'dismiss',
+    title: 'hide these here; nothing is deleted — `jevskill cu runs` still lists them',
+  });
+  dismiss.addEventListener('click', () => cuDismissResume(rows.map((row) => String(row.run_id))));
+  box.appendChild(el('p', { class: 'microlabel' }, [
+    el('span', { text: 'unfinished runs' }), el('span', { class: 'spacer' }), dismiss,
+  ]));
+  // Kept current by cuUpdateButtons, which runs whenever the picker changes.
+  box.appendChild(el('p', { id: 'cu-resume-model', class: 'note', text: cuResumeModelText() }));
+  for (const row of rows) {
+    const state = row.interrupted ? 'interrupted' : String(row.state || '');
+    const facts = [state];
+    const done = cuProgressText({ run: row.run_id, progress: row.progress || {} }) ||
+      (Number((row.progress || {}).leaves_known) ? Number(row.progress.leaves_done || 0) + ' of ' +
+        Number(row.progress.leaves_known) + ' goals done' : '');
+    if (done) facts.push(done);
+    // Checkpoint text, so textContent only (`el` never parses `text`).
+    const why = row.stop_reason ? 'stop reason: ' + String(row.stop_reason).slice(0, 160)
+      : (row.error ? 'error: ' + String(row.error).slice(0, 160) : '');
+    const limit = cuResumeLimitHint(row.stop_reason);
+    const live = !row.dry_run;
+    const message = el('span', { class: 'cu-when cu-resume-msg hidden', role: 'status' });
+    const button = el('button', {
+      type: 'button', class: 'tiny' + (live ? ' is-live' : ''), text: live ? 'resume live' : 'resume',
+      title: live ? 'this run was started live: resuming moves the mouse and types on this desktop'
+        : 'this run was a dry run and resumes as one; the desktop is not touched',
+    });
+    button.addEventListener('click', () => cuResume(String(row.run_id), button, message));
+    box.appendChild(el('div', { class: 'cu-resume-row' }, [
+      el('div', {}, [
+        el('span', { class: 'cu-goal', text: String(row.command || row.run_id) }),
+        el('span', { class: 'cu-mode' + (live ? ' is-live' : ''), text: cuResumeMode(row) }),
+        el('span', { class: 'cu-when', text: facts.join(' · ') }),
+        why ? el('span', { class: 'cu-when', text: why }) : null,
+        limit ? el('span', { class: 'cu-when is-warn', text: limit }) : null,
+        message,
+      ]),
+      button,
+    ]));
+  }
 }
 
 function cuRenderConfirm(payload) {
@@ -1384,6 +1791,97 @@ function cuRenderHowToStop(kill) {
   }));
 }
 
+/* ----------------------------------------------------------- the memory */
+
+/* What memory did for this run, in one clause of the status strip. */
+function cuMemoryText(memory) {
+  if (!memory || memory.enabled === false) return memory ? ' · memory off' : '';
+  const parts = [];
+  if (memory.plan_source === 'memory') parts.push('plan');
+  if (memory.replayed_goals) parts.push(memory.replayed_goals + ' replayed');
+  if (memory.code_verified) parts.push(memory.code_verified + ' verified in code');
+  if (memory.memory_answers) parts.push(memory.memory_answers + ' answered');
+  if (memory.recipes_learned) parts.push('+' + memory.recipes_learned + ' learned');
+  return parts.length ? ' · memory: ' + parts.join(', ') : '';
+}
+
+async function cuLoadMemory() {
+  let payload;
+  try {
+    payload = await api('/api/cu/memory');
+  } catch (_) {
+    $('#cu-memory-count').textContent = '(unavailable)';
+    return;
+  }
+  cuRenderMemory(payload);
+}
+
+function cuMemoryItem(kind, key, main, sub, extra) {
+  const forget = el('button', { type: 'button', class: 'tiny', text: 'forget' });
+  forget.addEventListener('click', () => cuForget(kind, key));
+  return el('div', { class: 'cu-mem-item' }, [
+    el('div', {}, [el('span', { text: main }), extra || null,
+      sub ? el('span', { class: 'sub', text: sub }) : null]),
+    forget,
+  ]);
+}
+
+function cuRenderMemory(payload) {
+  const stats = (payload && payload.stats) || {};
+  const host = $('#cu-memory-list');
+  host.textContent = '';
+  $('#cu-memory-count').textContent = '· ' + Number(stats.plans || 0) + ' plans · ' +
+    Number(stats.recipes || 0) + ' recipes · ' + Number(stats.lessons || 0) + ' lessons';
+  $('#cu-memory-path').textContent = stats.path ? 'kept in ' + stats.path : '';
+  const groups = [
+    ['plans', 'plan', (p) => [String(p.command || ''),
+      (p.goals || []).join(' → ') + ' · ' + p.successes + ' ok / ' + p.failures + ' failed',
+      p.usable ? null : el('span', { class: 'demoted', text: 'demoted' })]],
+    ['recipes', 'recipe', (r) => [String(r.app || '') + ': ' + String(r.goal || ''),
+      ((r.steps || []).join(' · ') || 'the launch alone') + ' · ' + r.successes + ' ok / ' +
+        r.failures + ' failed' + (r.replay_ms ? ' · replay ' + (r.replay_ms / 1000).toFixed(1) +
+        ' s vs learned ' + (r.learned_ms / 1000).toFixed(1) + ' s' : ''),
+      r.usable ? null : el('span', { class: 'demoted', text: 'demoted' })]],
+    ['lessons', 'lesson', (l) => [String(l.app || '') + ': ' + String(l.line || ''), '', null]],
+  ];
+  let any = false;
+  for (const [field, kind, describe] of groups) {
+    const rows = (payload && payload[field]) || [];
+    if (!rows.length) continue;
+    any = true;
+    host.appendChild(el('p', { class: 'microlabel cu-mem-group', text: field }));
+    for (const row of rows) {
+      const [main, sub, extra] = describe(row);
+      host.appendChild(cuMemoryItem(kind, row.key, main, sub, extra));
+    }
+  }
+  if (!any) {
+    host.appendChild(el('p', {
+      class: 'cu-empty',
+      text: 'nothing learned yet — a live run that completes a goal teaches its recipe',
+    }));
+  }
+}
+
+async function cuForget(kind, key) {
+  try {
+    const payload = await postJSON('/api/cu/memory/forget', { kind: kind, key: key });
+    cuRenderMemory(payload.memory);
+  } catch (err) {
+    cuShowError(err);
+  }
+}
+
+async function cuClearMemory() {
+  if (!window.confirm('Forget every plan, recipe and lesson the operator learned?')) return;
+  try {
+    const payload = await postJSON('/api/cu/memory/clear', { confirm: true });
+    cuRenderMemory(payload.memory);
+  } catch (err) {
+    cuShowError(err);
+  }
+}
+
 /* -------------------------------------------------------------- the log */
 
 function cuLineClass(event) {
@@ -1392,6 +1890,8 @@ function cuLineClass(event) {
   if (kind === 'llm_error' || kind === 'goal_stalled') return 'is-stop';
   if (kind === 'end') return text.indexOf('failed') === 0 ? 'is-stop' : 'is-end';
   if (kind === 'confirm' || kind === 'confirm_result') return 'is-gold';
+  if (kind === 'memory') return 'is-memory';
+  if (kind === 'verify' && text.indexOf('verified in code') === 0) return 'is-memory';
   if (CU_DIM_KINDS.indexOf(kind) >= 0) return 'is-dim';
   return '';
 }
@@ -1442,6 +1942,7 @@ function cuWire() {
     // run, so it stops being what start sends.
     if (cu.previewFor && cu.previewFor !== $('#cu-command').value.trim()) {
       cu.preview = null;
+      cu.previewTree = null;
       cu.previewFor = '';
       cu.note = '';
       cuRenderPlan(cu.last);
@@ -1458,13 +1959,33 @@ function cuWire() {
     cuUpdateButtons();
   });
 
-  for (const selector of ['#cu-max-steps', '#cu-budget', '#cu-cap']) {
+  for (const selector of ['#cu-max-steps', '#cu-budget', '#cu-total-budget', '#cu-max-llm',
+                          '#cu-cap']) {
     $(selector).addEventListener('change', cuSavePrefs);
   }
   $('#cu-dry').addEventListener('change', () => { cuSavePrefs(); cuUpdateButtons(); });
+  $('#cu-memory').addEventListener('change', () => { cuSavePrefs(); cuUpdateButtons(); });
+  $('#cu-flat').addEventListener('change', () => {
+    // A preview planned as a tree is not what a flat start would send.
+    cuSavePrefs();
+    if (cu.preview) {
+      cu.preview = null;
+      cu.previewTree = null;
+      cu.previewFor = '';
+      cu.note = '';
+      cuRenderPlan(cu.last);
+    }
+    cuUpdateButtons();
+  });
+  $('#cu-memory-refresh').addEventListener('click', cuLoadMemory);
+  $('#cu-memory-clear').addEventListener('click', cuClearMemory);
+  $('#cu-memory-panel').addEventListener('toggle', () => {
+    if ($('#cu-memory-panel').open) cuLoadMemory();
+  });
 
   $('#cu-plan-btn').addEventListener('click', cuPlanNow);
   $('#cu-start').addEventListener('click', cuStart);
+  $('#cu-pause').addEventListener('click', cuPause);
   $('#cu-stop').addEventListener('click', cuStop);
 
   const log = $('#cu-log');
@@ -1483,6 +2004,7 @@ function cuBoot() {
   cuUpdateButtons();
   setView(location.hash === '#cu' ? 'cu' : (lsGet('jev.view', 'decide') === 'cu' ? 'cu' : 'decide'));
   cuLoadModels();
+  cuLoadMemory();
   // Poll from boot, not from the first click: a run started by `jevskill cu`
   // in a terminal is this page's business too.
   cuPoll();
