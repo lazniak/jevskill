@@ -692,10 +692,40 @@ def _flag(payload: dict, key: str, default: bool) -> bool:
 
     ``bool(payload.get(key, True))`` turns ``{"hierarchical": null}`` into
     ``False`` — a page that sends an unset checkbox as null would silently get
-    today's flat planner instead of the tree it did not opt out of.
+    today's flat planner instead of the tree it did not opt out of. ``memory``
+    read that way switched the operator's memory off on a ``null``.
+
+    Anything but a real JSON boolean is refused (``ValueError`` -> 400) rather
+    than coerced: ``bool("false")`` is ``True``, so a client that serialised a
+    checkbox as a string got the opposite of what it said — and on
+    ``/api/cu/confirm`` that opposite is allowing a destructive step.
     """
     value = payload.get(key)
-    return default if value is None else bool(value)
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    raise ValueError("%s must be true or false (or omitted), got %r" % (key, value))
+
+
+def _resume_model(payload: dict) -> Optional[str]:
+    """The ``model`` argument for ``Operator.resume``, told apart by presence.
+
+    ``Operator.resume`` reads ``None`` as "keep the checkpoint's model", and the
+    page's "none — Jev only" option is sent as ``null`` — so a Jev-only resume
+    used to go back to the run's paid planning model without saying so. Here an
+    *absent* key keeps the checkpoint's model (``jevskill cu resume`` without
+    ``--model`` means the same), while an explicit ``null``, ``""`` or
+    ``"none"`` is ``"none"``, which the operator maps to Jev only.
+    """
+    if "model" not in payload:
+        return None
+    value = payload["model"]
+    if value is None:
+        return "none"
+    if not isinstance(value, str):
+        raise ValueError("model must be an OpenRouter id, null or \"none\", got %r" % (value,))
+    return value.strip() or "none"
 
 
 def _bounded_int(payload: dict, key: str, default: Optional[int], low: int, high: int) -> Optional[int]:
@@ -747,10 +777,14 @@ def _optional_float(payload: dict, key: str) -> Optional[float]:
 _CU_HINTS = {
     "/api/cu/start": "command is a non-empty string; model an OpenRouter id or null; plan a "
                      "list of goals (flat, or phases with children); max_llm_calls and "
-                     "max_leaves integers from 1 to 200.",
-    "/api/cu/plan": "command is a non-empty string; model an OpenRouter id or null.",
+                     "max_leaves integers from 1 to 200; memory and hierarchical true, "
+                     "false or omitted.",
+    "/api/cu/plan": "command is a non-empty string; model an OpenRouter id or null; memory "
+                    "and hierarchical true, false or omitted.",
     "/api/cu/pause": "send {\"pause\": true} to hold at the next goal, false to continue.",
-    "/api/cu/resume": "run_id is an id from GET /api/cu/runs (YYYYMMDD-HHMMSS-xxxxxx); "
+    "/api/cu/confirm": "send {\"allow\": true} to allow the step, false to refuse it.",
+    "/api/cu/resume": "run_id is an id from GET /api/cu/runs (YYYYMMDD-HHMMSS-xxxxxx); model "
+                      "an OpenRouter id, or null for Jev only (omit it to keep the run's); "
                       "total_budget_s and usd_cap non-negative numbers; max_llm_calls 1-200.",
     "/api/cu/memory/forget": "forget takes kind (recipe, plan, lesson) and key.",
     "/api/cu/memory/clear": "clearing the memory needs {\"confirm\": true}.",
@@ -1032,7 +1066,7 @@ class _Handler(BaseHTTPRequestHandler):
         in the other order an unknown run would read as a busy console.
         """
         from ..cu.llm import LLMError
-        from ..cu.runner import (NotRunning, OperatorBusy, OperatorUnavailable,
+        from ..cu.runner import (LLM_CAP_CEIL, NotRunning, OperatorBusy, OperatorUnavailable,
                                  RunNotResumable, UnknownRun)
 
         operator = self.console.operator()
@@ -1047,15 +1081,15 @@ class _Handler(BaseHTTPRequestHandler):
                     budget_s=float(payload.get("budget_s", 90) or 90),
                     total_budget_s=float(payload.get("total_budget_s", 600) or 600),
                     usd_cap=float(payload.get("usd_cap", 0.5) or 0.0),
-                    memory=bool(payload.get("memory", True)),
+                    memory=_flag(payload, "memory", True),
                     hierarchical=_flag(payload, "hierarchical", True),
-                    max_llm_calls=_bounded_int(payload, "max_llm_calls", None, 1, 200),
+                    max_llm_calls=_bounded_int(payload, "max_llm_calls", None, 1, LLM_CAP_CEIL),
                     max_leaves=_bounded_int(payload, "max_leaves", 60, 1, 200),
                 )
                 self._json({"ok": True, "run_id": run_id, "status": operator.status()}, 202)
             elif route == "/api/cu/plan":
                 self._json(operator.plan(str(payload.get("command", "")), payload.get("model"),
-                                         memory=bool(payload.get("memory", True)),
+                                         memory=_flag(payload, "memory", True),
                                          hierarchical=_flag(payload, "hierarchical", True)))
             elif route == "/api/cu/pause":
                 self._json({"ok": True,
@@ -1063,10 +1097,10 @@ class _Handler(BaseHTTPRequestHandler):
             elif route == "/api/cu/resume":
                 run_id = operator.resume(
                     payload.get("run_id"),
-                    payload.get("model"),
+                    _resume_model(payload),
                     total_budget_s=_optional_float(payload, "total_budget_s"),
                     usd_cap=_optional_float(payload, "usd_cap"),
-                    max_llm_calls=_bounded_int(payload, "max_llm_calls", None, 1, 200),
+                    max_llm_calls=_bounded_int(payload, "max_llm_calls", None, 1, LLM_CAP_CEIL),
                 )
                 self._json({"ok": True, "run_id": run_id, "status": operator.status()}, 202)
             elif route == "/api/cu/memory/forget":
@@ -1083,7 +1117,8 @@ class _Handler(BaseHTTPRequestHandler):
                 self._json({"ok": True, "status": operator.stop(
                     str(payload.get("reason") or "STOP button"))})
             else:
-                self._json({"ok": True, "status": operator.confirm(bool(payload.get("allow")))})
+                # Absent or null refuses; a string "false" is a 400, never a yes.
+                self._json({"ok": True, "status": operator.confirm(_flag(payload, "allow", False))})
         except OperatorBusy as exc:
             self._error(409, str(exc), "Stop the active run first.", status_payload=operator.status())
         except OperatorUnavailable as exc:
@@ -1092,8 +1127,12 @@ class _Handler(BaseHTTPRequestHandler):
             self._error(404, "no checkpoint for run %s" % (exc,),
                         "GET /api/cu/runs lists the runs that can be resumed.")
         except RunNotResumable as exc:
-            self._error(409, str(exc), "Only a stopped, interrupted or failed run with work left "
-                                       "can be resumed; start a new run instead.")
+            # The message says which case it is; the hint must fit all of them —
+            # "start a new run" alone was wrong for a run stopped by its own limit.
+            self._error(409, str(exc), "A finished run, or one that may still be running in "
+                                       "another console, cannot be resumed; a run whose total "
+                                       "budget or spend cap is used up can — send a larger "
+                                       "total_budget_s or usd_cap.")
         except NotRunning as exc:
             self._error(409, str(exc), "Pause holds an active run between goals; nothing is running.")
         except LookupError as exc:

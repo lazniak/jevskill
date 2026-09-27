@@ -168,6 +168,43 @@ The ones that could act on the wrong thing:
 - A resume numbered its events from the last checkpoint and reused indices a
   crashed segment had already written.
 
+A second review, of those fixes and of the console and CLI surfaces, confirmed
+11 more (none rejected), each with a regression test that fails on the code
+before it (`TestReviewRound2`, `tests/test_cu_surfaces_review.py`):
+
+- **A program whose window belongs to another process was launched at every
+  goal** — calc.exe owns its window as CalculatorApp.exe, so the first fix
+  above found "no window" after the plan's own launch and opened a new, blank
+  Calculator for each goal. The operator now remembers what a launch produced
+  (checkpointed, so a resume keeps it), a launch leaf pins its phase, and
+  looking at an interrupted goal on resume launches nothing. Waiting for a
+  window whose process is named otherwise (wt.exe is WindowsTerminal.exe)
+  accepts the window the user brings to the front after being asked.
+- **The console's resume could not resume a run stopped by its budget or
+  cap**, and its *none — Jev only* choice resumed with the checkpoint's paid
+  model. The resume card now sends the page's limits and a Jev-only choice
+  (`model: null`, `""` or `"none"`; an absent key keeps the checkpoint's
+  model), shows each run's stop reason, which field to raise, the model it will
+  use, and whether it resumes **live — moves the desktop** or as a dry run. A
+  run whose spend already reached its cap is refused until the cap is raised,
+  like one whose total budget is spent; a damaged checkpoint is refused with a
+  reason instead of a 500.
+- Console flags are strict booleans: `{"memory": null}` turned memory off, and
+  `{"allow": "false"}` on a confirmation *allowed* the step (`bool("false")`).
+  A non-boolean is now a 400. `cu run` / `cu resume --max-llm-calls` outside
+  1–200 exits 2 instead of being clamped.
+- Proof and memory: a `•` used as a separator (`Inbox • Slack`) no longer
+  reads as an unsaved title — only a marker opening or closing the document
+  part does; a file copied into place (which keeps its old modified time) counts
+  as this run's; a phase naming its own executable no longer refuses every
+  break-down; a stale copy in one process no longer deletes a plan another
+  process relearned after a `forget`; a user phase over the goal limit is
+  refused instead of cut to the limit.
+- The console answered a refused request (wrong Origin, unknown route) before
+  reading its body; Windows then reset the connection and the client saw
+  WinError 10053 instead of the 403 — a flake of the surfaces suite. The body is
+  drained first.
+
 ## [0.14.0] — 2026-09-21
 
 ### Added — a computer-use panel: one command, Jev per step, an LLM between

@@ -84,14 +84,31 @@ IRREVERSIBLE_VERBS: Tuple[str, ...] = (
 # boundary on both sides would miss every inflected Polish form.
 _VERB_RE = re.compile(r"(?<!\w)(?:%s)" % "|".join(re.escape(v) for v in IRREVERSIBLE_VERBS))
 _WIN_VAR_RE = re.compile(r"%([^%\s]+)%")
-#: Unsaved-document dots. A leading ``*`` is the classic marker ("*hello.txt -
-#: Notatnik"); the dots are counted anywhere because editors put them in
-#: different places — in front of the name, after it, between it and the app.
+#: Unsaved-document dots. Editors put them at either edge of the document
+#: name: in front of it (``● file.txt - Visual Studio Code``) or after it
+#: (``file.txt • - Sublime Text``). Only there: see :func:`is_unsaved_title`.
 UNSAVED_DOTS: Tuple[str, ...] = ("•", "●")
+#: Every unsaved marker: the classic ``*`` ("*hello.txt - Notatnik") and the dots.
+UNSAVED_MARKS: Tuple[str, ...] = ("*",) + UNSAVED_DOTS
+#: What separates the document from the application in a Windows title.
+TITLE_SEPARATOR = " - "
 #: How much older than ``since`` a file may be and still count as written by
 #: this run: file-system mtimes are coarse (FAT keeps two seconds, NTFS flushes
 #: lazily), and a save that landed a moment before the mark is still this save.
 MTIME_SLACK_S = 1.0
+
+
+def title_document_part(title: Any) -> str:
+    """The document half of a window title: everything before the **last**
+    ``" - "``, or the whole title when there is none.
+
+    The last one, because the application name comes last and a document or
+    page name may itself contain the separator (``● a.txt - folder - Visual
+    Studio Code``: the document part is ``● a.txt - folder``).
+    """
+    text = str(title or "")
+    head, sep, _ = text.rpartition(TITLE_SEPARATOR)
+    return head if sep else text
 
 
 def is_unsaved_title(title: Any) -> bool:
@@ -101,9 +118,16 @@ def is_unsaved_title(title: Any) -> bool:
     ``*hello.txt - Notatnik`` contains ``hello.txt`` exactly like the saved
     ``hello.txt - Notatnik`` does. Reading the dirty title as "saved" closed a
     save goal whose document was never written (review finding #18).
+
+    The marker is positional: it opens or closes the document part of the
+    title (:func:`title_document_part`). A dot counted *anywhere* took every
+    title that uses ``•`` as a separator — ``Instagram • Photos - Google
+    Chrome``, ``Song • Artist - Spotify``, ``Inbox • Slack`` — for an unsaved
+    document, and ``title_contains`` / ``literal_check`` / ``recipe_check``
+    stayed undecided on them forever.
     """
-    text = str(title or "").lstrip()
-    return text.startswith("*") or any(dot in text for dot in UNSAVED_DOTS)
+    doc = title_document_part(title).strip()
+    return bool(doc) and (doc.startswith(UNSAVED_MARKS) or doc.endswith(UNSAVED_MARKS))
 
 
 # --------------------------------------------------------------------------- #
@@ -167,6 +191,23 @@ def _expand_path(path: str) -> str:
     return os.path.expanduser(os.path.expandvars(path))
 
 
+def _written_at(st: "os.stat_result") -> float:
+    """When the file at this path was last put there — the newest of its
+    modification, change and creation stamps.
+
+    ``st_mtime`` alone is the time the *content* was last written, and a copy,
+    a cross-volume move or a zip extraction on Windows carries the source's
+    content time along: a file the run itself put in place read as stale.
+    ``st_ctime`` is set to now by any of them — on Windows it is the creation
+    time (Python 3.12+ also exposes that as ``st_birthtime``, and documents
+    ``st_ctime`` as moving to the metadata-change time, which a copy also
+    sets), on POSIX the inode change time. A same-volume rename on Windows
+    keeps both, so it still reads stale: undecided, never false.
+    """
+    stamps = [st.st_mtime, st.st_ctime, getattr(st, "st_birthtime", None)]
+    return max(float(s) for s in stamps if s is not None)
+
+
 def _eval_one(check: Check, snapshot: Any,
               since: Optional[float] = None) -> Tuple[Optional[bool], str]:
     if check.kind == "title_contains":
@@ -186,7 +227,7 @@ def _eval_one(check: Check, snapshot: Any,
     stale = False
     if since is not None:
         try:
-            stale = os.path.getmtime(path) < float(since) - MTIME_SLACK_S
+            stale = _written_at(os.stat(path)) < float(since) - MTIME_SLACK_S
         except (OSError, TypeError, ValueError):
             return None, "%s %s: mtime unreadable" % (check.kind, path)
     if check.kind == "file_exists":
@@ -224,8 +265,9 @@ def evaluate_checks(checks: Optional[Sequence[Any]], snapshot: Any, *,
     probe.
 
     ``since`` (a ``time.time()`` stamp, normally the run's start) makes a file
-    check prove only what this run wrote: a file whose mtime is older than
-    ``since`` minus :data:`MTIME_SLACK_S` is undecided rather than true. A
+    check prove only what this run wrote: a file last written, copied or
+    created (:func:`_written_at`) before ``since`` minus
+    :data:`MTIME_SLACK_S` is undecided rather than true. A
     missing file is still false. ``None`` keeps the check blind to age, as it
     always was.
     """

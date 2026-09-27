@@ -1107,6 +1107,8 @@ function cuUpdateButtons() {
   pause.disabled = !cu.busy || cu.sending;
   pause.textContent = paused ? 'continue' : (cu.busy && cu.pauseAsked ? 'cancel pause' : 'pause');
   pause.setAttribute('aria-pressed', String(paused || (cu.busy && cu.pauseAsked)));
+  const resumeModel = $('#cu-resume-model');
+  if (resumeModel) resumeModel.textContent = cuResumeModelText();
 
   let hint = cu.note || '';
   if (!command && !cu.busy) hint = 'write a command first';
@@ -1227,19 +1229,74 @@ async function cuPause() {
   cuPollSoon();
 }
 
+/* What a resume sends. `model` is always present: the server reads an absent
+ * key as "keep the checkpoint's model" and null as Jev only, and this page used
+ * to send null for both — so "none — Jev only" quietly went back to the run's
+ * paid model. The limits are this page's, the same fields start reads, because
+ * a run stopped by its total budget or spend cap stops again before its first
+ * goal when resumed under the limit that stopped it. An empty "max LLM calls"
+ * is null, which keeps the checkpoint's allowance. */
+function cuResumeBody(runId) {
+  return {
+    run_id: runId,
+    model: cuModel(),
+    total_budget_s: cuNumber('#cu-total-budget', 600),
+    usd_cap: cuCap(),
+    max_llm_calls: cuMaxLlmCalls(),
+  };
+}
+
+/* The card says which model a resume will use: the picker's, not the run's. */
+function cuResumeModelText() {
+  const model = cuModel();
+  return 'resume uses the planning model picked above — now ' +
+    (model ? model : 'none (Jev only)') +
+    ' — and this page\'s total budget, spend cap and max LLM calls';
+}
+
+/* A run stopped by one of its own limits: which field to raise first. The
+ * phrases are the operator's stop reasons (`_check_budget` in cu/runner.py). */
+function cuResumeLimitHint(reason) {
+  const text = String(reason || '');
+  if (text.indexOf('total budget of') >= 0) {
+    return 'stopped by its total budget — raise "total budget (s)" above the time it has used, then resume';
+  }
+  if (text.indexOf('spend cap of') >= 0) {
+    return 'stopped by its spend cap — raise "spend cap USD" above what it has spent, then resume';
+  }
+  return '';
+}
+
+/* A run resumes in the mode it started in, whatever the dry-run switch says —
+ * so the card names the mode, and a live one says what that means. A missing
+ * flag (an old checkpoint) resumes live, so it is labelled live. */
+function cuResumeMode(row) {
+  return row && row.dry_run ? 'dry run — simulated' : 'live — moves the desktop';
+}
+
 /* Resume continues a checkpointed run under its own id, so `since` carries on
- * from where this page (or another console) left the log. */
-async function cuResume(runId, button) {
+ * from where this page (or another console) left the log. A refusal (a spent
+ * budget or cap, a finished run, a missing key) is written into the run's own
+ * row, next to the button that was pressed. */
+async function cuResume(runId, button, message) {
   if (cu.busy || cu.sending) return;
   cu.sending = true;
   if (button) button.disabled = true;
+  if (message) { message.textContent = ''; message.classList.add('hidden'); }
   cuUpdateButtons();
   $('#cu-error').textContent = '';
   try {
-    await postJSON('/api/cu/resume', { run_id: runId, model: cuModel() });
+    await postJSON('/api/cu/resume', cuResumeBody(runId));
     cu.note = '';
   } catch (err) {
-    cuShowError(err);
+    const payload = (err && err.payload) || {};
+    if (message) {
+      message.textContent = (payload.error || (err && err.message) || 'resume failed') +
+        (payload.hint ? ' — ' + payload.hint : '');
+      message.classList.remove('hidden');
+    }
+    // A server-side failure (no key, a provider down) keeps its full box too.
+    if (!message || Number(err && err.status) >= 500) cuShowError(err);
     if (button) button.disabled = false;
   } finally {
     cu.sending = false;
@@ -1592,7 +1649,8 @@ function cuRenderResume(payload) {
   const dismissed = cuDismissed();
   const rows = (!cu.busy && payload && Array.isArray(payload.resumable) ? payload.resumable : [])
     .filter((row) => row && row.run_id && dismissed.indexOf(String(row.run_id)) < 0);
-  const key = JSON.stringify(rows.map((row) => [row.run_id, row.state, row.interrupted, row.progress]));
+  const key = JSON.stringify(rows.map((row) => [row.run_id, row.state, row.interrupted, row.progress,
+                                                row.dry_run, row.stop_reason, row.error]));
   if (key === cu.resumeKey) return;
   cu.resumeKey = key;
   box.textContent = '';
@@ -1606,21 +1664,35 @@ function cuRenderResume(payload) {
   box.appendChild(el('p', { class: 'microlabel' }, [
     el('span', { text: 'unfinished runs' }), el('span', { class: 'spacer' }), dismiss,
   ]));
+  // Kept current by cuUpdateButtons, which runs whenever the picker changes.
+  box.appendChild(el('p', { id: 'cu-resume-model', class: 'note', text: cuResumeModelText() }));
   for (const row of rows) {
     const state = row.interrupted ? 'interrupted' : String(row.state || '');
     const facts = [state];
-    if (row.dry_run) facts.push('dry run');
     const done = cuProgressText({ run: row.run_id, progress: row.progress || {} }) ||
       (Number((row.progress || {}).leaves_known) ? Number(row.progress.leaves_done || 0) + ' of ' +
         Number(row.progress.leaves_known) + ' goals done' : '');
     if (done) facts.push(done);
-    if (row.stop_reason || row.error) facts.push(String(row.stop_reason || row.error).slice(0, 80));
-    const button = el('button', { type: 'button', class: 'tiny', text: 'resume' });
-    button.addEventListener('click', () => cuResume(String(row.run_id), button));
+    // Checkpoint text, so textContent only (`el` never parses `text`).
+    const why = row.stop_reason ? 'stop reason: ' + String(row.stop_reason).slice(0, 160)
+      : (row.error ? 'error: ' + String(row.error).slice(0, 160) : '');
+    const limit = cuResumeLimitHint(row.stop_reason);
+    const live = !row.dry_run;
+    const message = el('span', { class: 'cu-when cu-resume-msg hidden', role: 'status' });
+    const button = el('button', {
+      type: 'button', class: 'tiny' + (live ? ' is-live' : ''), text: live ? 'resume live' : 'resume',
+      title: live ? 'this run was started live: resuming moves the mouse and types on this desktop'
+        : 'this run was a dry run and resumes as one; the desktop is not touched',
+    });
+    button.addEventListener('click', () => cuResume(String(row.run_id), button, message));
     box.appendChild(el('div', { class: 'cu-resume-row' }, [
       el('div', {}, [
         el('span', { class: 'cu-goal', text: String(row.command || row.run_id) }),
+        el('span', { class: 'cu-mode' + (live ? ' is-live' : ''), text: cuResumeMode(row) }),
         el('span', { class: 'cu-when', text: facts.join(' · ') }),
+        why ? el('span', { class: 'cu-when', text: why }) : null,
+        limit ? el('span', { class: 'cu-when is-warn', text: limit }) : null,
+        message,
       ]),
       button,
     ]));

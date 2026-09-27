@@ -244,6 +244,30 @@ def _run_started(run_id: str) -> float:
         return 0.0
 
 
+def _int(value: Any, default: int) -> int:
+    """A checkpoint's integer, or ``default`` for a missing or damaged one."""
+    if isinstance(value, bool) or value is None:
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
+def _num(value: Any, default: float) -> float:
+    if isinstance(value, bool) or value is None:
+        return default
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return default
+    return out if out == out and out not in (float("inf"), float("-inf")) else default
+
+
+def _is_number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
 def _stem(name: str) -> str:
     stem = os.path.basename(str(name or "")).strip().casefold()
     return stem[:-4] if stem.endswith(".exe") else stem
@@ -661,6 +685,8 @@ class Operator:
         self._used_windows: List[int] = []
         #: (phase id, hwnd): the window a phase in a named program was given.
         self._phase_pin: Tuple[str, int] = ("", 0)
+        #: Launch name stem -> the process stem its window turned out to have.
+        self._aliases: Dict[str, str] = {}
         #: Checkpoints and full event logs, one directory per run, next to the
         #: ledger (and the stop file) so `jevskill cu` and the console share them.
         self._journal = RunStore(ledger_path(ledger_root).parent / "cu_runs")
@@ -852,7 +878,7 @@ class Operator:
             state = str(saved.get("state") or "")
             if state == "done":
                 raise RunNotResumable("run %s finished; there is nothing to resume" % run_id)
-            beat = float(saved.get("heartbeat_at") or 0.0)
+            beat = _num(saved.get("heartbeat_at"), 0.0)
             if state in ("planning", "waiting_window", "running", "waiting_confirm", "paused") \
                     and time.time() - beat <= STALE_S:
                 raise RunNotResumable("run %s wrote a checkpoint %.0f s ago and may still be "
@@ -860,6 +886,8 @@ class Operator:
             if not isinstance(saved.get("tree"), dict):
                 raise RunNotResumable("run %s has no plan to resume" % run_id)
             dry_run = bool(saved.get("dry_run"))
+            run = self._run_from_checkpoint(run_id, saved, dry_run, total_budget_s=total_budget_s,
+                                            usd_cap=usd_cap, max_llm_calls=max_llm_calls)
             if not dry_run:
                 platform = self._platform_check()
                 if not platform["ok"]:
@@ -867,52 +895,17 @@ class Operator:
                 self._client()
             model = model or saved.get("model")
             llm = self._make_llm(model)
-            limits = saved.get("limits") or {}
-            run = Run(id=run_id, command=str(saved.get("command") or ""),
-                      model=self._model_id(model), dry_run=dry_run,
-                      max_steps=max(1, int(limits.get("max_steps") or 25)),
-                      budget_s=max(5.0, float(limits.get("budget_s") or 90.0)),
-                      total_budget_s=max(10.0, float(total_budget_s if total_budget_s
-                                                     else limits.get("total_budget_s") or 600.0)),
-                      usd_cap=max(0.0, float(usd_cap if usd_cap is not None
-                                             else limits.get("usd_cap", 0.5))),
-                      memory=bool(saved.get("memory", True)),
-                      hierarchical=bool(saved.get("hierarchical", True)),
-                      max_leaves=int(limits.get("max_leaves") or MAX_LEAVES))
-            run.llm_cap = int(limits.get("llm_cap") or MAX_LLM_CALLS)
-            run.llm_cap_explicit = bool(limits.get("llm_cap_explicit"))
-            if max_llm_calls is not None:
-                run.llm_cap = min(LLM_CAP_CEIL, max(1, int(max_llm_calls)))
-                run.llm_cap_explicit = True
-            run.segment = int(saved.get("segment") or 1) + 1
-            run.active_s_before = float(saved.get("active_s") or 0.0)
-            if run.active_s_before >= run.total_budget_s:
-                # The budget counts active time across segments; resuming with
-                # it spent would stop again before the first goal.
-                raise RunNotResumable(
-                    "run %s has used %.0f s of its %.0f s total budget; resume it with a "
-                    "larger total budget" % (run_id, run.active_s_before, run.total_budget_s))
-            run.first_started_at = float(saved.get("first_started_at") or 0.0) or \
-                _run_started(run_id)
-            for key, value in (saved.get("spend") or {}).items():
-                if key in run.spend and isinstance(value, (int, float)):
-                    run.spend[key] = value
-            for key, value in (saved.get("learned") or {}).items():
-                if key in run.learned and isinstance(value, int):
-                    run.learned[key] = value
-            run.repairs_total = run.replans = int(saved.get("repairs_total") or 0)
-            run.plan_source = str(saved.get("plan_source") or "")
-            run.plan_memory = str(saved.get("plan_memory") or "")
+            run.model = self._model_id(model)
             try:
                 last = self._journal.last_event_index(run_id)
             except Exception:
                 last = -1
-            run.events_base = max(int(saved.get("events_next") or 0), last + 1)
-            run.tree = PlanNode.from_dict(saved["tree"], step_loader=PlanStep.from_dict)
+            run.events_base = max(_int(saved.get("events_next"), 0), last + 1)
             open_nodes = self._reopen(run)
-            target = saved.get("target") or {}
+            target = saved.get("target")
+            target = target if isinstance(target, dict) else {}
             self._target = {"hwnd": 0, "pid": 0}
-            hwnd, pid = int(target.get("hwnd") or 0), int(target.get("pid") or 0)
+            hwnd, pid = _int(target.get("hwnd"), 0), _int(target.get("pid"), 0)
             if not dry_run and hwnd and pid:
                 try:
                     same = int(self._window_pid(hwnd) or 0) == pid and \
@@ -932,6 +925,11 @@ class Operator:
             self._target = target_kept
             if target_kept["hwnd"]:
                 self._used_windows.append(int(target_kept["hwnd"]))
+            aliases = saved.get("aliases")
+            if isinstance(aliases, dict):
+                self._aliases = {_stem(k): _stem(v) for k, v in aliases.items()
+                                 if isinstance(k, str) and isinstance(v, str) and _stem(k)
+                                 and _stem(v)}
             self._event(run, "resume", "resuming run %s — segment %d, %d open item%s%s" % (
                 run.id, run.segment, open_nodes, "" if open_nodes == 1 else "s",
                 "" if run.dry_run else ("; the window is still there" if self._target["pid"]
@@ -941,6 +939,69 @@ class Operator:
                                             name="jev-operator", daemon=True)
             self._thread.start()
             return run.id
+
+    def _run_from_checkpoint(self, run_id: str, saved: Dict[str, Any], dry_run: bool, *,
+                             total_budget_s: Optional[float], usd_cap: Optional[float],
+                             max_llm_calls: Optional[int]) -> Run:
+        """The Run a checkpoint describes, the arguments overriding its limits.
+
+        A hand-edited or damaged ``run.json`` (``"limits": "oops"``, a null
+        cap) used to surface as a 500, or a 400 blaming the request body, on
+        every click of a resume button that could never work. Damage is now a
+        :class:`RunNotResumable` that says so; a missing number takes its
+        default. A run whose active time already used its total budget, or
+        whose spend reached its cap, is refused with the override to raise —
+        resuming it would stop again before the first goal.
+        """
+        try:
+            limits = saved.get("limits")
+            limits = limits if isinstance(limits, dict) else {}
+            run = Run(id=run_id, command=str(saved.get("command") or ""), model=None,
+                      dry_run=dry_run,
+                      max_steps=max(1, _int(limits.get("max_steps"), 25)),
+                      budget_s=max(5.0, _num(limits.get("budget_s"), 90.0)),
+                      total_budget_s=max(10.0, float(total_budget_s) if total_budget_s
+                                         else _num(limits.get("total_budget_s"), 600.0)),
+                      usd_cap=max(0.0, float(usd_cap) if usd_cap is not None
+                                  else _num(limits.get("usd_cap"), 0.5)),
+                      memory=bool(saved.get("memory", True)),
+                      hierarchical=bool(saved.get("hierarchical", True)),
+                      max_leaves=max(1, _int(limits.get("max_leaves"), MAX_LEAVES)))
+            run.llm_cap = _int(limits.get("llm_cap"), MAX_LLM_CALLS) or MAX_LLM_CALLS
+            run.llm_cap_explicit = bool(limits.get("llm_cap_explicit"))
+            if max_llm_calls is not None:
+                run.llm_cap = min(LLM_CAP_CEIL, max(1, int(max_llm_calls)))
+                run.llm_cap_explicit = True
+            run.segment = _int(saved.get("segment"), 1) + 1
+            run.active_s_before = _num(saved.get("active_s"), 0.0)
+            run.first_started_at = _num(saved.get("first_started_at"), 0.0) or \
+                _run_started(run_id)
+            spend = saved.get("spend")
+            for key, value in (spend.items() if isinstance(spend, dict) else ()):
+                if key in run.spend and _is_number(value):
+                    run.spend[key] = value
+            learned = saved.get("learned")
+            for key, value in (learned.items() if isinstance(learned, dict) else ()):
+                if key in run.learned and isinstance(value, int) and not isinstance(value, bool):
+                    run.learned[key] = value
+            run.repairs_total = run.replans = _int(saved.get("repairs_total"), 0)
+            run.plan_source = str(saved.get("plan_source") or "")
+            run.plan_memory = str(saved.get("plan_memory") or "")
+            run.tree = PlanNode.from_dict(saved["tree"], step_loader=PlanStep.from_dict)
+        except (TypeError, ValueError, AttributeError, KeyError) as exc:
+            raise RunNotResumable("run %s has a damaged checkpoint (%s: %s); start it again"
+                                  % (run_id, type(exc).__name__, str(exc)[:120]))
+        if run.active_s_before >= run.total_budget_s:
+            # The budget counts active time across segments; resuming with
+            # it spent would stop again before the first goal.
+            raise RunNotResumable(
+                "run %s has used %.0f s of its %.0f s total budget; resume it with a "
+                "larger total budget" % (run_id, run.active_s_before, run.total_budget_s))
+        if run.usd_cap and run.spend["usd"] >= run.usd_cap:
+            raise RunNotResumable(
+                "run %s has spent $%.4f of its $%.2f cap; resume it with a larger cap"
+                % (run_id, run.spend["usd"], run.usd_cap))
+        return run
 
     def _reopen(self, run: Run) -> int:
         """Make a checkpointed tree runnable again; the number of open items.
@@ -998,6 +1059,7 @@ class Operator:
         self._replay_unconfirmed = False
         self._used_windows = []
         self._phase_pin = ("", 0)
+        self._aliases = {}
         self._current_node = None
         self._goal_evidence = ""
         self._last_snapshot = None
@@ -1263,7 +1325,7 @@ class Operator:
             # and the run still reported done.
             children = coerce_tree(items, depth=1, id_prefix="", source="user",
                                    make_step=_step_for, max_items=len(items),
-                                   max_children=run.max_leaves)
+                                   max_children=run.max_leaves + 1)
         except ValueError:
             raise ValueError("the supplied plan has no usable steps")
         root = self._new_root(run)
@@ -1519,20 +1581,22 @@ class Operator:
             if program:
                 self._event(run, "launch", "would launch %s (dry run)" % program)
             return
+        phase = node.phase() if node.parent is not None else None
+        scope_id = phase.id if phase is not None and phase is not run.tree else node.id
         if program:
             if not launch or node.id == self._resumed_leaf:
                 # A resumed goal that had launched already: its program's
                 # window is there, so a second launch would open a second one.
                 hint, strict = self._resume_hint(run, program)
                 if self._pin_app(run, program, hint, strict=strict):
+                    self._phase_pin = (scope_id, int(self._target.get("hwnd") or 0))
                     return
             if launch:
                 self._launch(run, step if step is not None else _step_for(node))
+                self._phase_pin = (scope_id, int(self._target.get("hwnd") or 0))
             return
-        phase = node.phase() if node.parent is not None else None
         app = node.app or (phase.app if phase is not None else "")
-        scope_id = phase.id if phase is not None and phase is not run.tree else node.id
-        if app and _stem(self._target_app()) != _stem(app) and not self._pinned_for(scope_id):
+        if app and not self._same_app(self._target_app(), app) and not self._pinned_for(scope_id):
             # Never the window that happens to be pinned: a Calculator phase
             # with no Calculator on the desktop used to run in Notepad (the
             # simulator recorded its keystrokes in the document) and finish
@@ -1542,7 +1606,9 @@ class Operator:
             hint, strict = self._resume_hint(run, app)
             hint = hint if strict else self._title_hint(run, phase)
             if not self._pin_app(run, app, hint, strict=strict):
-                self._need_window_of(run, app, hint, launch=not strict)
+                # ``launch``: an interrupted goal being looked at on resume
+                # starts nothing, not even the program its phase names.
+                self._need_window_of(run, app, hint, launch=launch and not strict)
             self._phase_pin = (scope_id, int(self._target.get("hwnd") or 0))
         elif not self._target["pid"] and run.target_hint.get("process"):
             process = run.target_hint["process"]
@@ -1563,9 +1629,42 @@ class Operator:
         """
         hint = run.target_hint
         if self._target.get("pid") or not hint.get("process") or \
-                _stem(hint["process"]) != _stem(program):
+                not self._same_app(hint["process"], program):
             return "", False
         return str(hint.get("title") or ""), True
+
+    def _stems(self, name: str) -> set:
+        """The executable stems ``name`` is known by: its own, and the process
+        its launch was seen to produce (calc.exe -> CalculatorApp.exe)."""
+        stem = _stem(name)
+        if not stem or ":" in stem:
+            return set()
+        out = {stem}
+        alias = self._aliases.get(stem)
+        if alias:
+            out.add(alias)
+        out.update(k for k, v in self._aliases.items() if v == stem)
+        return out
+
+    def _same_app(self, a: str, b: str) -> bool:
+        return bool(self._stems(a) & self._stems(b))
+
+    def _learn_alias(self, name: str, hwnd: int) -> None:
+        """Remember that ``name`` runs as the process owning ``hwnd``.
+
+        Some programs launch under one name and own their window under another
+        — calc.exe is CalculatorApp.exe, control.exe is explorer.exe. Matching
+        on the launch name alone found no window after the plan's own launch,
+        so every goal launched a new, blank Calculator (the review reproduced
+        three in a three-goal plan). Checkpointed, so a resume keeps it.
+        """
+        stem = _stem(name)
+        try:
+            owner = _stem(self._window_process(hwnd) or "")
+        except Exception:
+            return
+        if stem and owner and owner != stem and ":" not in stem:
+            self._aliases[stem] = owner
 
     def _pinned_for(self, scope_id: str) -> bool:
         """This phase already has its window, and the window is still there."""
@@ -1627,11 +1726,20 @@ class Operator:
         self._event(run, "waiting_window", "bring the %s window this goal should work in to the "
                                            "front (%.0f s)" % (name, APP_WAIT_S))
         deadline = time.time() + APP_WAIT_S
+        before = self._hwnd_or_zero()
         while True:
             self.kill.raise_if_tripped()
             front = self._hwnd_or_zero()
-            if front and front in self._windows_of(name, {front}) and \
-                    CONSOLE_TITLE not in self._title_of(front).lower():
+            # A window of the program, or — its process named otherwise, the
+            # way wt.exe is WindowsTerminal.exe — the window the user brought
+            # to the front after being asked. Only a match used to count, so
+            # the wait could not be satisfied for such a program at all. The
+            # window that was in front before the question never counts.
+            ours = front and front in self._windows_of(name, {front})
+            chosen = front and front != before
+            if (ours or chosen) and CONSOLE_TITLE not in self._title_of(front).lower():
+                if not ours:
+                    self._learn_alias(name, front)
                 self._pin(run, front)
                 self._set_state(run, "running")
                 return
@@ -1694,6 +1802,7 @@ class Operator:
         self._event(run, "launch", "found %s's window in %.1f s — working in it by handle, "
                                    "without taking the foreground"
                     % (target, time.time() - started))
+        self._learn_alias(target, found)
         self._pin(run, found)
 
     def _wait_for_target_window(self, run: Run) -> None:
@@ -1813,18 +1922,18 @@ class Operator:
             return set()
 
     def _windows_of(self, target: str, windows: set) -> List[int]:
-        """Windows owned by the launched program, matched on the executable stem."""
-        stem = os.path.basename(target).lower()
-        stem = stem[:-4] if stem.endswith(".exe") else stem
-        if not stem or ":" in stem:
+        """Windows owned by the program, matched on the executable stem — its
+        own or the one its launch was seen to produce (``_learn_alias``)."""
+        stems = self._stems(target)
+        if not stems:
             return []
         out = []
         for hwnd in sorted(windows):
             try:
-                owner = self._window_process(hwnd).lower()
+                owner = _stem(self._window_process(hwnd) or "")
             except Exception:
                 continue
-            if owner == stem or owner == stem + ".exe":
+            if owner in stems:
                 out.append(hwnd)
         return out
 
@@ -2656,7 +2765,7 @@ class Operator:
             children = coerce_tree(items, depth=1, id_prefix="", source=run.plan_source,
                                    make_step=_step_for,
                                    max_items=len(items) if whole else None,
-                                   max_children=run.max_leaves if whole else None)
+                                   max_children=run.max_leaves + 1 if whole else None)
         except ValueError:
             return []
         return self._fit_leaves(run, children, run.max_leaves)
@@ -2758,7 +2867,7 @@ class Operator:
                 children = coerce_tree(items, depth=phase.depth + 1, id_prefix=child_prefix(phase),
                                        source=source, make_step=_step_for,
                                        max_items=len(items) if whole else None,
-                                       max_children=run.max_leaves if whole else None)
+                                       max_children=run.max_leaves + 1 if whole else None)
             except ValueError:
                 children = []
         for child in children:
@@ -3293,7 +3402,7 @@ class Operator:
             "target": {"hwnd": hwnd, "pid": int(self._target.get("pid") or 0),
                        "process": self._target_app(), "title": self._title_of(hwnd) if hwnd else ""},
             "active_s": round(run.active_seconds(), 2), "paused_s": round(run.paused_s, 2),
-            "first_started_at": run.since(),
+            "first_started_at": run.since(), "aliases": dict(self._aliases),
             "segment": run.segment, "events_next": run.events_base + len(run.events),
             "heartbeat_at": run.heartbeat_at, "pid": os.getpid(), "progress": run.progress(),
         }

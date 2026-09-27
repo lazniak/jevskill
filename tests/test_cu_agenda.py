@@ -7,6 +7,7 @@ runner's PlanStep because agenda.py must not import the runner.
 from __future__ import annotations
 
 import os
+import shutil
 import time
 from dataclasses import dataclass
 from types import SimpleNamespace
@@ -366,11 +367,45 @@ def test_title_contains_is_undecided_on_an_unsaved_title():
     assert evaluate_checks([check], snap("*Bez tytułu - Notatnik"))[0] is False
 
 
+@pytest.mark.parametrize("title", [
+    "*hello.txt - Notatnik",
+    "*hello.txt",
+    "● hello.txt - Visual Studio Code",
+    "● hello.txt - projekt - Visual Studio Code",
+    "• hello.txt - Notepad",
+    "hello.txt • - Sublime Text",
+    "hello.txt •",
+    "hello.txt* - Paint.NET",
+])
+def test_the_unsaved_marker_opens_or_closes_the_document_part(title):
+    assert agenda.is_unsaved_title(title)
+
+
+@pytest.mark.parametrize("template, needle", [
+    ("Instagram %s Photos - Google Chrome", "Photos"),
+    ("Song %s Artist - Spotify", "Artist"),
+    ("Inbox %s Slack", "Slack"),
+    ("hello.txt - Notatnik %s Pomoc", "hello.txt"),
+])
+def test_a_dot_used_as_a_separator_is_not_the_unsaved_marker(template, needle):
+    """A saved title that separates its words with a dot was read as unsaved:
+    the dot was looked for anywhere, and ``title_contains`` stayed undecided
+    on it forever."""
+    for dot in agenda.UNSAVED_DOTS:
+        title = template % dot
+        assert not agenda.is_unsaved_title(title), title
+        assert evaluate_checks([Check("title_contains", needle)], snap(title)) == (
+            True, "title_contains %r: true" % needle), title
+
+
 def test_since_makes_a_file_older_than_the_run_prove_nothing(tmp_path):
     """Review #17: yesterday's hello.txt on the Desktop is not today's save."""
     path = tmp_path / "hello.txt"
     path.write_text("hello world", encoding="utf-8")
-    start = time.time()
+    # The run starts after the file was made. A file created a moment before
+    # ``since`` is inside the slack — its creation (ctime) stamp is evidence
+    # too — and Windows does not let a test set that stamp back.
+    start = time.time() + agenda.MTIME_SLACK_S + 5.0
     old = start - agenda.MTIME_SLACK_S - 3600.0
     os.utime(path, (old, old))
     checks = [Check("file_exists", str(path)), Check("file_contains", str(path), "hello")]
@@ -389,6 +424,28 @@ def test_since_makes_a_file_older_than_the_run_prove_nothing(tmp_path):
     assert evaluate_checks([missing], None, since=start)[0] is False
     assert evaluate_checks([Check("file_contains", str(path), "zakupy")], None,
                            since=start)[0] is False
+
+
+def test_since_counts_a_file_the_run_copied_into_place(tmp_path):
+    """A copy (or a move across volumes, or a zip extraction) keeps the
+    source's mtime: judged by mtime alone, the file this run put in place
+    read as stale and the goal could not close in code."""
+    source = tmp_path / "source.txt"
+    source.write_text("hello world", encoding="utf-8")
+    day_ago = time.time() - 24 * 3600.0
+    os.utime(source, (day_ago, day_ago))
+    since = time.time()
+    copy = tmp_path / "hello.txt"
+    shutil.copy2(source, copy)
+    assert os.path.getmtime(copy) < since - agenda.MTIME_SLACK_S, "premise: mtime is old"
+    for check in (Check("file_exists", str(copy)), Check("file_contains", str(copy), "hello")):
+        verdict, detail = agenda._eval_one(check, None, since)
+        assert verdict is True and "stale" not in detail, detail
+    # Untouched since before the run started — old content, made before
+    # ``since`` — is still stale.
+    later = time.time() + agenda.MTIME_SLACK_S + 5.0
+    verdict, detail = agenda._eval_one(Check("file_exists", str(source)), None, later)
+    assert verdict is None and "stale" in detail
 
 
 def test_max_children_lifts_the_per_phase_cap_for_a_known_tree():

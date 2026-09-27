@@ -64,7 +64,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
-from .agenda import UNSAVED_DOTS, is_unsaved_title
+from .agenda import TITLE_SEPARATOR, UNSAVED_DOTS, is_unsaved_title
 from .hashing import tree_hash
 from .macros import goal_fingerprint
 from .reduce import candidates as reduce_candidates
@@ -259,23 +259,36 @@ def _template_items(items: Iterable[Any], goal_slots: Sequence[str] = (),
     return out
 
 
-def _item_texts(items: Iterable[Any]) -> Iterable[str]:
-    """Every string of nested plan items a replay would act on or check: the
-    fields :func:`_template_items` templates, plus ``app``, which it copies."""
+def _item_texts(items: Iterable[Any]) -> Iterable[Tuple[str, str]]:
+    """``(field, text)`` for every string of nested plan items a replay would
+    act on or check — the fields :func:`_template_items` templates; a check's
+    strings come as ``check``.
+
+    Not ``app``, although it is copied as it is: the app is part of
+    :func:`phase_key`, so a decomposition learned in ``notepad.exe`` only ever
+    serves ``notepad.exe`` and cannot carry that name into a mission for
+    another app. Scanning it refused every decomposition of a command that
+    named the executable ("Otwórz notepad.exe i zapisz jako hello.txt").
+    """
     for item in items or []:
         if not isinstance(item, dict):
             continue
-        for key in ("goal", "done_when", "launch", "app"):
+        for key in ("goal", "done_when", "launch"):
             if isinstance(item.get(key), str):
-                yield item[key]
+                yield key, item[key]
         for check in item.get("checks") or []:
             if isinstance(check, dict):
                 for key in ("arg", "text"):
                     if isinstance(check.get(key), str):
-                        yield check[key]
+                        yield "check", check[key]
         children = item.get("children")
         if isinstance(children, list):
             yield from _item_texts(children)
+
+
+def _is_executable(value: str) -> bool:
+    """``notepad.exe``: a program the command named, not a document it made."""
+    return value.strip().casefold().endswith(".exe")
 
 
 def _value_pattern(value: str) -> "re.Pattern[str]":
@@ -292,14 +305,20 @@ def _leaks_command_value(items: Iterable[Any], goal_slots: Sequence[str],
     """Would templating ``items`` with ``goal_slots`` alone leave one of the
     command's values behind as a literal? The goal's own values are cut out
     first, exactly as :func:`make_template` will, so ``hello`` is not found
-    inside a ``hello.txt`` that becomes ``⟦g0⟧``."""
+    inside a ``hello.txt`` that becomes ``⟦g0⟧``.
+
+    An executable the command named is not looked for in ``launch``: the
+    first child of any phase launches the app (``notepad.exe``), the same app
+    the phase is keyed by, and that is how the phase works in every mission,
+    not a value of this one. It is still looked for in a goal or a check."""
     extra = [v for v in command_slots if v and v.strip() and v not in goal_slots]
     if not extra:
         return False
-    patterns = [_value_pattern(v) for v in extra]
-    for text in _item_texts(items):
+    patterns = [(_value_pattern(v), _is_executable(v)) for v in extra]
+    for field_name, text in _item_texts(items):
         rest = make_template(text, goal_slots, ()) or ""
-        if any(p.search(rest) for p in patterns):
+        if any(p.search(rest) for p, exe in patterns
+               if not (exe and field_name == "launch")):
             return True
     return False
 
@@ -371,11 +390,20 @@ def _norm_title(title: str) -> str:
     new. It is wrong for "is the goal done?": a caller that uses a title as
     proof must also compare :func:`is_unsaved_title`, as :func:`recipe_check`
     does, or ``*hello.txt - Notatnik`` proves a save that never happened.
+
+    The ``*`` is stripped where :func:`is_unsaved_title` reads it — at either
+    edge of the document part — so ``a.png* - Paint.NET`` is the window
+    ``a.png - Paint.NET`` was. Dots go everywhere: a dot used as a separator
+    (``Inbox • Slack``) is dropped on both sides of a comparison alike.
     """
     text = str(title or "")
     for dot in UNSAVED_DOTS:
         text = text.replace(dot, " ")
-    return " ".join(text.lstrip("* ").split()).casefold()
+    doc, sep, rest = text.rpartition(TITLE_SEPARATOR)
+    if not sep:
+        doc, rest = text, ""
+    doc = doc.strip().strip("*").strip()
+    return " ".join((doc + sep + rest).split()).casefold()
 
 
 def _app_key(app: str) -> str:
@@ -1032,7 +1060,12 @@ class Experience:
         self._autosave()
 
     def plan_failed(self, command: str) -> None:
+        """Count a failure — after :meth:`_refresh`, like every path that
+        touches a held row without a lookup first. The run that failed looked
+        the plan up minutes ago; if another process forgot it since, the copy
+        held here is stale and its failure is nobody's to record."""
         key, _ = command_key(command)
+        self._refresh()
         with self._lock:
             memory = self.plans.get(key)
             if memory is None:
@@ -1059,6 +1092,8 @@ class Experience:
         self._autosave()
 
     def _row_failed(self, key: str) -> None:
+        """A tree's or a decomposition's failure; see :meth:`plan_failed`."""
+        self._refresh()
         with self._lock:
             memory = self.plans.get(key)
             if memory is None:
@@ -1224,6 +1259,17 @@ class Experience:
             values = [v for v in values
                       if resolve(v[0], elements, goal_slots=gslots, command_slots=cslots) is not None]
         rkey = _app_key(app) + "\x1f" + gkey
+        if replayed:
+            # The replayed recipe was looked up when the goal began. Forgotten
+            # by another process since, the copy held here is stale: counting
+            # the success on it is the stale use #21 was about, and learning
+            # the replay's own steps anew would bring the forgotten recipe
+            # straight back over its tombstone. Neither: nothing is recorded.
+            self._refresh()
+            with self._lock:
+                forgotten = rkey not in self.recipes and rkey in self._forgotten["recipes"]
+            if forgotten:
+                return None
         if not steps and not launched and not (replayed and rkey in self.recipes):
             return None
         now = time.time()
@@ -1253,6 +1299,8 @@ class Experience:
         return recipe
 
     def recipe_failed(self, app: str, goal: str, error: str) -> None:
+        """See :meth:`plan_failed`: a forgotten recipe's failure is not counted."""
+        self._refresh()
         with self._lock:
             recipe = self.recipes.get(self.recipe_key(app, goal))
             if recipe is None:
@@ -1408,6 +1456,28 @@ class Experience:
         """The bound of a section, read at call time (tests shrink it)."""
         return {"recipes": MAX_RECIPES, "plans": MAX_PLANS, "lessons": MAX_LESSONS}[section]
 
+    @staticmethod
+    def _merge_rows(mine: Dict[str, Any], disk: Dict[str, Any],
+                    tombstones: Dict[str, float]) -> Dict[str, Any]:
+        """One section of :meth:`save`: the tombstone judges each copy of a
+        key on its own, and only then does the newer ``last_used`` win.
+
+        The other order lost a relearned row. The console held plan K learned
+        at t1; the CLI forgot K (tombstone t2) and relearned it (t3); the
+        console's stale copy then failed a run (last used t4). It won on
+        ``last_used``, failed ``learned_at > tombstone`` and was dropped — and
+        took the CLI's legitimate row with it, which was never considered.
+        A tie on ``last_used`` goes to this process's copy, as it always did.
+        """
+        merged: Dict[str, Any] = {}
+        for key in list(disk) + [k for k in mine if k not in disk]:
+            stone = tombstones.get(key, -1.0)
+            alive = [row for row in (mine.get(key), disk.get(key))
+                     if row is not None and row.learned_at > stone]
+            if alive:
+                merged[key] = max(alive, key=lambda row: row.last_used)
+        return merged
+
     def _autosave(self) -> None:
         if self.autosave:
             self.save()
@@ -1457,9 +1527,10 @@ class Experience:
         return len(self.recipes) + len(self.plans) + len(self.lessons)
 
     def save(self) -> bool:
-        """Merge into the file: newer ``last_used`` wins a key both hold, and an
-        entry not *learned* since it was forgotten — by any process — is
-        dropped. Used is not enough: a stale copy that merely failed or replayed
+        """Merge into the file: a copy not *learned* since its key was
+        forgotten — by any process — is dropped, each copy on its own, and of
+        the copies left the newer ``last_used`` wins (:meth:`_merge_rows`).
+        Used is not enough: a stale copy that merely failed or replayed
         after the forget used to outlive the tombstone (review finding #21).
 
         The merged sections are then bounded again. The in-memory bound after
@@ -1484,13 +1555,8 @@ class Experience:
                 if len(tombstones) > MAX_TOMBSTONES:
                     tombstones = dict(sorted(tombstones.items(), key=lambda kv: kv[1])
                                       [-MAX_TOMBSTONES:])
-                merged = dict(disk.get(section, {}))
-                for key, value in getattr(self, section).items():
-                    other = merged.get(key)
-                    if other is None or value.last_used >= other.last_used:
-                        merged[key] = value
-                merged = {k: v for k, v in merged.items()
-                          if v.learned_at > tombstones.get(k, -1.0)}
+                merged = self._merge_rows(getattr(self, section), disk.get(section, {}),
+                                          tombstones)
                 self._bound(merged, self._limit(section))
                 setattr(self, section, merged)
                 self._forgotten[section] = tombstones

@@ -15,7 +15,7 @@ import pytest
 
 from jevskill.cu import journal as journal_module
 from jevskill.cu import runner as runner_module
-from jevskill.cu.agenda import MAX_CHILDREN, MIN_PHASE_S, PlanNode
+from jevskill.cu.agenda import MAX_CHILDREN, MIN_PHASE_S, MTIME_SLACK_S, PlanNode
 from jevskill.cu.experience import phase_key
 from jevskill.cu.journal import RunStore
 from jevskill.cu.runner import PlanStep, Run, RunNotResumable
@@ -419,12 +419,16 @@ class TestMemoryWrites:
         assert status["state"] == "failed"
         assert (exp.plans[key].failures, exp.plans[key].streak_failed) == before
 
-    def test_a_file_from_before_the_run_does_not_rescue_a_failed_phase(self, tmp_path):
+    def test_a_file_from_before_the_run_does_not_rescue_a_failed_phase(self, tmp_path,
+                                                                       monkeypatch):
         """#17: yesterday's hello.txt marked today's failed save completed."""
         old = tmp_path / "hello.txt"
         old.write_text("yesterday", encoding="utf-8")
         past = time.time() - 86400
         os.utime(old, (past, past))
+        # A file's age is the newest of its times, creation included, and this
+        # one was created a moment ago: the run is made to begin after it.
+        monkeypatch.setattr(Run, "since", lambda self: self.started_at + MTIME_SLACK_S + 5.0)
         plan = [phase("Save", [leaf("Open Notepad", launch="notepad.exe"), leaf("Confirm the save")],
                       checks=[{"kind": "file_exists", "arg": str(old)}]),
                 phase("Close", [leaf("x"), leaf("y")])]
@@ -485,3 +489,177 @@ class TestMemoryWrites:
         assert status["state"] == "done", status["error"]
         assert operator.experience.decomposition_for("notepad.exe",
                                                      "Save the document on the Desktop") is None
+
+
+# --------------------------------------------------------------------------- #
+# Second review (of the fixes above)
+# --------------------------------------------------------------------------- #
+
+
+def calc_desk_kwargs(desk, launches):
+    """A Calculator that launches as calc.exe and owns its window as
+    CalculatorApp.exe — a new window per launch, as a second launch would."""
+    handles = [300]
+
+    def launcher(target):
+        launches.append(target)
+        if "calc" in target.lower():
+            handles[0] += 1
+            desk.windows.add(handles[0])
+        else:
+            desk.launch(target)
+
+    return dict(
+        launcher=launcher,
+        window_process=lambda h: "CalculatorApp.exe" if h > 300 else (
+            "Notepad.exe" if h == NOTEPAD_HWND else "Discord.exe"),
+        window_pid=lambda h: 9 if h > 300 else desk.window_pid(h),
+        window_title=lambda h: "Kalkulator" if h > 300 else desk.window_title(h))
+
+
+def _stopped_in_phase_two(tmp_path):
+    def gate(goal, _hooks):
+        if goal == "Fix the spelling":
+            operator.stop("test")
+
+    operator, desk, _ = make(tmp_path, MissionLLM(THREE_PHASES, EXPANSIONS), ScriptLoop(gate=gate))
+    first = run(operator, usd_cap=0.5)
+    assert first["state"] == "stopped"
+    return first, desk
+
+
+class TestReviewRound2:
+    def test_a_program_whose_window_has_another_process_is_launched_once(self, tmp_path):
+        """calc.exe owns its window as CalculatorApp.exe: every goal launched a
+        new, blank Calculator (three windows for three goals)."""
+        desk, launches = SimDesktop(), []
+        plan = {"steps": [{"goal": "Open Calculator", "launch": "calc.exe", "app": "calc.exe"},
+                          {"goal": "Compute 2+2", "app": "calc.exe"},
+                          {"goal": "Copy the result", "app": "calc.exe"}]}
+        operator, _d, loop = make(tmp_path, MissionLLM(plan), desk=desk,
+                                  **calc_desk_kwargs(desk, launches))
+        status = run(operator)
+        assert status["state"] == "done", status["error"]
+        assert launches == ["calc.exe"]
+        assert [e["data"]["hwnd"] for e in kinds(status, "window")] == [301]
+
+    def test_a_launch_leaf_pins_its_phase(self, tmp_path):
+        """The phase's own launch leaf pinned a window; the next goal of the
+        phase did not know it and launched again."""
+        desk, launches = SimDesktop(), []
+        plan = {"steps": [phase("Write", [leaf("Open Notepad", launch="notepad.exe"), leaf("a")],
+                                app="notepad.exe"),
+                          phase("Count", [leaf("Open Calculator", launch="calc.exe"), leaf("b"),
+                                          leaf("c")], app="calc.exe")]}
+        operator, _d, _loop = make(tmp_path, MissionLLM(plan), desk=desk,
+                                   **calc_desk_kwargs(desk, launches))
+        status = run(operator)
+        assert status["state"] == "done", status["error"]
+        assert launches == ["notepad.exe", "calc.exe"]
+
+    def test_a_resume_keeps_the_program_it_launched(self, tmp_path):
+        """On resume the alias was lost and the kept Calculator was dropped; a
+        second one was launched, even while only looking at the interrupted goal."""
+        desk, launches = SimDesktop(), []
+        plan = {"steps": [phase("Write", [leaf("Open Notepad", launch="notepad.exe"), leaf("a")],
+                                app="notepad.exe"),
+                          phase("Count", [leaf("Open Calculator", launch="calc.exe"), leaf("b"),
+                                          leaf("c")], app="calc.exe")]}
+        loop = ScriptLoop(acts={"c": 1})
+        loop.gate = lambda goal, _h: goal == "c" and operator.stop("test")
+        kw = calc_desk_kwargs(desk, launches)
+        operator, _d, _l = make(tmp_path, MissionLLM(plan), loop, desk=desk, **kw)
+        first = run(operator)
+        assert first["state"] == "stopped"
+        del launches[:]
+        operator2, _d2, _l2 = make(tmp_path, None, ScriptLoop(), desk=desk, **kw)
+        operator2.resume(first["run_id"], model="none")
+        assert wait_for(lambda: (operator2.status().get("pending_confirm") or {}).get("op") == "redo")
+        operator2.confirm(True)
+        operator2.wait(20)
+        status = operator2.status()
+        assert status["state"] == "done", status["error"]
+        assert launches == [], "nothing is launched again on resume"
+
+    def test_the_window_the_user_brings_up_is_taken_when_its_process_differs(
+            self, tmp_path, monkeypatch):
+        """wt.exe is WindowsTerminal.exe: the wait accepted only a window whose
+        process matched the name, so the user could never satisfy it."""
+        import threading as _threading
+        monkeypatch.setattr(runner_module, "APP_WAIT_S", 5.0)
+        desk = SimDesktop()
+        desk.windows.add(500)
+        plan = {"steps": [leaf("Open Notepad", launch="notepad.exe"),
+                          phase("Shell", [leaf("b"), leaf("c")], app="wt.exe")]}
+        operator, _d, loop = make(
+            tmp_path, MissionLLM(plan), desk=desk,
+            window_process=lambda h: {500: "WindowsTerminal.exe", NOTEPAD_HWND: "Notepad.exe"}.get(
+                h, "Discord.exe"),
+            window_pid=lambda h: {500: 12}.get(h, desk.window_pid(h)),
+            window_title=lambda h: "Terminal" if h == 500 else desk.window_title(h))
+
+        def user_clicks_terminal():
+            wait_for(lambda: operator.run is not None and operator.run.state == "waiting_window")
+            time.sleep(0.2)
+            desk.front = 500
+
+        _threading.Thread(target=user_clicks_terminal, daemon=True).start()
+        status = run(operator)
+        assert status["state"] == "done", status["error"]
+        assert [e["data"]["hwnd"] for e in kinds(status, "window")][-1] == 500
+        assert loop.calls == ["Open Notepad", "b", "c"]
+
+    def test_a_damaged_checkpoint_is_refused_with_a_reason(self, tmp_path):
+        """A damaged run.json was a 500, or a 400 that blamed the request body."""
+        first, desk = _stopped_in_phase_two(tmp_path)
+        store = store_of(tmp_path)
+        saved = store.load(first["run_id"])
+        saved["tree"] = {"id": "0", "kind": "phase", "children": [{"id": 1, "goal": None,
+                                                                  "spend": "oops"}]}
+        saved["segment"] = "x"
+        store.checkpoint(first["run_id"], saved)
+        operator2, _d, _l = make(tmp_path, MissionLLM(THREE_PHASES, EXPANSIONS), ScriptLoop(),
+                                 desk=desk)
+        try:
+            operator2.resume(first["run_id"])
+        except RunNotResumable as exc:
+            assert "damaged" in str(exc)
+        else:   # a tree the loader can make sense of resumes; it must not crash
+            operator2.wait(20)
+            assert operator2.status()["state"] in ("done", "failed")
+
+    def test_a_damaged_limit_takes_its_default(self, tmp_path):
+        first, desk = _stopped_in_phase_two(tmp_path)
+        store = store_of(tmp_path)
+        saved = store.load(first["run_id"])
+        saved["limits"] = "oops"
+        saved["heartbeat_at"] = None
+        store.checkpoint(first["run_id"], saved)
+        operator2, _d, _l = make(tmp_path, MissionLLM(THREE_PHASES, EXPANSIONS), ScriptLoop(),
+                                 desk=desk)
+        operator2.resume(first["run_id"])
+        operator2.wait(20)
+        assert operator2.status()["state"] == "done", operator2.status()["error"]
+
+    def test_a_resume_with_its_spend_cap_reached_is_refused_unless_raised(self, tmp_path):
+        """A cap-stopped run stopped again before its first goal, every try."""
+        first, desk = _stopped_in_phase_two(tmp_path)
+        store = store_of(tmp_path)
+        saved = store.load(first["run_id"])
+        saved["spend"]["usd"] = 0.51
+        store.checkpoint(first["run_id"], saved)
+        operator2, _d, _l = make(tmp_path, MissionLLM(THREE_PHASES, EXPANSIONS), ScriptLoop(),
+                                 desk=desk)
+        with pytest.raises(RunNotResumable, match="cap"):
+            operator2.resume(first["run_id"])
+        operator2.resume(first["run_id"], usd_cap=2.0)
+        operator2.wait(20)
+        assert operator2.status()["state"] == "done", operator2.status()["error"]
+
+    def test_a_user_phase_over_the_goal_limit_is_refused_not_cut(self, tmp_path):
+        """max_children=max_leaves cut a 7-goal phase to 5 under max_leaves=5,
+        and the count guard then passed."""
+        operator, _desk, _ = make(tmp_path)
+        with pytest.raises(ValueError, match="limit is 5"):
+            operator.start("mission", None, plan=[phase("Big", [leaf("g%d" % i) for i in range(7)])],
+                           max_leaves=5, memory=False)

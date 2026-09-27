@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -120,6 +121,33 @@ class TestUnsavedTitle:
             traj.close()
             assert traj.attempts[0].changed and not traj.attempts[0].new_window, dot
 
+    def test_a_dot_used_as_a_separator_is_not_a_marker(self):
+        """``Inbox • Slack`` is a saved title: a dot counted anywhere left
+        every check on it undecided forever."""
+        for dot in UNSAVED_DOTS:
+            title = "Inbox %s Slack" % dot
+            assert literal_check("The window title contains 'Inbox'", snap(title)) is True
+            assert literal_check("The window title contains 'Slack'",
+                                 snap("Instagram %s Photos - Slack" % dot)) is True
+            chat = Recipe(app="slack.exe", goal="open", steps=[RecipeStep("click", SAVE_BUTTON)],
+                          start_title="Slack", end_title=title)
+            assert recipe_check(chat, snap(title)) is True
+
+    def test_a_trailing_star_is_a_marker_and_opens_no_window(self):
+        """``a.png* - Paint.NET``: the marker closes the document part. The
+        normaliser strips it where the check reads it, so typing into the
+        picture is not a new window either."""
+        assert literal_check("The title contains 'a.png'", snap("a.png* - Paint.NET")) is None
+        assert literal_check("The title contains 'a.png'", snap("a.png - Paint.NET")) is True
+        field = el("f", "edit", "Canvas", automation_id="cv", class_name="Edit")
+        traj = Trajectory()
+        before = snap("a.png - Paint.NET", [field])
+        traj.observed(before)
+        traj.acted(Action(op="type", target="f", text="x"), before, True)
+        traj.observed(snap("a.png* - Paint.NET", [field, el("m", "button", "moved")]))
+        traj.close()
+        assert traj.attempts[0].changed and not traj.attempts[0].new_window
+
 
 # --------------------------------------------------------------------------- #
 # #19 a phase break-down must not carry the command's values as literals
@@ -161,6 +189,29 @@ class TestDecompositionLeak:
                                        command="wpisz „a” i zapisz") is True
         assert mem.learn_decomposition(APP, SAVE_PHASE, save_children(),
                                        command="wpisz „hello” i zapisz jako hello.txt") is True
+
+    def test_an_executable_the_command_names_does_not_refuse_its_own_app(self, tmp_path):
+        """The command names the program. Every child carries it as its
+        ``app`` and the first one launches it — neither can leak, since the
+        app is part of the phase key — yet the scan refused every break-down
+        of the mission."""
+        mem = Experience(tmp_path / "m.json")
+        command = "Otwórz notepad.exe i zapisz jako hello.txt"
+        assert "notepad.exe" in command_key(command)[1], "premise: the program is a slot"
+        children = [dict(child, app="notepad.exe") for child in save_children()]
+        children[0]["launch"] = "notepad.exe"
+        assert mem.learn_decomposition("notepad.exe", SAVE_PHASE, children,
+                                       command=command) is True
+        # The real leak of the same mission is still refused: the bare phase
+        # names no file, its child types hello.txt.
+        assert mem.learn_decomposition("notepad.exe", BARE_PHASE, children,
+                                       command=command) is False
+        # So is a launch that carries the document, and the program named in a goal.
+        for child in ({"goal": "Open the document", "launch": "notepad.exe hello.txt"},
+                      {"goal": "Start notepad.exe"}):
+            assert mem.learn_decomposition("notepad.exe", BARE_PHASE,
+                                           [dict(child, app="notepad.exe")],
+                                           command=command) is False, child
 
     def test_without_a_command_the_old_behaviour_holds(self, tmp_path):
         mem = Experience(tmp_path / "m.json")
@@ -214,9 +265,10 @@ class TestForgetAcrossProcesses:
         key = command_key(COMMAND)[0]
         Experience(path).forget("plan", key)
         tomb = json.loads(path.read_text(encoding="utf-8"))["forgotten"]["plans"][key]
-        # The stale copy fails a run after the forget (no lookup in between),
-        # so it was used, unambiguously later than the tombstone.
-        console.plan_failed(COMMAND)
+        # The stale copy is used after the forget with no refresh in between,
+        # unambiguously later than the tombstone. A direct bump: the failure
+        # and replay paths refresh first now (see TestRelearnSurvivesAStaleCopy).
+        console.plans[key].failures += 1
         console.plans[key].last_used = tomb + 1.0
         assert console.save()
         assert key not in json.loads(path.read_text(encoding="utf-8"))["plans"]
@@ -263,6 +315,123 @@ class TestForgetAcrossProcesses:
         data = json.loads(path.read_text(encoding="utf-8"))
         assert set(data["plans"]) == {"kept"}
         assert data["plans"]["kept"]["learned_at"] == tomb + 10.0
+
+
+# --------------------------------------------------------------------------- #
+# #21b a stale copy used after another process forgot *and relearned* the row
+# --------------------------------------------------------------------------- #
+
+
+GOAL = "Type into the field"
+
+
+def on_disk(path):
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+@pytest.fixture
+def ticking(monkeypatch):
+    """Every ``time.time()`` experience.py reads is a second after the last,
+    so learned < forgotten < relearned < used holds by construction, not by
+    how fine the machine's clock happens to be."""
+    now = [time.time()]
+
+    def tick():
+        now[0] += 1.0
+        return now[0]
+
+    monkeypatch.setattr(experience, "time", SimpleNamespace(time=tick))
+
+
+def _goal_tag(row):
+    return row["steps"][0]["goal"]
+
+
+def _recipe_tag(row):
+    return row["steps"][0]["identity"][1]
+
+
+#: ``path -> (section, key, learn(mem, tag), use(mem), tag(row on disk))``:
+#: every path that touches a held row without a lookup first.
+STALE_USES = {
+    "plan_failed": ("plans", command_key(COMMAND)[0],
+                    lambda m, tag: m.learn_plan(COMMAND, [{"goal": tag}]),
+                    lambda m: m.plan_failed(COMMAND), _goal_tag),
+    "tree_failed": ("plans", tree_key(COMMAND),
+                    lambda m, tag: m.learn_tree(COMMAND, [{"goal": tag, "done_when": ""}]),
+                    lambda m: m.tree_failed(COMMAND), _goal_tag),
+    "decomposition_failed": ("plans", phase_key(APP, SAVE_PHASE),
+                             lambda m, tag: m.learn_decomposition(APP, SAVE_PHASE,
+                                                                  [{"goal": tag}]),
+                             lambda m: m.decomposition_failed(APP, SAVE_PHASE), _goal_tag),
+    "recipe_failed": ("recipes", Experience.recipe_key(APP, GOAL),
+                      lambda m, tag: m.learn_recipe(APP, GOAL, COMMAND, typed_trajectory(tag)),
+                      lambda m: m.recipe_failed(APP, GOAL, "replay did not reach the goal"),
+                      _recipe_tag),
+    "replayed": ("recipes", Experience.recipe_key(APP, GOAL),
+                 lambda m, tag: m.learn_recipe(APP, GOAL, COMMAND, typed_trajectory(tag)),
+                 lambda m: m.learn_recipe(APP, GOAL, COMMAND, typed_trajectory("Old"),
+                                          replayed=True),
+                 _recipe_tag),
+}
+
+
+class TestRelearnSurvivesAStaleCopy:
+    def test_the_tombstone_judges_each_copy_before_last_used_picks_one(self, tmp_path,
+                                                                        ticking):
+        """The console's stale copy, used later than the CLI's relearn, won on
+        ``last_used``, was dropped by the tombstone — and the relearned row,
+        never considered, was lost from the file."""
+        path = tmp_path / "m.json"
+        key = command_key(COMMAND)[0]
+        console = Experience(path, autosave=False)
+        console.learn_plan(COMMAND, [{"goal": "Old"}])
+        assert console.save()
+        cli = Experience(path)
+        assert cli.forget("plan", key) is True
+        cli.learn_plan(COMMAND, [{"goal": "New"}])
+        relearned = on_disk(path)["plans"][key]
+        tomb = on_disk(path)["forgotten"]["plans"][key]
+        assert console.plans[key].learned_at <= tomb < relearned["learned_at"]
+        # Used with no refresh in between, later than the relearn.
+        console.plans[key].failures += 1
+        console.plans[key].last_used = relearned["last_used"] + 1.0
+        assert console.save()
+        assert on_disk(path)["plans"].get(key) == relearned
+        assert _goal_tag(console.plans[key].to_dict()) == "New"
+
+    def test_a_tie_on_last_used_still_goes_to_this_process(self, tmp_path, ticking):
+        path = tmp_path / "m.json"
+        key = command_key(COMMAND)[0]
+        one, two = Experience(path, autosave=False), Experience(path, autosave=False)
+        one.learn_plan(COMMAND, [{"goal": "One"}])
+        assert one.save()
+        two.learn_plan(COMMAND, [{"goal": "Two"}])
+        two.plans[key].last_used = one.plans[key].last_used
+        assert two.save()
+        assert _goal_tag(on_disk(path)["plans"][key]) == "Two"
+
+    @pytest.mark.parametrize("use", sorted(STALE_USES))
+    def test_a_stale_copy_that_fails_or_replays_leaves_the_relearn_alone(self, tmp_path,
+                                                                          ticking, use):
+        section, key, learn, stale_use, tag = STALE_USES[use]
+        path = tmp_path / "m.json"
+        console = Experience(path)
+        learn(console, "Old")
+        assert key in getattr(console, section)
+        cli = Experience(path)
+        assert cli.forget(section, key) is True
+        learn(cli, "New")
+        before = on_disk(path)
+        assert tag(before[section][key]) == "New"
+        # The console looked the row up before the forget; now its run fails
+        # (or its replay succeeds), with no lookup in between.
+        assert stale_use(console) is None, "a forgotten replay is not 'confirmed'"
+        after = on_disk(path)
+        assert after[section].get(key) == before[section][key]
+        # The stale copy is dropped, not counted: nothing is written for it.
+        assert after["saved"] == before["saved"]
+        assert key not in getattr(console, section)
 
 
 # --------------------------------------------------------------------------- #

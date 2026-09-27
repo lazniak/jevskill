@@ -661,6 +661,14 @@ label.microlabel { display: block; }
 
 .cu-resume-row .cu-goal { font-size: 13px; }
 
+/* A run resumes in the mode it started in, not the dry-run switch's: a live
+ * row says so in the stop colour, on the label and on its button. */
+.cu-mode { display: block; font-size: 11.5px; color: var(--fg-2); margin-top: 3px; }
+.cu-mode.is-live { color: var(--stop); }
+.cu-resume-row button.is-live { border-color: var(--stop); color: var(--stop); }
+.cu-when.is-warn { color: var(--gold); }
+.cu-resume-msg { color: var(--gold); }
+
 /* ------------------------------------------------------------ plan list */
 
 .cu-step {

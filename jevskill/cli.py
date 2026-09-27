@@ -995,6 +995,27 @@ def cmd_cu(args: argparse.Namespace) -> int:
     return _cu_watch(operator, run_id, resumed=args.cu_command == "resume")
 
 
+def _cu_llm_calls(text: str) -> int:
+    """``--max-llm-calls``: a whole number from 1 to ``LLM_CAP_CEIL``, or exit 2.
+
+    The help always said 1-200, but a plain ``type=int`` let 0 or 5000 through
+    and the operator clamped them — a run spending on a number nobody typed,
+    while the console's API refused the same value with a 400. Same bounds,
+    same constant, same refusal. Imported here, not at parser build time, so
+    ``jevskill --help`` does not load the operator.
+    """
+    from .cu.runner import LLM_CAP_CEIL
+
+    try:
+        number = int(text.strip())
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"must be a whole number from 1 to {LLM_CAP_CEIL}, got {text!r}") from None
+    if not 1 <= number <= LLM_CAP_CEIL:
+        raise argparse.ArgumentTypeError(f"must be from 1 to {LLM_CAP_CEIL}, got {number}")
+    return number
+
+
 def _cu_progress_text(progress: dict) -> str:
     """``6/9 goals · 1/3 phases · 2 not broken down`` — only the parts that exist."""
     progress = progress or {}
@@ -1347,7 +1368,7 @@ def build_parser() -> argparse.ArgumentParser:
                    help="active seconds for the whole run, pauses excluded (default 600)")
     r.add_argument("--usd-cap", type=float, default=0.5,
                    help="stop when Jev + model spend passes this (default 0.50)")
-    r.add_argument("--max-llm-calls", type=int, default=None, metavar="N",
+    r.add_argument("--max-llm-calls", type=_cu_llm_calls, default=None, metavar="N",
                    help="planning-model calls for the run, 1-200 (default: automatic — 40, "
                         "raised per phase of a long command)")
     r.add_argument("--flat", action="store_true",
@@ -1365,13 +1386,13 @@ def build_parser() -> argparse.ArgumentParser:
             "unless given here."),
     )
     rs.add_argument("run_id", metavar="RUN_ID", help="an id from 'jevskill cu runs'")
-    rs.add_argument("--model", help="planning model for the rest of the run "
-                                    "(default: the one the run started with)")
+    rs.add_argument("--model", help="planning model for the rest of the run, or 'none' for "
+                                    "Jev only (default: the one the run started with)")
     rs.add_argument("--total-budget-s", type=float, default=None,
                     help="active seconds across all segments (default: the checkpoint's)")
     rs.add_argument("--usd-cap", type=float, default=None,
                     help="spend cap for the whole run (default: the checkpoint's)")
-    rs.add_argument("--max-llm-calls", type=int, default=None, metavar="N",
+    rs.add_argument("--max-llm-calls", type=_cu_llm_calls, default=None, metavar="N",
                     help="planning-model calls for the whole run, 1-200 (default: the checkpoint's)")
     rs.add_argument("--ledger-dir", help="directory holding .jevskill/ledger.jsonl")
     rs.set_defaults(func=cmd_cu)

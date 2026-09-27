@@ -100,8 +100,11 @@ a dry run works anywhere. The console exposes the same operator as
 `GET /api/cu/status`, `GET /api/cu/models`, `GET /api/cu/runs`, `GET /api/cu/memory`,
 `POST /api/cu/start|plan|stop|confirm|pause|resume`, `POST /api/cu/memory/forget|clear`.
 `start` takes `hierarchical` (default true), `max_llm_calls` (1–200) and `max_leaves`
-(default 60); `resume` answers `404` for an unknown run and `409` for a finished
-one or one still alive in another console.
+(default 60); flags are JSON booleans (anything else is a `400`). `resume` takes
+`run_id`, `model` (absent: the checkpoint's; `null`, `""` or `"none"`: Jev only),
+and optional `total_budget_s`, `usd_cap`, `max_llm_calls` overrides; it answers
+`404` for an unknown run and `409` for a finished one, one still alive in another
+console, a damaged checkpoint, or one whose budget or cap is already spent.
 
 ## The zero-install scripts (`skills/jev/scripts/`)
 
