@@ -13,7 +13,10 @@ This module is what is kept. Four kinds of knowledge, each keyed so that a hit
 is a decision made by code, not a judgement:
 
 ``plans``    command template -> the goals that completed it. A hit skips the
-             planning call (6.3 s in that run).
+             planning call (6.3 s in that run). The same section holds goal
+             trees (keyed by the command template) and phase decompositions
+             (keyed by app and phase goal template) under their own key
+             prefixes; see :data:`TREE_PREFIX`.
 ``recipes``  (application, goal template) -> the actions that completed the
              goal, each with the identity of the control it acted on. A hit
              replays the goal with no Jev call and no model call; every step is
@@ -84,6 +87,19 @@ MAX_LESSONS = 2000
 PROMPT_LESSONS = 8
 PROMPT_SKILLS = 12
 SECTIONS = ("recipes", "plans", "lessons")
+#: Goal trees and phase decompositions are rows of ``plans`` under these
+#: prefixes, not a new section. An older build knows only :data:`SECTIONS` and
+#: merges the ``plans`` dict wholesale, so it carries these rows through its
+#: own saves untouched; a new section would be dropped by the first save of an
+#: old build still running in another process. ``command_key`` can never
+#: produce a ``\x1f``: the fingerprint re-joins ``str.split()``, and Python
+#: counts the unit separator as whitespace. So ``plan_for(command)`` cannot hand
+#: a tree to a build that would treat it as a flat list of goals.
+TREE_PREFIX = "tree\x1f"
+PHASE_PREFIX = "phase\x1f"
+#: The keys of a plan item that are copied as they are: they name no value the
+#: user supplied, so templating them could only corrupt them.
+_ITEM_PLAIN = ("kind", "app", "weight", "optional", "irreversible")
 #: How long a "forget" is remembered, so a stale copy in another process's
 #: memory cannot write the entry back. Ninety days is a size, not a measurement.
 FORGET_KEEP_S = 90 * 24 * 3600.0
@@ -183,6 +199,122 @@ def command_key(command: str) -> Tuple[str, List[str]]:
 def goal_key(goal: str) -> Tuple[str, List[str]]:
     values = extract_slots(goal)
     return goal_fingerprint(make_template(goal, values, ()) or ""), values
+
+
+def tree_key(command: str) -> str:
+    """The ``plans`` row of a goal tree learned for this command template."""
+    return TREE_PREFIX + command_key(command)[0]
+
+
+def phase_key(app: str, goal: str) -> str:
+    """The ``plans`` row of how this phase goal split into children in ``app``.
+
+    Keyed by the phase goal, not by the mission: "Save the document as
+    hello.txt" is the same three children inside any command that contains it.
+    """
+    return PHASE_PREFIX + _app_key(app) + "\x1f" + goal_key(goal)[0]
+
+
+def _template_items(items: Iterable[Any], goal_slots: Sequence[str] = (),
+                    command_slots: Sequence[str] = ()) -> List[Dict[str, Any]]:
+    """Nested plan items with every user-supplied value cut out into a marker.
+
+    Templated: ``goal``, ``done_when``, ``launch`` (when a string) and each
+    check's ``arg`` and ``text`` — a check that still said ``hello.txt`` would
+    pass or fail the next run on the wrong file. An item with no goal is
+    dropped with its children: it cannot be run, only guessed at.
+    """
+    out: List[Dict[str, Any]] = []
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        goal = str(item.get("goal") or "").strip()
+        if not goal:
+            continue
+        row: Dict[str, Any] = {
+            "goal": make_template(goal, goal_slots, command_slots),
+            "done_when": make_template(str(item.get("done_when") or ""), goal_slots,
+                                       command_slots),
+        }
+        launch = item.get("launch")
+        row["launch"] = (make_template(launch, goal_slots, command_slots)
+                         if isinstance(launch, str) else launch)
+        for key in _ITEM_PLAIN:
+            if key in item:
+                row[key] = item[key]
+        checks = item.get("checks")
+        if isinstance(checks, list):
+            row["checks"] = [
+                {"kind": check.get("kind"),
+                 "arg": make_template(check.get("arg"), goal_slots, command_slots)
+                 if isinstance(check.get("arg"), str) else check.get("arg"),
+                 "text": make_template(check.get("text"), goal_slots, command_slots)
+                 if isinstance(check.get("text"), str) else check.get("text")}
+                for check in checks if isinstance(check, dict)]
+        children = item.get("children")
+        if isinstance(children, list):
+            row["children"] = _template_items(children, goal_slots, command_slots)
+        out.append(row)
+    return out
+
+
+def _fill_items(items: Iterable[Any], goal_slots: Sequence[str] = (),
+                command_slots: Optional[Sequence[str]] = ()) -> Optional[List[Dict[str, Any]]]:
+    """The inverse of :func:`_template_items`, or ``None`` if any marker has no
+    value. All or nothing: a tree with one unfilled check would verify a goal
+    against an empty string, and a half-filled tree is a false hit."""
+    out: List[Dict[str, Any]] = []
+
+    def put(value: Any) -> Tuple[bool, Any]:
+        if not isinstance(value, str):
+            return True, value
+        filled = fill(value, goal_slots, command_slots)
+        return filled is not None, filled
+
+    for item in items or []:
+        if not isinstance(item, dict):
+            return None
+        ok, goal = put(item.get("goal") or "")
+        if not ok or not str(goal or "").strip():
+            return None
+        ok, done_when = put(item.get("done_when") or "")
+        if not ok:
+            return None
+        ok, launch = put(item.get("launch"))
+        if not ok:
+            return None
+        row: Dict[str, Any] = {"goal": goal, "done_when": done_when or "", "launch": launch}
+        for key in _ITEM_PLAIN:
+            if key in item:
+                row[key] = item[key]
+        checks = item.get("checks")
+        if isinstance(checks, list):
+            row["checks"] = []
+            for check in checks:
+                if not isinstance(check, dict):
+                    continue
+                ok_arg, arg = put(check.get("arg"))
+                ok_text, text = put(check.get("text"))
+                if not (ok_arg and ok_text):
+                    return None
+                row["checks"].append({"kind": check.get("kind"), "arg": arg, "text": text})
+        children = item.get("children")
+        if isinstance(children, list):
+            filled_children = _fill_items(children, goal_slots, command_slots)
+            if filled_children is None:
+                return None
+            row["children"] = filled_children
+        out.append(row)
+    return out
+
+
+def _plan_kind(key: str) -> str:
+    """``tree``, ``phase`` or ``plan`` — which kind of ``plans`` row a key is."""
+    if key.startswith(TREE_PREFIX):
+        return "tree"
+    if key.startswith(PHASE_PREFIX):
+        return "phase"
+    return "plan"
 
 
 def _norm_title(title: str) -> str:
@@ -402,7 +534,12 @@ class Lesson:
 
     def line(self) -> str:
         what = describe(self.op, self.identity, self.key)
-        if self.kind == "act_error":
+        if self.kind == "subgoal":
+            # A child goal a tree repair gave up on: the expand and repair
+            # prompts must not propose the same wording again.
+            text = 'sub-goal "%s" failed: %s' % (display_template(self.key or ""),
+                                                 self.error[:80] or "no reason")
+        elif self.kind == "act_error":
             text = "%s failed (%s)" % (what, self.error[:80] or "refused")
         elif self.kind == "refused":
             text = "%s was refused: %s" % (what, self.error[:80])
@@ -731,6 +868,124 @@ class Experience:
             memory.last_used = time.time()
         self._autosave()
 
+    # ---- trees and decompositions ------------------------------------------
+    def _store_plan(self, key: str, command: str, example: str,
+                    items: List[Dict[str, Any]], model: str) -> None:
+        """One ``plans`` row, counted exactly as :meth:`learn_plan` counts it."""
+        now = time.time()
+        with self._lock:
+            old = self.plans.get(key)
+            self.plans[key] = PlanMemory(
+                command=command, example=example[:300], steps=items,
+                model=model or (old.model if old else ""),
+                successes=(old.successes if old else 0) + 1,
+                failures=old.failures if old else 0, streak_failed=0,
+                created=old.created if old else now, last_used=now)
+            self._bound(self.plans, MAX_PLANS)
+        self._autosave()
+
+    def _row_failed(self, key: str) -> None:
+        with self._lock:
+            memory = self.plans.get(key)
+            if memory is None:
+                return
+            memory.failures += 1
+            memory.streak_failed += 1
+            memory.last_used = time.time()
+        self._autosave()
+
+    def _usable_steps(self, key: str) -> Optional[PlanMemory]:
+        with self._lock:
+            memory = self.plans.get(key)
+        if memory is None or not memory.usable or not memory.steps:
+            return None
+        return memory
+
+    def learn_tree(self, command: str, items: Iterable[Dict[str, Any]], model: str = "") -> None:
+        """Keep the goal tree that completed ``command``.
+
+        ``items`` are the root's children that finished done, in order, each
+        with its own done children nested. Templated with the **command's**
+        slots: the tree is a fact about this command template, and a phase's
+        own values are the command's values in the first place.
+        """
+        _, values = command_key(command)
+        rows = _template_items(items, (), values)
+        if not rows:
+            return
+        self._store_plan(tree_key(command), tree_key(command),
+                         "tree: " + str(command)[:290], rows, model)
+
+    def tree_for(self, command: str) -> Optional[Tuple[List[Dict[str, Any]], PlanMemory]]:
+        """The remembered tree for this command, filled with its values."""
+        memory = self._usable_steps(tree_key(command))
+        if memory is None:
+            return None
+        filled = _fill_items(memory.steps, (), command_key(command)[1])
+        if not filled:
+            return None
+        return filled, memory
+
+    def tree_failed(self, command: str) -> None:
+        self._row_failed(tree_key(command))
+
+    def learn_decomposition(self, app: str, goal: str, children: Iterable[Dict[str, Any]],
+                            model: str = "") -> None:
+        """Keep how a phase goal split into children in ``app``.
+
+        Templated with the **phase goal's** slots (``g`` markers), so "Save the
+        document as ⟦g0⟧" serves any file name, inside any mission that
+        contains the phase. A child value that is not in the phase goal stays
+        literal, and a phase whose goal differs in any other word misses.
+        """
+        if not _app_key(app):
+            return
+        key = phase_key(app, goal)
+        rows = _template_items(children, goal_key(goal)[1], ())
+        if not rows:
+            return
+        self._store_plan(key, key, "phase: " + str(goal)[:290], rows, model)
+
+    def decomposition_for(self, app: str, goal: str
+                          ) -> Optional[Tuple[List[Dict[str, Any]], PlanMemory]]:
+        if not _app_key(app):
+            return None
+        memory = self._usable_steps(phase_key(app, goal))
+        if memory is None:
+            return None
+        # ``None`` for the command slots: a decomposition never learned one,
+        # and a ``c`` marker in it would be a value from some other mission.
+        filled = _fill_items(memory.steps, goal_key(goal)[1], None)
+        if not filled:
+            return None
+        return filled, memory
+
+    def decomposition_failed(self, app: str, goal: str) -> None:
+        if not _app_key(app):
+            return
+        self._row_failed(phase_key(app, goal))
+
+    def learn_subgoal_lesson(self, app: str, phase_goal: str, child_goal: str,
+                             stop_reason: Any) -> None:
+        """A child goal a tree repair superseded, so the next expand of this
+        phase does not propose the same child again."""
+        if not _app_key(app):
+            return
+        child = goal_key(child_goal)[0][:120]
+        key = self.lesson_key(app, phase_goal, "subgoal", None, child)
+        now = time.time()
+        with self._lock:
+            lesson = self.lessons.get(key) or Lesson(
+                app=_app_key(app), goal=goal_key(phase_goal)[0], op="subgoal",
+                key=child, kind="subgoal")
+            lesson.kind = "subgoal"
+            lesson.error = str(stop_reason if stop_reason is not None else "")[:200]
+            lesson.count += 1
+            lesson.last_used = now
+            self.lessons[key] = lesson
+            self._bound(self.lessons, MAX_LESSONS)
+        self._autosave()
+
     # ---- recipes ----------------------------------------------------------
     def recipe_for(self, app: str, goal: str, *, usable_only: bool = True) -> Optional[Recipe]:
         with self._lock:
@@ -898,7 +1153,9 @@ class Experience:
                              "replay_ms": round(r.replay_ms), "last_used": r.last_used,
                              "last_error": r.last_error}
                             for k, r in recipes],
-                "plans": [{"key": k, "command": p.example or p.command,
+                # ``goals`` is the top level of ``steps`` in all three kinds:
+                # a tree's phases, a decomposition's children, a plan's goals.
+                "plans": [{"key": k, "kind": _plan_kind(k), "command": p.example or p.command,
                            "goals": [display_template(s.get("goal", "")) for s in p.steps],
                            "successes": p.successes, "failures": p.failures,
                            "usable": p.usable, "model": p.model, "last_used": p.last_used}
@@ -1036,7 +1293,8 @@ class Experience:
         return True
 
 
-__all__ = ["DEFAULT_PATH", "DEMOTE_AFTER", "Experience", "Lesson", "PlanMemory",
-           "Recipe", "RecipeStep", "Trajectory", "command_key", "describe",
-           "display_template", "extract_slots", "fill", "goal_key", "has_markers",
-           "identity_of", "literal_check", "make_template", "recipe_check", "resolve"]
+__all__ = ["DEFAULT_PATH", "DEMOTE_AFTER", "Experience", "Lesson", "PHASE_PREFIX",
+           "PlanMemory", "Recipe", "RecipeStep", "TREE_PREFIX", "Trajectory",
+           "command_key", "describe", "display_template", "extract_slots", "fill",
+           "goal_key", "has_markers", "identity_of", "literal_check", "make_template",
+           "phase_key", "recipe_check", "resolve", "tree_key"]

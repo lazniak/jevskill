@@ -53,11 +53,16 @@ from typing import Any, Callable, Dict, List, Optional, Sequence
 from ..errors import JevConfigError
 from ..stats import Ledger, ledger_path
 from . import act as act_module
+from .agenda import (MAX_CHILDREN, MAX_LEAVES, MAX_PHASES, MAX_REPAIRS_PER_NODE, MAX_REPAIRS_TOTAL,
+                     MAX_SAME_GOAL_FAILS, MIN_LEAF_S, MIN_PHASE_S, PHASE_SLACK, PlanNode,
+                     child_prefix, coerce_tree, evaluate_checks, quote_on_screen,
+                     repair_prefix)
 from .contract import RunOptions, RunResult, StepRecord
 from .experience import (Experience, Recipe, RecipeStep, Trajectory, command_key,
-                         describe, extract_slots, fill, has_markers, identity_of,
+                         extract_slots, fill, goal_key, has_markers, identity_of,
                          literal_check, recipe_check, resolve)
 from .hashing import tree_hash
+from .journal import STALE_S, RunNotResumable, RunStore, UnknownRun, valid_run_id
 from .killswitch import STOP_FILE_NAME, KillSwitch, Stopped
 from .llm import LLMError, OpenRouterLLM, cached_models, pricing_table
 from .reduce import candidates as reduce_candidates
@@ -98,6 +103,18 @@ LAUNCH_POLL_S = 0.1
 #: long to show it. Settle's usual 800 ms called a dialog that paints in about
 #: a second "unchanged" and would have failed a correct recipe.
 REPLAY_NEW_WINDOW_MS = 2000.0
+#: A mission's planning-model allowance. A flat run keeps MAX_LLM_CALLS; each
+#: phase of a tree adds its expansion and a little recovery, up to a ceiling a
+#: runaway plan cannot talk its way past. Design bounds, not measurements.
+LLM_CAP_CEIL = 200
+LLM_CAP_PER_PHASE = 6
+#: A live run rewrites its checkpoint at least this often, so another console
+#: can tell a run that is working (fresh heartbeat) from one whose process died.
+HEARTBEAT_S = 5.0
+#: A pause longer than this ends the run as stopped; it stays resumable.
+PAUSE_MAX_S = 1800.0
+#: Checkpoint directories kept; the oldest go when a run starts.
+RUNS_KEPT = 50
 
 #: Programs a plan may start without asking. Anything else goes through the
 #: same confirm gate as a destructive click — a model that decides to launch
@@ -111,6 +128,38 @@ LAUNCH_ALLOW = frozenset({
 ESCALATION_OPS = frozenset({"click", "type", "select", "scroll_up", "scroll_down",
                             "key", "wait"})
 
+#: The break-down call: one phase into leaves, from the screen the previous
+#: goal left. It must not contain "plan desktop tasks" (the planning prompt's
+#: marker) — fakes and logs tell the two families apart by it.
+EXPAND_SYSTEM = (
+    "You break one phase of a long desktop task into sub-goals for a UI agent on Windows "
+    "that sees UI Automation trees (roles, names, values), not pixels, one action per step. "
+    "Return 1-8 children that finish THIS phase starting from `screen`. Same rules as "
+    "planning: each leaf one short English imperative inside a single window or dialog, "
+    "observable `done_when`, text to type in the user's language inside double quotes "
+    "verbatim, `launch` only when a program must start, full paths in file dialogs, "
+    "visible controls and menus over key chords. A child may be `\"kind\": \"phase\"` "
+    "(with `done_when`, no children) only when `depth` < 3 and it clearly needs more than 8 "
+    "actions. `lessons` are earlier failures here; reuse `known_goals` wording verbatim when "
+    "one fits. Never add delete/send/pay/overwrite steps the command does not ask for. "
+    "Reply with JSON only: {\"steps\": [...], \"note\": \"\"}")
+#: The tree repair: only the failed scope's remaining work may change. It says
+#: "ended without" like the flat re-plan, so an older fake answers give_up.
+REPAIR_SYSTEM = (
+    "Part of a long desktop task ended without finishing. Only the remaining work inside "
+    "`scope` may change; completed siblings stay done. If the failed item's end state is "
+    "already visible on `screen`, answer completed=true and copy into `quote` a string that "
+    "appears verbatim in the screen JSON and proves it. Otherwise return in `steps` the "
+    "remaining children of `scope`, revised to continue from THIS screen (same rules as "
+    "planning). Never repeat a goal listed in `failed_twice`. skip=true only if the failed "
+    "item is optional. escalate_up=true when `scope` itself is wrong and the level above "
+    "must re-plan. ask_user: one short question when a person must act first (log in, pick "
+    "a file). give_up: the reason when continuing is unsafe. interrupted=true means the run "
+    "stopped or crashed while the item ran and it had acted `acted` times: never redo "
+    "typing or saving the screen shows already happened. Reply with JSON only: "
+    "{\"completed\": false, \"quote\": \"\", \"steps\": [], \"skip\": false, "
+    "\"escalate_up\": false, \"ask_user\": null, \"give_up\": null}")
+
 _QUOTED = re.compile(r'"([^"\n]{1,400})"|„([^”\n]{1,400})”|«([^»\n]{1,400})»|`([^`\n]{1,400})`')
 
 
@@ -122,8 +171,15 @@ class OperatorUnavailable(RuntimeError):
     """A live run cannot happen here (not Windows, no ``comtypes``)."""
 
 
+class NotRunning(LookupError):
+    """``pause`` was asked with no active run."""
+
+
 @dataclass
 class PlanStep:
+    """One goal the loop drives — a leaf of the plan tree, in the flat form the
+    panel and the ledger have always read (``run.plan``)."""
+
     goal: str
     done_when: str = ""
     launch: Optional[str] = None
@@ -134,12 +190,51 @@ class PlanStep:
     tokens_in: int = 0
     cost_usd: float = 0.0
     wall_ms: float = 0.0
+    #: Where the goal sits in the tree: its node, depth, and its phase's goal
+    #: ("" for a goal directly under the command).
+    node_id: str = ""
+    depth: int = 1
+    phase: str = ""
+    #: What proved it done: code, replay, jev, model, children or user.
+    evidence: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         return {"goal": self.goal, "done_when": self.done_when, "launch": self.launch,
                 "status": self.status, "stop_reason": self.stop_reason, "note": self.note,
                 "steps": self.steps, "tokens_in": self.tokens_in,
-                "cost_usd": round(self.cost_usd, 8), "wall_ms": round(self.wall_ms, 1)}
+                "cost_usd": round(self.cost_usd, 8), "wall_ms": round(self.wall_ms, 1),
+                "node_id": self.node_id, "depth": self.depth, "phase": self.phase,
+                "evidence": self.evidence}
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any], node: Any = None) -> "PlanStep":
+        """Rebuild from a checkpoint; the node's own fields win when given."""
+        data = data if isinstance(data, dict) else {}
+        step = cls(goal=str(data.get("goal") or getattr(node, "goal", "") or ""),
+                   done_when=str(data.get("done_when") or getattr(node, "done_when", "") or ""),
+                   launch=data.get("launch", getattr(node, "launch", None)),
+                   status=str(data.get("status") or "pending"),
+                   stop_reason=str(data.get("stop_reason") or ""),
+                   note=str(data.get("note") or ""), steps=int(data.get("steps") or 0),
+                   tokens_in=int(data.get("tokens_in") or 0),
+                   cost_usd=float(data.get("cost_usd") or 0.0),
+                   wall_ms=float(data.get("wall_ms") or 0.0),
+                   node_id=str(data.get("node_id") or ""), depth=int(data.get("depth") or 1),
+                   phase=str(data.get("phase") or ""), evidence=str(data.get("evidence") or ""))
+        if node is not None:
+            step.goal, step.done_when, step.launch = node.goal, node.done_when, node.launch
+        return step
+
+
+def _step_for(node: Any) -> PlanStep:
+    """``make_step`` for :func:`coerce_tree`: a leaf's legacy view."""
+    return PlanStep(goal=node.goal, done_when=node.done_when, launch=node.launch,
+                    node_id=node.id, depth=node.depth)
+
+
+def _stem(name: str) -> str:
+    stem = os.path.basename(str(name or "")).strip().casefold()
+    return stem[:-4] if stem.endswith(".exe") else stem
 
 
 @dataclass
@@ -174,27 +269,101 @@ class Run:
         "replayed_goals": 0, "replayed_steps": 0, "replay_failures": 0,
         "code_verified": 0, "memory_answers": 0, "recipes_learned": 0,
         "lessons_learned": 0})
+    #: The plan as a tree (:mod:`jevskill.cu.agenda`); ``plan`` is its leaves.
+    tree: Optional[PlanNode] = None
+    #: May the planner answer with phases that are broken down later.
+    hierarchical: bool = True
+    llm_cap: int = MAX_LLM_CALLS
+    llm_cap_explicit: bool = False
+    max_leaves: int = MAX_LEAVES
+    repairs_total: int = 0
+    #: Active time: pauses are excluded, earlier segments carried over.
+    paused_s: float = 0.0
+    paused_since: float = 0.0
+    active_s_before: float = 0.0
+    #: 1 for a fresh run, +1 per resume.
+    segment: int = 1
+    #: The index of ``events[0]``: the in-memory list is a ring, the full log
+    #: is ``events.jsonl`` in the run's checkpoint directory.
+    events_base: int = 0
+    #: Which store a remembered plan came from: ``flat`` or ``tree``.
+    plan_memory: str = ""
+    heartbeat_at: float = 0.0
+    #: Process and title of the window, for re-pinning after a resume.
+    target_hint: Dict[str, Any] = field(default_factory=dict)
+    #: Checkpointed and journalled (a real run, not a planning preview).
+    persist: bool = False
 
     @property
     def active(self) -> bool:
-        return self.state in ("planning", "waiting_window", "running", "waiting_confirm")
+        return self.state in ("planning", "waiting_window", "running", "waiting_confirm",
+                              "paused")
+
+    def active_seconds(self, now: Optional[float] = None) -> float:
+        """Seconds of work so far, across resumes, pauses excluded."""
+        now = self.ended_at or (time.time() if now is None else now)
+        paused = self.paused_s + ((now - self.paused_since) if self.paused_since else 0.0)
+        return self.active_s_before + max(0.0, now - self.started_at - paused)
+
+    def progress(self) -> Dict[str, Any]:
+        root = self.tree
+        evidence = {k: 0 for k in ("code", "replay", "jev", "model", "children", "user")}
+        out: Dict[str, Any] = {"phases_done": 0, "phases_total": 0, "leaves_done": 0,
+                               "leaves_known": 0, "unexpanded_phases": 0, "current_path": [],
+                               "evidence": evidence,
+                               "active_s": round(self.active_seconds(), 1),
+                               "paused_s": round(self.paused_s, 1)}
+        if root is None:
+            return out
+        for node in root.walk():
+            if node is root or node.superseded:
+                continue
+            if node.kind == "phase":
+                out["phases_total"] += 1
+                out["phases_done"] += node.status == "done"
+                out["unexpanded_phases"] += not node.expanded
+            else:
+                out["leaves_known"] += 1
+                out["leaves_done"] += node.status == "done"
+            if node.status == "done" and node.evidence in evidence:
+                evidence[node.evidence] += 1
+        current = self._current_node()
+        if current is not None:
+            out["current_path"] = [n.goal for n in current.path()[1:]]
+        return out
+
+    def _current_node(self) -> Optional[PlanNode]:
+        if self.tree is None:
+            return None
+        running = [n for n in self.tree.walk() if n.status == "running" and n is not self.tree]
+        return running[-1] if running else None
 
     def to_dict(self, since: int = 0) -> Dict[str, Any]:
-        events = self.events[max(0, int(since)):]
+        since = max(0, int(since))
+        events = self.events[max(0, since - self.events_base):]
+        current = self._current_node()
+        now = time.time()
         return {
             "run_id": self.id, "command": self.command, "model": self.model,
             "dry_run": self.dry_run, "state": self.state,
             "plan": [step.to_dict() for step in self.plan], "current": self.current,
-            "events": events, "next": len(self.events),
+            "events": events, "next": self.events_base + len(self.events),
+            "events_base": self.events_base, "events_truncated": since < self.events_base,
             "pending_confirm": self.pending_confirm,
             "spend": {k: (round(v, 8) if isinstance(v, float) else v)
                       for k, v in self.spend.items()},
             "started_at": self.started_at, "ended_at": self.ended_at,
-            "elapsed_s": round((self.ended_at or time.time()) - self.started_at, 1),
+            "elapsed_s": round(self.active_s_before + (self.ended_at or now) - self.started_at, 1),
             "stop_reason": self.stop_reason, "error": self.error,
             "limits": {"max_steps": self.max_steps, "budget_s": self.budget_s,
-                       "total_budget_s": self.total_budget_s, "usd_cap": self.usd_cap},
+                       "total_budget_s": self.total_budget_s, "usd_cap": self.usd_cap,
+                       "max_llm_calls": self.llm_cap, "max_leaves": self.max_leaves},
             "memory": dict(self.learned, enabled=self.memory, plan_source=self.plan_source),
+            "tree": self.tree.to_dict() if self.tree is not None else None,
+            "current_node": current.id if current is not None else None,
+            "progress": self.progress(), "paused": self.state == "paused",
+            "heartbeat_age_s": round(now - self.heartbeat_at, 1) if self.heartbeat_at else None,
+            "segment": self.segment, "hierarchical": self.hierarchical,
         }
 
 
@@ -357,6 +526,36 @@ def _default_launcher(target: str) -> None:
     subprocess.Popen([target], close_fds=True)
 
 
+class _GuardedBackend:
+    """The desktop backend, callable only from inside ``Operator._execute_hook``.
+
+    The hook is where the kill switch, the foreground rule and the action
+    counter live. A tree of plans adds many code paths that *think* about the
+    desktop — expansion, repair, phase acceptance, resume — and none of them
+    may act on it; this proxy makes that a runtime error instead of a code
+    review note. Attribute lookups pass through, so ``hasattr`` stays truthful.
+    """
+
+    __slots__ = ("_inner", "_operator")
+
+    def __init__(self, inner: Any, operator: "Operator") -> None:
+        object.__setattr__(self, "_inner", inner)
+        object.__setattr__(self, "_operator", operator)
+
+    def __getattr__(self, name: str) -> Any:
+        value = getattr(object.__getattribute__(self, "_inner"), name)
+        if not callable(value):
+            return value
+        operator = object.__getattribute__(self, "_operator")
+
+        def guarded(*args: Any, **kwargs: Any) -> Any:
+            if operator._acting <= 0:
+                raise RuntimeError("desktop action outside Operator._execute_hook: %s" % name)
+            return value(*args, **kwargs)
+
+        return guarded
+
+
 class Operator:
     """One instance per console process. See the module docstring."""
 
@@ -436,12 +635,52 @@ class Operator:
         #: back when the run ends if the foreground is still the agent's.
         self._user_front: int = 0
         self._goal_replayed: bool = False
+        #: Checkpoints and full event logs, one directory per run, next to the
+        #: ledger (and the stop file) so `jevskill cu` and the console share them.
+        self._journal = RunStore(ledger_path(ledger_root).parent / "cu_runs")
+        #: The tree node whose work is under way (spend rolls up its path).
+        self._current_node: Optional[PlanNode] = None
+        #: What proved the current goal done, set by the hook that proved it.
+        self._goal_evidence: str = ""
+        #: The last observation, reused by an expansion instead of a new walk.
+        self._last_snapshot: Any = None
+        #: >0 while ``_execute_hook`` is acting; ``_GuardedBackend`` checks it.
+        self._acting: int = 0
+        self._pause_requested: bool = False
+        self._resume_event = threading.Event()
+        self._checkpoint_warned: bool = False
+        self._last_checkpoint: float = 0.0
+        self._runs_cache: Any = (0.0, [])
+        #: The interrupted goal a resume decided to run again: its launch is
+        #: skipped when the program's window is already there.
+        self._resumed_leaf: str = ""
 
     # ------------------------------------------------------------------ public
     @property
     def busy(self) -> bool:
+        """A run is active — or its thread is still finishing it.
+
+        The state turns terminal inside ``_finish``, before the final
+        checkpoint is written and before ``_main`` disarms and resets the kill
+        switch. Reporting idle in that gap let a resume read the previous
+        checkpoint (active, fresh heartbeat) and refuse it, and let a new run's
+        armed switch be reset by the old thread (14 of 15 resumes refused in a
+        repro that resumed the moment ``busy`` turned False).
+        """
         run = self.run
-        return bool(run is not None and run.active)
+        if run is not None and run.active:
+            return True
+        thread = self._thread
+        return bool(thread is not None and thread.is_alive()
+                    and thread is not threading.current_thread())
+
+    def _settle_previous(self, timeout: float = 5.0) -> None:
+        """Let a run that has ended finish its bookkeeping before a new one
+        starts; never called with the lock held (``_finish`` takes it)."""
+        thread = self._thread
+        run = self.run
+        if thread is not None and thread is not threading.current_thread() and                 thread.is_alive() and (run is None or not run.active):
+            thread.join(timeout)
 
     def status(self, since: int = 0) -> Dict[str, Any]:
         with self._lock:
@@ -452,11 +691,19 @@ class Operator:
             payload["busy"] = self.busy
             payload["platform"] = self._platform_check()
             payload["kill_switch"] = self.kill.describe()
+            if not payload["busy"]:
+                payload["resumable"] = self._cached_runs()
             return payload
 
-    def plan(self, command: str, model: Optional[str], *, memory: bool = True) -> Dict[str, Any]:
+    def plan(self, command: str, model: Optional[str], *, memory: bool = True,
+             hierarchical: bool = True) -> Dict[str, Any]:
         """Plan without running. Touches nothing; calls the model unless the
-        command's plan is remembered (``memory=False`` asks the model anyway)."""
+        command's plan is remembered (``memory=False`` asks the model anyway).
+
+        ``steps`` are the command's direct children as plan items: a leaf is
+        today's step dict plus ``kind``; a phase carries its ``children`` once
+        broken down, so sending the preview back as ``plan`` keeps the tree.
+        """
         command = (command or "").strip()
         if not command:
             raise ValueError("the command is empty")
@@ -464,22 +711,25 @@ class Operator:
             # A STOP that ended the previous run must not veto this planning
             # call: the switch is armed per run, and between runs it is silent.
             self.kill.reset()
-        remembered = self.experience.plan_for(command) if memory else None
+        remembered = self._remembered_plan(command, memory, hierarchical)
         llm = self._make_llm(model) if remembered is None else None
         scratch = Run(id="plan", command=command, model=self._model_id(model),
-                      memory=bool(memory))
-        steps, note = self._plan(scratch, llm, command)
-        return {"steps": [s.to_dict() for s in steps], "note": note,
+                      memory=bool(memory), hierarchical=bool(hierarchical))
+        root, note = self._build_tree(scratch, llm)
+        return {"steps": self._preview(root), "note": note,
                 "model": scratch.model, "spend": scratch.spend,
-                "events": scratch.events, "source": scratch.plan_source}
+                "events": scratch.events, "source": scratch.plan_source,
+                "tree": root.to_dict()}
 
     def start(self, command: str, model: Optional[str] = None, *, dry_run: bool = False,
               plan: Optional[Sequence[Any]] = None, max_steps: int = 25,
               budget_s: float = 90.0, total_budget_s: float = 600.0,
-              usd_cap: float = 0.5, memory: bool = True) -> str:
+              usd_cap: float = 0.5, memory: bool = True, hierarchical: bool = True,
+              max_llm_calls: Optional[int] = None, max_leaves: int = MAX_LEAVES) -> str:
         command = (command or "").strip()
         if not command:
             raise ValueError("the command is empty")
+        self._settle_previous()
         with self._lock:
             if self.busy:
                 raise OperatorBusy("a run is already active: %s" % self.run.id)  # type: ignore[union-attr]
@@ -493,21 +743,23 @@ class Operator:
                       command=command, model=self._model_id(model), dry_run=bool(dry_run),
                       max_steps=max(1, int(max_steps)), budget_s=max(5.0, float(budget_s)),
                       total_budget_s=max(10.0, float(total_budget_s)),
-                      usd_cap=max(0.0, float(usd_cap)), memory=bool(memory))
+                      usd_cap=max(0.0, float(usd_cap)), memory=bool(memory),
+                      hierarchical=bool(hierarchical),
+                      max_leaves=min(200, max(1, int(max_leaves or MAX_LEAVES))))
+            if max_llm_calls is not None:
+                run.llm_cap = min(LLM_CAP_CEIL, max(1, int(max_llm_calls)))
+                run.llm_cap_explicit = True
             if plan:
-                run.plan = [self._coerce_step(item) for item in plan if item]
-                if not run.plan:
-                    raise ValueError("the supplied plan has no usable steps")
+                run.tree = self._user_tree(run, plan)
                 run.plan_source = "user"
+                self._sync_plan(run)
+            run.persist = True
             self.run = run
-            self._verify_cache = {}
-            self._target = {"hwnd": 0, "pid": 0}
-            self._abort_goal = ""
-            self._exec_failures = 0
-            self._agreed_done = ""
-            self._trajectory = None
-            self._user_front = 0
-            self._goal_replayed = False
+            self._reset_run_state()
+            try:
+                self._journal.prune(RUNS_KEPT)
+            except Exception:
+                pass
             self._thread = threading.Thread(target=self._main, args=(run, llm),
                                             name="jev-operator", daemon=True)
             self._thread.start()
@@ -523,7 +775,196 @@ class Operator:
         self.kill.trigger(reason)
         self._confirm_answer = False
         self._confirm_event.set()
+        self._resume_event.set()
         return self.status()
+
+    def pause(self, flag: bool = True) -> Dict[str, Any]:
+        """Hold the run at the next goal boundary (``flag=False`` continues).
+
+        Never inside a goal: a half-typed field or an open dialog is exactly
+        the state a pause must not leave behind. The kill switch stays armed.
+        """
+        with self._lock:
+            if not self.busy:
+                raise NotRunning("no run is active")
+            self._pause_requested = bool(flag)
+            if flag:
+                self._resume_event.clear()
+            else:
+                self._resume_event.set()
+        return self.status()
+
+    def runs(self) -> List[Dict[str, Any]]:
+        """Runs that can be resumed: stopped, interrupted (their process went
+        away mid-run), or failed with work left. Never a finished one."""
+        live = self.run.id if (self.run is not None and self.busy) else None
+        try:
+            return self._journal.resumable(live_run_id=live)
+        except Exception:
+            return []
+
+    def resume(self, run_id: str, model: Optional[str] = None, *,
+               total_budget_s: Optional[float] = None, usd_cap: Optional[float] = None,
+               max_llm_calls: Optional[int] = None) -> str:
+        """Continue a checkpointed run where it left off, in this process.
+
+        Refused (:class:`RunNotResumable`) when the run is done, or when its
+        checkpoint is fresh and its state active — it may be alive in another
+        console. Nothing is ever focused on resume: the window is re-pinned by
+        handle, else by process and title, else the user is asked to click it.
+        A goal that had already acted is not simply rerun (see ``_resume_leaf``).
+        Limits come from the checkpoint; the arguments override them.
+        """
+        run_id = valid_run_id(run_id)
+        self._settle_previous()
+        with self._lock:
+            if self.busy:
+                raise OperatorBusy("a run is already active: %s" % self.run.id)  # type: ignore[union-attr]
+            saved = self._journal.load(run_id)
+            state = str(saved.get("state") or "")
+            if state == "done":
+                raise RunNotResumable("run %s finished; there is nothing to resume" % run_id)
+            beat = float(saved.get("heartbeat_at") or 0.0)
+            if state in ("planning", "waiting_window", "running", "waiting_confirm", "paused") \
+                    and time.time() - beat <= STALE_S:
+                raise RunNotResumable("run %s wrote a checkpoint %.0f s ago and may still be "
+                                      "running in another console" % (run_id, time.time() - beat))
+            if not isinstance(saved.get("tree"), dict):
+                raise RunNotResumable("run %s has no plan to resume" % run_id)
+            dry_run = bool(saved.get("dry_run"))
+            if not dry_run:
+                platform = self._platform_check()
+                if not platform["ok"]:
+                    raise OperatorUnavailable(platform["reason"])
+                self._client()
+            model = model or saved.get("model")
+            llm = self._make_llm(model)
+            limits = saved.get("limits") or {}
+            run = Run(id=run_id, command=str(saved.get("command") or ""),
+                      model=self._model_id(model), dry_run=dry_run,
+                      max_steps=max(1, int(limits.get("max_steps") or 25)),
+                      budget_s=max(5.0, float(limits.get("budget_s") or 90.0)),
+                      total_budget_s=max(10.0, float(total_budget_s if total_budget_s
+                                                     else limits.get("total_budget_s") or 600.0)),
+                      usd_cap=max(0.0, float(usd_cap if usd_cap is not None
+                                             else limits.get("usd_cap", 0.5))),
+                      memory=bool(saved.get("memory", True)),
+                      hierarchical=bool(saved.get("hierarchical", True)),
+                      max_leaves=int(limits.get("max_leaves") or MAX_LEAVES))
+            run.llm_cap = int(limits.get("llm_cap") or MAX_LLM_CALLS)
+            run.llm_cap_explicit = bool(limits.get("llm_cap_explicit"))
+            if max_llm_calls is not None:
+                run.llm_cap = min(LLM_CAP_CEIL, max(1, int(max_llm_calls)))
+                run.llm_cap_explicit = True
+            run.segment = int(saved.get("segment") or 1) + 1
+            run.active_s_before = float(saved.get("active_s") or 0.0)
+            for key, value in (saved.get("spend") or {}).items():
+                if key in run.spend and isinstance(value, (int, float)):
+                    run.spend[key] = value
+            for key, value in (saved.get("learned") or {}).items():
+                if key in run.learned and isinstance(value, int):
+                    run.learned[key] = value
+            run.repairs_total = run.replans = int(saved.get("repairs_total") or 0)
+            run.plan_source = str(saved.get("plan_source") or "")
+            run.plan_memory = str(saved.get("plan_memory") or "")
+            run.events_base = int(saved.get("events_next") or 0)
+            run.tree = PlanNode.from_dict(saved["tree"], step_loader=PlanStep.from_dict)
+            open_nodes = self._reopen(run)
+            target = saved.get("target") or {}
+            self._target = {"hwnd": 0, "pid": 0}
+            hwnd, pid = int(target.get("hwnd") or 0), int(target.get("pid") or 0)
+            if not dry_run and hwnd and pid:
+                try:
+                    same = int(self._window_pid(hwnd) or 0) == pid and \
+                        _stem(self._window_process(hwnd)) == _stem(target.get("process") or "")
+                except Exception:
+                    same = False
+                if same:
+                    self._target = {"hwnd": hwnd, "pid": pid}
+            if not self._target["pid"]:
+                run.target_hint = {"process": str(target.get("process") or ""),
+                                   "title": str(target.get("title") or "")}
+            self._sync_plan(run)
+            run.persist = True
+            self.run = run
+            target_kept = dict(self._target)
+            self._reset_run_state()
+            self._target = target_kept
+            self._event(run, "resume", "resuming run %s — segment %d, %d open item%s%s" % (
+                run.id, run.segment, open_nodes, "" if open_nodes == 1 else "s",
+                "" if run.dry_run else ("; the window is still there" if self._target["pid"]
+                                        else "; the window will be found again")),
+                {"segment": run.segment, "open": open_nodes})
+            self._thread = threading.Thread(target=self._main, args=(run, llm),
+                                            name="jev-operator", daemon=True)
+            self._thread.start()
+            return run.id
+
+    def _reopen(self, run: Run) -> int:
+        """Make a checkpointed tree runnable again; the number of open items.
+
+        A leaf left ``running`` was interrupted mid-goal: it becomes
+        ``interrupted`` and goes through ``_resume_leaf``. A failed item that
+        ended the run is opened again — resuming is the user asking to retry —
+        as ``interrupted`` when it had acted, ``pending`` when it had not.
+        Phases still open restart their clock with what they had left.
+        """
+        root = run.tree
+        assert root is not None
+        root.status = "running"
+        count = 0
+        now = time.time()
+        for node in root.walk():
+            if node is root or node.superseded:
+                continue
+            if node.kind == "leaf":
+                if node.status == "running":
+                    node.status = "interrupted"
+                elif node.status == "failed":
+                    node.status = "interrupted" if node.acted else "pending"
+                if node.status in ("pending", "interrupted", "stopped"):
+                    count += 1
+                if node.step is not None:
+                    node.step.status = node.status if node.status in (
+                        "done", "failed", "skipped") else "pending"
+            else:
+                if node.status == "failed":
+                    node.status = "pending"
+                if node.status == "running":
+                    node.budget_s = max(MIN_PHASE_S, node.budget_s - float(
+                        node.spend.get("active_s") or 0.0)) if node.budget_s else 0.0
+                    node.started_at, node.paused_mark = now, 0.0
+                if node.status in ("pending", "running"):
+                    count += 1
+        return count
+
+    def _reset_run_state(self) -> None:
+        """Per-run operator fields, reset by ``start`` and ``resume`` alike."""
+        self._verify_cache = {}
+        self._target = {"hwnd": 0, "pid": 0}
+        self._abort_goal = ""
+        self._exec_failures = 0
+        self._agreed_done = ""
+        self._trajectory = None
+        self._user_front = 0
+        self._goal_replayed = False
+        self._current_node = None
+        self._goal_evidence = ""
+        self._last_snapshot = None
+        self._acting = 0
+        self._pause_requested = False
+        self._resume_event.clear()
+        self._checkpoint_warned = False
+        self._last_checkpoint = 0.0
+        self._runs_cache = (0.0, [])
+        self._resumed_leaf = ""
+
+    def _cached_runs(self) -> List[Dict[str, Any]]:
+        stamp, rows = self._runs_cache
+        if time.time() - stamp > 5.0:
+            rows = self.runs()
+            self._runs_cache = (time.time(), rows)
+        return rows
 
     def confirm(self, allow: bool) -> Dict[str, Any]:
         with self._lock:
@@ -561,79 +1002,276 @@ class Operator:
                     pass
 
     def _execute_run(self, run: Run, llm: Any) -> None:
+        """One cursor over the plan tree, strictly sequential, one desktop.
+
+        Only leaves act: every desktop effect below comes from ``_run_leaf``
+        (the loop, or a replay, both through ``_execute_hook``) or a launch.
+        Phases are broken down when the cursor reaches them, from the screen
+        the previous goal left, and a failure is repaired in the scope that
+        failed — its phase — before the level above is asked.
+        """
         self._event(run, "start", "run %s — %s%s" % (
             run.id, "DRY RUN (simulated), " if run.dry_run else "",
             "model %s" % run.model if run.model else "Jev only, no planning model"))
         self._event(run, "kill_switch", self._kill_text())
-        if not run.plan:
+        if run.tree is None:
             self._set_state(run, "planning")
-            steps, note = self._plan(run, llm, run.command)
-            run.plan = steps
+            run.tree, note = self._build_tree(run, llm)
             if note:
                 self._event(run, "plan_note", note)
-        self._event(run, "plan", "%d step%s" % (len(run.plan), "" if len(run.plan) == 1 else "s"),
-                    {"steps": [s.to_dict() for s in run.plan]})
-        index = 0
-        while index < len(run.plan):
+        self._sync_plan(run)
+        phases = [c for c in run.tree.children if c.kind == "phase"]
+        self._event(run, "plan", "%d step%s%s" % (
+            len(run.plan), "" if len(run.plan) == 1 else "s",
+            (" in %d phase%s" % (len(phases), "" if len(phases) == 1 else "s")) if phases else ""),
+            {"steps": [s.to_dict() for s in run.plan], "tree": run.tree.to_dict()})
+        if phases and not run.llm_cap_explicit:
+            run.llm_cap = min(LLM_CAP_CEIL, MAX_LLM_CALLS + LLM_CAP_PER_PHASE * len(phases))
+        self._checkpoint(run, force=True)
+        while True:
             self._check_budget(run)
-            step = run.plan[index]
-            run.current = index
-            step.status = "running"
-            self._set_state(run, "running")
-            self._event(run, "goal", "goal %d/%d: %s" % (index + 1, len(run.plan), step.goal),
-                        {"index": index})
-            self._before_goal(run, step, index)
-            self._trajectory = Trajectory(cap=OPERATOR_CAP)
-            self._goal_replayed = False
-            goal_started = time.perf_counter()
-            result = self._run_goal(run, llm, step, index)
-            step.stop_reason = result.stop_reason
-            step.steps = len(result.steps)
-            step.wall_ms = result.wall_ms
-            step.tokens_in += result.tokens_in
-            step.cost_usd += result.cost_usd
-            if result.stop_reason == "error" and result.error.startswith("Stopped"):
-                raise Stopped(result.error.split(":", 1)[-1].strip() or self.kill.reason)
-            if self.kill.event.is_set():
-                # STOP that landed while the goal was waiting on a confirmation:
-                # the gate answered "deny", the loop ended the goal as `blocked`,
-                # and without this check a Jev-only run would go on to report
-                # itself *failed* — the user pressed STOP, and that is the reason.
-                raise Stopped(self.kill.reason or "stopped")
-            agreed = self._agreed_done if result.stop_reason == "escalated" else ""
-            if result.stop_reason == "done" or agreed:
-                step.status = "done"
-                if agreed:
-                    step.stop_reason = "done"
-                    step.note = agreed[:200]
-                self._event(run, "goal_done", "goal %d done after %d step%s%s%s" % (
-                    index + 1, step.steps, "" if step.steps == 1 else "s",
-                    " from memory" if self._goal_replayed else "",
-                    (" — %s judged it complete: %s" % (run.model, agreed)) if agreed else ""))
-                self._learn_goal(run, step, True, goal_started)
-                index += 1
+            self._pause_point(run)
+            node = run.tree.next_open()
+            if node is None:
+                break
+            self._enter_chain(run, node)
+            if node.kind == "phase":
+                if not node.expanded:
+                    self._expand(run, llm, node)
+                    self._sync_plan(run)
+                    self._checkpoint(run, force=True)
+                    continue
+                if not self._close_phase(run, llm, node):
+                    if not self._repair_up(run, llm, node, None, reason=node.stop_reason):
+                        return self._fail_run(run, node)
+                    self._sync_plan(run)
                 continue
-            step.note = (result.error or (result.steps[-1].note if result.steps else ""))[:200]
-            self._event(run, "goal_stalled", "goal %d ended: %s%s" % (
-                index + 1, result.stop_reason, (" — " + step.note) if step.note else ""))
-            verdict = self._replan(run, llm, index, result)
-            if verdict == "completed":
-                step.status = "done"
-                self._learn_goal(run, step, True, goal_started)
-                index += 1
+            spent = self._phase_over_budget(run, node)
+            if spent is not None:
+                spent.status, spent.stop_reason = "failed", "phase_budget"
+                self._event(run, "phase", "phase %s spent its %.0f s: %s" % (
+                    spent.id, spent.budget_s, spent.goal[:80]), {"node": spent.id})
+                if not self._repair_up(run, llm, spent, None, reason="phase budget spent"):
+                    return self._fail_run(run, spent)
+                self._sync_plan(run)
                 continue
-            self._learn_goal(run, step, False, goal_started)
-            if verdict == "revised":
-                step.status = "failed"
-                index += 1
+            if node.status in ("interrupted", "stopped"):
+                verdict = self._resume_leaf(run, llm, node)
+                if verdict in ("done", "handled"):
+                    self._sync_plan(run)
+                    continue
+                if verdict == "failed":
+                    return self._fail_run(run, node)
+            result, started = self._run_leaf(run, llm, node)
+            if node.status == "done":
                 continue
-            step.status = "failed"
-            self._forget_failed_plan(run)
-            self._finish(run, "failed", stop_reason=result.stop_reason,
-                         error=step.note or result.stop_reason)
-            return
+            if not self._repair_up(run, llm, node, result, started=started):
+                return self._fail_run(run, node)
+            self._sync_plan(run)
         self._learn_plan(run)
         self._finish(run, "done")
+
+    def _run_leaf(self, run: Run, llm: Any, node: PlanNode):
+        """Drive one goal; ``(result, started)``. The node ends ``done`` or
+        ``failed`` — a failed goal never asks for its own recovery; its
+        parent's scope does (``_repair_up``)."""
+        step = node.step
+        if step is None:
+            step = node.step = _step_for(node)
+            self._sync_plan(run)
+        index = run.plan.index(step) if step in run.plan else len(run.plan)
+        run.current = index
+        self._set_node(node, "running")
+        node.acted = 0
+        node.started_at, node.paused_mark = time.time(), run.paused_s
+        self._current_node = node
+        self._goal_evidence = ""
+        self._set_state(run, "running")
+        self._event(run, "goal", "goal %d/%d: %s" % (index + 1, len(run.plan), step.goal),
+                    {"index": index, "node_id": node.id, "phase": step.phase})
+        self._before_goal(run, node)
+        self._trajectory = Trajectory(cap=OPERATOR_CAP)
+        self._goal_replayed = False
+        goal_started = time.perf_counter()
+        result = self._run_goal(run, llm, step, index, budget_s=self._leaf_budget(run, node))
+        step.stop_reason = result.stop_reason
+        step.steps = len(result.steps)
+        step.wall_ms = result.wall_ms
+        step.tokens_in += result.tokens_in
+        step.cost_usd += result.cost_usd
+        node.stop_reason = result.stop_reason
+        if result.stop_reason == "error" and result.error.startswith("Stopped"):
+            raise Stopped(result.error.split(":", 1)[-1].strip() or self.kill.reason)
+        if self.kill.event.is_set():
+            # STOP that landed while the goal was waiting on a confirmation:
+            # the gate answered "deny", the loop ended the goal as `blocked`,
+            # and without this check a Jev-only run would go on to report
+            # itself *failed* — the user pressed STOP, and that is the reason.
+            raise Stopped(self.kill.reason or "stopped")
+        agreed = self._agreed_done if result.stop_reason == "escalated" else ""
+        node.ended_at = time.time()
+        if result.stop_reason == "done" or agreed:
+            evidence = "replay" if self._goal_replayed else \
+                ("model" if agreed else (self._goal_evidence or "jev"))
+            self._set_node(node, "done", evidence=evidence)
+            if agreed:
+                step.stop_reason = node.stop_reason = "done"
+                step.note = node.note = agreed[:200]
+            self._event(run, "goal_done", "goal %d done after %d step%s%s%s" % (
+                index + 1, step.steps, "" if step.steps == 1 else "s",
+                " from memory" if self._goal_replayed else "",
+                (" — %s judged it complete: %s" % (run.model, agreed)) if agreed else ""),
+                {"node_id": node.id, "evidence": evidence})
+            self._learn_goal(run, step, True, goal_started)
+            self._checkpoint(run, force=True)
+            return result, goal_started
+        step.note = node.note = (result.error or (result.steps[-1].note if result.steps else ""))[:200]
+        trajectory = self._trajectory
+        node.tried = list(trajectory.tried()) if trajectory is not None else []
+        self._set_node(node, "failed")
+        self._event(run, "goal_stalled", "goal %d ended: %s%s" % (
+            index + 1, result.stop_reason, (" — " + step.note) if step.note else ""),
+            {"node_id": node.id})
+        return result, goal_started
+
+    # ------------------------------------------------------------ the tree
+    def _set_node(self, node: PlanNode, status: str, *, evidence: str = "") -> None:
+        node.status = status
+        if evidence:
+            node.evidence = evidence
+        if status in ("done", "failed", "skipped"):
+            node.ended_at = node.ended_at or time.time()
+        step = node.step
+        if step is not None:
+            step.status = status if status in ("pending", "running", "done", "failed",
+                                               "skipped", "stopped") else "pending"
+            if evidence:
+                step.evidence = evidence
+
+    def _new_root(self, run: Run) -> PlanNode:
+        return PlanNode(id="0", goal=run.command, kind="phase", depth=0, expanded=True,
+                        status="running", source=run.plan_source, started_at=time.time())
+
+    def _sync_plan(self, run: Run) -> None:
+        """``run.plan`` is the tree's leaves in order — the flat view the panel,
+        the ledger and every earlier test read. A leaf remembers its phase."""
+        if run.tree is None:
+            return
+        plan: List[PlanStep] = []
+        for leaf in run.tree.leaves():
+            if leaf.step is None:
+                leaf.step = _step_for(leaf)
+            step = leaf.step
+            step.node_id, step.depth = leaf.id, leaf.depth
+            parent = leaf.parent
+            step.phase = parent.goal if parent is not None and parent is not run.tree else ""
+            plan.append(step)
+        run.plan = plan
+
+    def _preview(self, root: PlanNode) -> List[Dict[str, Any]]:
+        """The root's children as plan items (see ``plan``)."""
+        out = []
+        for child in root.children:
+            if child.kind == "leaf" and child.step is not None:
+                item = child.step.to_dict()
+                item.update(kind="leaf", app=child.app, checks=[c.to_dict() for c in child.checks],
+                            optional=child.optional, irreversible=child.irreversible)
+            else:
+                item = child.item()
+            out.append(item)
+        return out
+
+    def _user_tree(self, run: Run, plan: Sequence[Any]) -> PlanNode:
+        items = [item for item in plan if item]
+        if not run.hierarchical:
+            items = [self._flat_item(item) for item in items]
+        try:
+            children = coerce_tree(items, depth=1, id_prefix="", source="user",
+                                   make_step=_step_for)
+        except ValueError:
+            raise ValueError("the supplied plan has no usable steps")
+        root = self._new_root(run)
+        root.source = "user"
+        root.add_children(children)
+        if len(root.leaves()) > run.max_leaves:
+            raise ValueError("the supplied plan has %d goals; the limit is %d"
+                             % (len(root.leaves()), run.max_leaves))
+        return root
+
+    @staticmethod
+    def _flat_item(item: Any) -> Any:
+        if isinstance(item, dict):
+            return {"goal": item.get("goal"), "done_when": item.get("done_when"),
+                    "launch": item.get("launch")}
+        return item
+
+    def _enter_chain(self, run: Run, node: PlanNode) -> None:
+        """Start every pending ancestor (and the node, when a phase): clock,
+        pause mark and — for a phase — its share of the time left."""
+        entered = False
+        for item in node.path():
+            if item is run.tree:
+                continue
+            if item.kind == "phase" and item.status == "pending":
+                item.status = "running"
+                item.started_at, item.paused_mark = time.time(), run.paused_s
+                if not item.budget_s:
+                    item.budget_s = self._carve(run, item)
+                entered = True
+                self._event(run, "phase", "phase %s: %s%s" % (
+                    item.id, item.goal[:120],
+                    (" · %.0f s" % item.budget_s) if item.budget_s else ""),
+                    {"node": item.id, "budget_s": round(item.budget_s, 1)})
+        if entered:
+            self._checkpoint(run, force=True)
+
+    def _carve(self, run: Run, phase: PlanNode) -> float:
+        """A phase's seconds: its weight's share of what its parent has left,
+        with slack, never under MIN_PHASE_S and never over what is left."""
+        parent = phase.parent
+        remaining = self._remaining_s(run, parent)
+        siblings = [c for c in (parent.children if parent is not None else [phase])
+                    if not c.is_closed and not c.superseded]
+        weights = sum(max(0.1, float(c.weight or 1.0)) for c in siblings) or 1.0
+        share = remaining * max(0.1, float(phase.weight or 1.0)) / weights * PHASE_SLACK
+        return max(0.0, min(remaining, max(MIN_PHASE_S, share)))
+
+    def _node_active_s(self, run: Run, node: PlanNode) -> float:
+        if not node.started_at:
+            return 0.0
+        return max(0.0, (time.time() - node.started_at) - (run.paused_s - node.paused_mark))
+
+    def _remaining_s(self, run: Run, phase: Optional[PlanNode]) -> float:
+        if phase is None or phase is run.tree or not phase.budget_s:
+            if phase is not None and phase is not run.tree and phase.parent is not None:
+                return self._remaining_s(run, phase.parent)
+            return max(0.0, run.total_budget_s - run.active_seconds())
+        return max(0.0, phase.budget_s - self._node_active_s(run, phase))
+
+    def _phase_over_budget(self, run: Run, leaf: PlanNode) -> Optional[PlanNode]:
+        node = leaf.parent
+        while node is not None and node is not run.tree:
+            if node.kind == "phase" and node.budget_s and \
+                    self._node_active_s(run, node) > node.budget_s:
+                return node
+            node = node.parent
+        return None
+
+    def _leaf_budget(self, run: Run, leaf: PlanNode) -> float:
+        parent = leaf.parent
+        if parent is None or parent is run.tree:
+            return run.budget_s
+        inner = parent if parent.budget_s else None
+        if inner is None:
+            return run.budget_s
+        return min(run.budget_s, max(MIN_LEAF_S, self._remaining_s(run, inner)))
+
+    def _fail_run(self, run: Run, node: PlanNode) -> None:
+        if node.kind == "leaf" and node.status not in ("failed", "interrupted"):
+            self._set_node(node, "failed")
+        self._forget_failed_plan(run)
+        self._finish(run, "failed", stop_reason=node.stop_reason or "failed",
+                     error=node.note or node.stop_reason or "failed")
 
     # ------------------------------------------------------------------ memory
     def _target_app(self) -> str:
@@ -686,10 +1324,27 @@ class Operator:
                         {"steps": [s.to_dict() for s in recipe.steps]})
 
     def _learn_plan(self, run: Run) -> None:
-        if run.dry_run or not run.memory:
+        """Keep the plan that finished: flat as before, or — when the command
+        was split into phases — the tree of what finished, under its own key,
+        so the same command next time skips the planning call and every
+        expansion call."""
+        if run.dry_run or not run.memory or run.plan_source == "command" or run.tree is None:
+            return
+        if any(c.kind == "phase" for c in run.tree.children if c.status == "done"):
+            items = self._done_items(run.tree)
+            if not items:
+                return
+            try:
+                self.experience.learn_tree(run.command, items, model=run.model or "")
+            except Exception:
+                return
+            if run.plan_source != "memory":
+                self._event(run, "memory", "plan remembered as %d phase%s; the same command skips "
+                                           "the planning and break-down calls next time" % (
+                                               len(items), "" if len(items) == 1 else "s"))
             return
         done = [s.to_dict() for s in run.plan if s.status == "done"]
-        if not done or run.plan_source == "command":
+        if not done:
             return
         try:
             self.experience.learn_plan(run.command, done, model=run.model or "")
@@ -699,24 +1354,97 @@ class Operator:
             self._event(run, "memory", "plan remembered: %d goal%s; the same command skips "
                         "the planning call next time" % (len(done), "" if len(done) == 1 else "s"))
 
+    def _done_items(self, node: PlanNode) -> List[Dict[str, Any]]:
+        """Plan items of the children that finished, in order, recursively."""
+        out = []
+        for child in node.children:
+            if child.status != "done" or child.superseded:
+                continue
+            item = child.item()
+            if child.kind == "phase":
+                item["children"] = self._done_items(child)
+            out.append(item)
+        return out
+
     def _forget_failed_plan(self, run: Run) -> None:
         if run.dry_run or not run.memory or run.plan_source != "memory":
             return
         try:
-            self.experience.plan_failed(run.command)
+            if run.plan_memory == "tree":
+                self.experience.tree_failed(run.command)
+            else:
+                self.experience.plan_failed(run.command)
         except Exception:
             pass
 
-    def _before_goal(self, run: Run, step: PlanStep, index: int) -> None:
+    def _learn_decomposition(self, run: Run, phase: PlanNode) -> None:
+        """A phase that closed teaches how it was broken down: any mission
+        with the same phase (and another file name) expands it without a call."""
+        if run.dry_run or not run.memory or phase is run.tree:
+            return
+        app = phase.app or self._target_app()
+        children = self._done_items(phase)
+        if not app or not children:
+            return
+        try:
+            self.experience.learn_decomposition(app, phase.goal, children, model=run.model or "")
+        except Exception:
+            pass
+
+    def _before_goal(self, run: Run, node: PlanNode, *, launch: bool = True) -> None:
+        """Pin the goal's window, by handle and without taking the foreground.
+
+        A launch pins the new window. A goal in another program's phase pins
+        that program's window by process (and title, when the phase names
+        one). Only when nothing is pinned yet does the run wait for the user
+        to bring a window up — today's first-goal path.
+        """
+        step = node.step
+        program = (step.launch if step is not None else node.launch) or ""
         if run.dry_run:
-            if step.launch:
-                self._event(run, "launch", "would launch %s (dry run)" % step.launch)
+            if program:
+                self._event(run, "launch", "would launch %s (dry run)" % program)
             return
-        if step.launch:
-            self._launch(run, step)
+        if program:
+            if (not launch or node.id == self._resumed_leaf) and self._pin_app(run, program, ""):
+                # A resumed goal that had launched already: its program's
+                # window is there, so a second launch would open a second one.
+                return
+            if launch:
+                self._launch(run, step if step is not None else _step_for(node))
             return
-        if index == 0:
+        phase = node.phase() if node.parent is not None else None
+        app = node.app or (phase.app if phase is not None else "")
+        if app and _stem(self._target_app()) != _stem(app):
+            self._pin_app(run, app, self._title_hint(run, phase))
+        elif not self._target["pid"] and run.target_hint.get("process"):
+            self._pin_app(run, run.target_hint["process"], run.target_hint.get("title", ""))
+        if not self._target["hwnd"] and not self._target["pid"]:
             self._wait_for_target_window(run)
+
+    @staticmethod
+    def _title_hint(run: Run, phase: Optional[PlanNode]) -> str:
+        if phase is not None:
+            quoted = extract_slots(phase.done_when or "")
+            if quoted:
+                return quoted[0]
+        return str(run.target_hint.get("title") or "")
+
+    def _pin_app(self, run: Run, app: str, hint: str) -> bool:
+        """Pin a window of ``app`` already on the desktop — preferring one whose
+        title holds ``hint`` — by handle. Never brings it to the front."""
+        windows = self._windows_of(app, self._windows_or_empty())
+        if not windows:
+            return False
+        chosen = windows[0]
+        hint = (hint or "").strip().casefold()
+        if hint:
+            for hwnd in windows:
+                if hint in self._title_of(hwnd).casefold():
+                    chosen = hwnd
+                    break
+        self._pin(run, chosen)
+        return True
 
     def _launch(self, run: Run, step: PlanStep) -> None:
         target = (step.launch or "").strip()
@@ -729,7 +1457,10 @@ class Operator:
         known = self._windows_or_empty()
         existing = {hwnd: self._title_of(hwnd) for hwnd in self._windows_of(target, known)}
         self._event(run, "launch", "launching %s" % target)
-        self._launcher(target)
+        # Through the execute hook like every other desktop effect: the kill
+        # switch is checked right before, and an allow-listed launch — which
+        # asks nobody — no longer skips that check.
+        self._execute_hook(act_module.Action(op="launch", text=target, source="operator"), None)
         # The launched window is *found*, not switched to. It used to be
         # brought to the front, after a fixed 1.5 s sleep and a wait for the
         # user's hands to pause — measured live (2026-09-21), the user's next
@@ -798,6 +1529,7 @@ class Operator:
         self._target = {"hwnd": int(hwnd or 0), "pid": pid}
         self._event(run, "window", "working in: %s" % (self._title_of(hwnd) or "?"),
                     {"hwnd": self._target["hwnd"], "pid": pid})
+        self._checkpoint(run, force=True)
 
     def _title_of(self, hwnd: int) -> str:
         """A window's own title; the foreground's when it is that window and
@@ -897,8 +1629,9 @@ class Operator:
                 out.append(hwnd)
         return out
 
-    def _run_goal(self, run: Run, llm: Any, step: PlanStep, index: int) -> RunResult:
-        options = RunOptions(max_steps=run.max_steps, budget_s=run.budget_s,
+    def _run_goal(self, run: Run, llm: Any, step: PlanStep, index: int,
+                  budget_s: Optional[float] = None) -> RunResult:
+        options = RunOptions(max_steps=run.max_steps, budget_s=budget_s or run.budget_s,
                              dry_run=run.dry_run)
         self._abort_goal = ""
         self._exec_failures = 0
@@ -921,7 +1654,7 @@ class Operator:
         )
         if run.dry_run:
             return self._simulate(step.goal, options, **hooks)
-        backend = self._backend_factory()
+        backend = _GuardedBackend(self._backend_factory(), self)
         replayed: List[StepRecord] = []
         recipe = self._recipe_for(run, step)
         if recipe is not None:
@@ -1201,20 +1934,22 @@ class Operator:
             return action
         return None
 
-    def _memory_context(self, run: Run, step: PlanStep) -> Dict[str, Any]:
+    def _memory_context(self, run: Run, step: PlanStep,
+                        tried: Optional[List[str]] = None) -> Dict[str, Any]:
         """What a model is told about this goal's history, when there is any.
 
         Measured live (2026-09-21): the escalation model was asked, in two
         separate attempts, to scroll a navigation pane that refused ScrollItem
         both times, and navigated folders it could not see instead of typing a
-        path. It was never told what had already been tried.
+        path. It was never told what had already been tried. ``tried`` stands
+        in for the trajectory once the goal's own has been consumed.
         """
         out: Dict[str, Any] = {}
         trajectory = self._trajectory
-        if trajectory is not None:
+        if tried is None and trajectory is not None:
             tried = trajectory.tried()
-            if tried:
-                out["tried"] = tried
+        if tried:
+            out["tried"] = list(tried)
         if not run.memory:
             return out
         app = self._target_app()
@@ -1234,6 +1969,13 @@ class Operator:
     # ------------------------------------------------------------------- hooks
     def _observe_hook(self) -> Snapshot:
         self.kill.raise_if_tripped()
+        run = self.run
+        if run is not None and run.active:
+            # The loop swallows exceptions from the verify and escalate hooks,
+            # so a cap crossed inside one of their model calls used to be
+            # noticed only after the goal. An observation is the next place
+            # the loop cannot swallow: the run stops before the next decision.
+            self._check_budget(run)
         if self._abort_goal:
             reason, self._abort_goal = self._abort_goal, ""
             raise RuntimeError(reason)
@@ -1248,6 +1990,7 @@ class Operator:
         else:
             self._ensure_target_in_front("observation")
             snapshot = self._observe()
+        self._last_snapshot = snapshot
         trajectory = self._trajectory
         if trajectory is not None:
             try:
@@ -1294,9 +2037,28 @@ class Operator:
     def _execute_hook(self, action: Any, snapshot: Any, *, backend: Any = None,
                       dry_run: bool = False) -> Any:
         self.kill.raise_if_tripped()
+        if getattr(action, "op", "") == "launch":
+            self._acting += 1
+            try:
+                self._launcher(str(getattr(action, "text", "") or ""))
+            finally:
+                self._acting -= 1
+            return act_module.ActResult(ok=True, method="launch")
         if self._needs_foreground(action, snapshot):
             self._ensure_target_in_front("action")
-        result = act_module.execute(action, snapshot, backend=backend, dry_run=dry_run)
+        self._acting += 1
+        try:
+            result = act_module.execute(action, snapshot, backend=backend, dry_run=dry_run)
+        finally:
+            self._acting -= 1
+        node = self._current_node
+        if node is not None and node.kind == "leaf" and getattr(result, "ok", False) and \
+                getattr(action, "op", "") not in ("done", "blocked", "wait"):
+            node.acted += 1
+            if node.acted == 1 and self.run is not None:
+                # The first thing a goal changes on the desktop is the moment a
+                # blind rerun stops being safe; the checkpoint must know it.
+                self._checkpoint(self.run, force=True)
         if self.run is not None and not getattr(result, "ok", False):
             self._event(self.run, "act_error", "%s %s did not execute: %s" % (
                 getattr(action, "op", "?"), getattr(action, "key", None) or getattr(action, "target", "") or "",
@@ -1328,10 +2090,13 @@ class Operator:
                                     "giving the goal up" % self._exec_failures)
         else:
             self._exec_failures = 0
-        run.spend["jev_calls"] += 1 if record.decided_by in ("jev", "cascade") else 0
+        jev_call = 1 if record.decided_by in ("jev", "cascade") else 0
+        run.spend["jev_calls"] += jev_call
         run.spend["jev_tokens"] += int(record.tokens_in)
         run.spend["jev_usd"] += float(record.cost_usd)
         run.spend["usd"] = run.spend["jev_usd"] + run.spend["llm_usd"]
+        self._charge(jev_calls=jev_call, jev_usd=float(record.cost_usd), steps=1)
+        self._checkpoint(run)
         step.steps = record.index + 1
         stages = record.stages_ms or {}
         text = "#%d %s %s · %s · conf %.2f · %s%s%s" % (
@@ -1364,7 +2129,21 @@ class Operator:
                                        timeout_s=CONFIRM_TIMEOUT_S)
             self._set_state(run, "waiting_confirm")
         self._event(run, "confirm", "waiting for confirmation: %s" % prompt, data)
-        answered = self._confirm_event.wait(CONFIRM_TIMEOUT_S)
+        self._checkpoint(run, force=True)
+        # In slices, with a heartbeat between them: a run waiting two minutes
+        # for an answer is alive, and another console must not see it as dead.
+        deadline = time.time() + CONFIRM_TIMEOUT_S
+        answered = False
+        while True:
+            left = deadline - time.time()
+            if left <= 0:
+                break
+            if self._confirm_event.wait(min(5.0, left)):
+                answered = True
+                break
+            if self.kill.event.is_set():
+                break
+            self._checkpoint(run)
         with self._lock:
             allow = bool(self._confirm_answer) if answered else False
             run.pending_confirm = None
@@ -1374,6 +2153,7 @@ class Operator:
             allow = False
         self._event(run, "confirm_result", "%s: %s" % (
             "allowed" if allow else ("denied" if answered else "timed out, denied"), prompt))
+        self._checkpoint(run, force=True)
         return allow
 
     def _compose_hook(self, run: Run, llm: Any, step: PlanStep, goal: str, element: Any) -> str:
@@ -1425,6 +2205,7 @@ class Operator:
         verified, why = self._code_verify(run, step, snapshot)
         if verified:
             run.learned["code_verified"] += 1
+            self._goal_evidence = "code"
             self._event(run, "verify", "verified in code, no model call — %s" % why)
             return True
         if llm is None:
@@ -1433,6 +2214,8 @@ class Operator:
             return None
         key = "%s|%s" % (step.goal, tree_hash(list(getattr(snapshot, "elements", []) or [])))
         if key in self._verify_cache:
+            if self._verify_cache[key]:
+                self._goal_evidence = "model"
             return self._verify_cache[key]
         reply = self._llm(run, llm, "verify", (
             "You judge whether a desktop sub-goal is complete from the UI Automation "
@@ -1445,6 +2228,8 @@ class Operator:
         done = bool(isinstance(data, dict) and data.get("done") is True)
         why = data.get("why", "") if isinstance(data, dict) else ""
         self._verify_cache[key] = done
+        if done:
+            self._goal_evidence = "model"
         self._event(run, "verify", "%s judged %s%s" % (
             run.model, "done" if done else "not done", (" — " + str(why)[:120]) if why else ""))
         return done
@@ -1526,39 +2311,24 @@ class Operator:
                                  source="escalation", note="llm:%s" % run.model)
 
     # --------------------------------------------------------------- planning
-    def _plan(self, run: Run, llm: Any, command: str):
-        remembered = None
-        if run.memory:
-            try:
-                remembered = self.experience.plan_for(command)
-            except Exception:
-                remembered = None
-        if remembered is not None:
-            # The planning call was 6.3 s of the measured 60.1 s run, and it
-            # re-derived goals a successful run had already found. Values are
-            # the new command's own (see experience.fill).
-            items, memory = remembered
-            run.plan_source = "memory"
-            self._event(run, "memory", "plan from memory: %d goal%s, %d earlier success%s — "
-                                       "no planning call" % (
-                                           len(items), "" if len(items) == 1 else "s",
-                                           memory.successes, "" if memory.successes == 1 else "es"))
-            return [self._coerce_step(item) for item in items], \
-                "remembered from %d successful run%s" % (
-                    memory.successes, "" if memory.successes == 1 else "s")
-        if llm is None:
-            run.plan_source = "command"
-            return [PlanStep(goal=command, done_when="")], "no planning model: the command is the goal"
-        context: Dict[str, Any] = {"command": command, "os": "Windows",
-                                   "foreground": (self._title_or_empty() if not run.dry_run else "")}
-        if run.memory:
-            try:
-                known = self.experience.skills_for()
-            except Exception:
-                known = []
-            if known:
-                context["known_goals"] = known
-        reply = self._llm(run, llm, "plan", (
+    def _remembered_plan(self, command: str, memory: bool, hierarchical: bool) -> Any:
+        if not memory:
+            return None
+        try:
+            if hierarchical:
+                tree = self.experience.tree_for(command)
+                if tree is not None:
+                    return tree[0], tree[1], "tree"
+            flat = self.experience.plan_for(command)
+        except Exception:
+            return None
+        return (flat[0], flat[1], "flat") if flat is not None else None
+
+    def _gap_system(self, hierarchical: bool) -> str:
+        """The planning prompt. Flat, it is byte for byte the prompt every run
+        used before trees; hierarchical, it adds phases after the same rules,
+        so a short command still gets — and gives — the same answer."""
+        rules = (
             "You plan desktop tasks for a UI agent on Windows. The agent sees the UI "
             "Automation tree of the foreground window (control roles, names, values) and "
             "performs one action per step: click, type, select, scroll, a key chord, wait. "
@@ -1580,48 +2350,393 @@ class Operator:
             "present, are goals this agent has completed on this machine before; when one "
             "fits, reuse its wording exactly, with «n» replaced by the value — those "
             "replay from memory in a fraction of the time. Do not add "
-            "steps that delete, send, pay or overwrite unless the command says so. Reply "
-            "with JSON only: {\"steps\": [{\"goal\": \"...\", \"done_when\": \"...\", "
-            "\"launch\": null}], \"note\": \"...\"}" % MAX_PLAN_STEPS),
-            json.dumps(context, ensure_ascii=False))
-        data = reply.json() if reply is not None else None
-        steps = self._steps_from(data)
-        if not steps:
-            self._event(run, "plan_fallback", "the model returned no usable plan; "
-                                              "running the command as one goal")
+            "steps that delete, send, pay or overwrite unless the command says so. " % MAX_PLAN_STEPS)
+        if not hierarchical:
+            return rules + (
+                "Reply with JSON only: {\"steps\": [{\"goal\": \"...\", \"done_when\": \"...\", "
+                "\"launch\": null}], \"note\": \"...\"}")
+        return rules + (
+            "A sub-goal is a `leaf` when it happens inside one window or dialog in a few "
+            "actions. For a long command (several documents, programs or milestones) you may "
+            "instead return up to %d items of `\"kind\": \"phase\"`: one milestone in ONE "
+            "program, with `app` (its executable), an observable `done_when`, optional "
+            "`checks` the agent tests in code (`file_exists` {arg: path}, `file_contains` "
+            "{arg: path, text}, `title_contains` {arg}), `weight` (relative effort, default 1), "
+            "`optional`, and `irreversible` (sends, submits, saves over a file). Give "
+            "`children` (leaf sub-goals, same rules) for the FIRST phase only; later phases "
+            "are broken down when the agent reaches them, from the screen it sees then. "
+            "Prefer leaves: a command that fits in %d one-window goals is all leaves. "
+            "Reply with JSON only: {\"steps\": [{\"goal\": \"...\", \"done_when\": \"...\", "
+            "\"launch\": null, \"kind\": \"leaf|phase\", \"app\": null, \"checks\": [{\"kind\": "
+            "\"file_exists\", \"arg\": \"%%USERPROFILE%%/Desktop/a.txt\", \"text\": \"\"}], "
+            "\"weight\": 1, \"optional\": false, \"irreversible\": false, \"children\": "
+            "[{\"goal\": \"...\", \"done_when\": \"...\", \"launch\": null}]}], \"note\": \"\"}"
+            % (MAX_PHASES, MAX_PLAN_STEPS))
+
+    def _build_tree(self, run: Run, llm: Any):
+        """``(root, note)``: the plan tree, from — in order — memory (a tree,
+        then a flat plan: no call), the command itself (no model), or the
+        General Agent Plan call. An unusable reply is the command as one goal."""
+        root = self._new_root(run)
+        items: Any = None
+        note = ""
+        remembered = self._remembered_plan(run.command, run.memory, run.hierarchical)
+        if remembered is not None:
+            # The planning call was 6.3 s of the measured 60.1 s run, and it
+            # re-derived goals a successful run had already found. Values are
+            # the new command's own (see experience.fill).
+            items, memory, run.plan_memory = remembered
+            run.plan_source = "memory"
+            self._event(run, "memory", "plan from memory: %d %s, %d earlier success%s — "
+                                       "no planning call" % (
+                                           len(items), ("phase%s" if run.plan_memory == "tree"
+                                                        else "goal%s") % (
+                                               "" if len(items) == 1 else "s"),
+                                           memory.successes, "" if memory.successes == 1 else "es"))
+            note = "remembered from %d successful run%s" % (
+                memory.successes, "" if memory.successes == 1 else "s")
+        elif llm is None:
             run.plan_source = "command"
-            return [PlanStep(goal=command)], ""
-        run.plan_source = "model"
-        note = str(data.get("note", ""))[:300] if isinstance(data, dict) else ""
-        return steps, note
+            root.add_children([self._leaf(run.command, "command")])
+            root.source = "command"
+            return root, "no planning model: the command is the goal"
+        else:
+            context: Dict[str, Any] = {"command": run.command, "os": "Windows",
+                                       "foreground": (self._title_or_empty() if not run.dry_run else "")}
+            if run.memory:
+                try:
+                    known = self.experience.skills_for()
+                except Exception:
+                    known = []
+                if known:
+                    context["known_goals"] = known
+            reply = self._llm(run, llm, "plan", self._gap_system(run.hierarchical),
+                              json.dumps(context, ensure_ascii=False))
+            data = reply.json() if reply is not None else None
+            items = data.get("steps") if isinstance(data, dict) else data
+            run.plan_source = "model"
+            note = str(data.get("note", ""))[:300] if isinstance(data, dict) else ""
+        if isinstance(items, list) and not run.hierarchical:
+            items = [self._flat_item(item) for item in items]
+        children: List[PlanNode] = []
+        if isinstance(items, list):
+            try:
+                children = coerce_tree(items, depth=1, id_prefix="", source=run.plan_source,
+                                       make_step=_step_for)
+            except ValueError:
+                children = []
+        if not children:
+            if run.plan_source == "memory":
+                run.plan_source, run.plan_memory = "command", ""
+            else:
+                self._event(run, "plan_fallback", "the model returned no usable plan; "
+                                                  "running the command as one goal")
+                run.plan_source = "command"
+            children = [self._leaf(run.command, "command")]
+            note = ""
+        root.source = run.plan_source
+        root.add_children(children)
+        return root, note
 
-    def _replan(self, run: Run, llm: Any, index: int, result: RunResult) -> str:
-        """``"completed"``, ``"revised"`` (plan changed, move on) or ``"give_up"``.
+    @staticmethod
+    def _leaf(goal: str, source: str) -> PlanNode:
+        node = PlanNode(id="1", goal=goal, kind="leaf", depth=1, source=source)
+        node.step = _step_for(node)
+        return node
 
-        The screen is checked in code first. Measured live (2026-09-21): the
-        save goal ended `escalated` *after* the file was saved (Jev proposed
-        `type none` on the saved window) and a re-plan call spent 1.8 s to read
-        ``hello.txt - Notatnik`` off the title.
-        """
-        step = run.plan[index]
+    # ------------------------------------------------------------ break-down
+    def _expand(self, run: Run, llm: Any, phase: PlanNode) -> None:
+        """Break a phase down when the cursor reaches it: from memory (how this
+        phase was broken down before), else one model call that sees the
+        screen the previous goal left — no extra walk of the UI tree. When
+        neither gives usable children, the phase becomes one goal for Jev."""
+        app = phase.app or self._target_app()
+        items: Any = None
+        source = ""
+        if run.memory and app:
+            try:
+                remembered = self.experience.decomposition_for(app, phase.goal)
+            except Exception:
+                remembered = None
+            if remembered is not None:
+                items, _memory = remembered
+                source = "memory"
+        if items is None and llm is not None:
+            snapshot = self._last_snapshot
+            if snapshot is None and not run.dry_run and self._target.get("pid"):
+                try:
+                    snapshot = self._observe_hook()
+                except Stopped:
+                    raise
+                except Exception:
+                    snapshot = None
+            payload: Dict[str, Any] = {
+                "command": run.command,
+                "phase": {"id": phase.id, "goal": phase.goal, "done_when": phase.done_when,
+                          "app": phase.app, "checks": [c.to_dict() for c in phase.checks]},
+                "depth": phase.depth + 1,
+                "outline": [{"id": n.id, "goal": n.goal, "status": n.status}
+                            for n in run.tree.walk() if n is not run.tree and not n.superseded
+                            and (n.kind == "phase" or n.parent is run.tree)],
+                "screen": self._screen(snapshot) if snapshot is not None else
+                ({"dry_run": True} if run.dry_run else {})}
+            if run.memory:
+                try:
+                    known = self.experience.skills_for(app or None)
+                    lessons = self.experience.lessons_for(app, phase.goal) if app else []
+                except Exception:
+                    known, lessons = [], []
+                if known:
+                    payload["known_goals"] = known
+                if lessons:
+                    payload["lessons"] = lessons
+            previous, self._current_node = self._current_node, phase
+            try:
+                reply = self._llm(run, llm, "expand", EXPAND_SYSTEM,
+                                  json.dumps(payload, ensure_ascii=False))
+            finally:
+                self._current_node = previous
+            data = reply.json() if reply is not None else None
+            items = data.get("steps") if isinstance(data, dict) else None
+            source = "model"
+        children: List[PlanNode] = []
+        if isinstance(items, list) and items:
+            try:
+                children = coerce_tree(items, depth=phase.depth + 1, id_prefix=child_prefix(phase),
+                                       source=source, make_step=_step_for)
+            except ValueError:
+                children = []
+        for child in children:
+            if child.kind == "phase" and app and self._has_recipe(app, child.goal):
+                # A goal that replays from memory is never broken down further.
+                self._to_leaf(child)
+        known = len([n for n in run.tree.leaves() if not n.superseded])
+        new = sum(len(c.leaves()) if c.kind == "phase" else 1 for c in children)
+        if children and known + new > run.max_leaves:
+            self._event(run, "expand", "breaking phase %s down would exceed %d goals; Jev tries "
+                                       "it as one goal" % (phase.id, run.max_leaves),
+                        {"node": phase.id, "source": "limit", "children": 0})
+            children = []
+        if not children:
+            self._to_leaf(phase)
+            phase.status = "pending"
+            self._event(run, "expand", "phase %s could not be broken down%s; Jev tries it as one "
+                                       "goal" % (phase.id, "" if llm is not None else
+                                                 " without a planning model"),
+                        {"node": phase.id, "source": "none", "children": 0})
+            return
+        phase.add_children(children)
+        phase.expanded = True
+        self._event(run, "expand", "phase %s broken down into %d goal%s%s" % (
+            phase.id, len(children), "" if len(children) == 1 else "s",
+            " from memory — no model call" if source == "memory" else " by %s" % run.model),
+            {"node": phase.id, "source": source, "children": len(children),
+             "steps": [c.item() for c in children]})
+
+    def _has_recipe(self, app: str, goal: str) -> bool:
+        try:
+            return self.experience.recipe_for(app, goal) is not None
+        except Exception:
+            return False
+
+    @staticmethod
+    def _to_leaf(node: PlanNode) -> None:
+        node.kind = "leaf"
+        node.children = []
+        node.expanded = False
+        if node.step is None:
+            node.step = _step_for(node)
+
+    # ------------------------------------------------------------ closing
+    def _close_phase(self, run: Run, llm: Any, phase: PlanNode) -> bool:
+        """A phase whose children are all closed: accept it, by code when it
+        can be (checks, done_when's quote), else on its children's word —
+        and say which. False when acceptance failed and could not be repaired."""
+        if phase is run.tree:
+            phase.status, phase.evidence = "done", "children"
+            phase.ended_at = time.time()
+            return True
+        evidence = ""
+        snapshot = None
+        if not run.dry_run and (phase.checks or phase.done_when):
+            snapshot = self._fresh_observation()
+        if not run.dry_run and phase.checks:
+            verdict, detail = evaluate_checks(phase.checks, snapshot)
+            if verdict is True:
+                evidence = "code"
+            elif verdict is False:
+                repaired = self._repair(run, llm, phase, None, None,
+                                        reason="acceptance failed: %s" % detail)
+                if repaired == "revised" or repaired == "retry":
+                    return True
+                if repaired == "completed":
+                    evidence = phase.evidence or "model"
+                else:
+                    phase.stop_reason = "acceptance"
+                    phase.note = detail[:200]
+                    return False
+        if not evidence and snapshot is not None and literal_check(phase.done_when, snapshot):
+            evidence = "code"
+        evidence = evidence or "children"
+        phase.status, phase.evidence = "done", evidence
+        phase.ended_at = time.time()
+        phase.spend["active_s"] = round(self._node_active_s(run, phase), 2)
+        self._event(run, "phase_done", "phase %s done — %s: %s" % (
+            phase.id, {"code": "verified in code", "children": "every goal in it done",
+                       "model": "the model quoted the screen"}.get(evidence, evidence),
+            phase.goal[:100]), {"node": phase.id, "evidence": evidence})
+        self._learn_decomposition(run, phase)
+        try:
+            self._give_back(run)
+        except Exception:
+            pass
+        self._checkpoint(run, force=True)
+        return True
+
+    def _fresh_observation(self) -> Any:
+        """A read-only look at the pinned window, or None; a STOP still stops."""
+        if not self._target.get("pid") and self._observe_window is not None:
+            return None
+        try:
+            return self._observe_hook()
+        except Stopped:
+            raise
+        except Exception:
+            return None
+
+    # ------------------------------------------------------------ repair
+    def _repair_up(self, run: Run, llm: Any, failed: PlanNode, result: Any, *,
+                   started: Optional[float] = None, reason: str = "") -> bool:
+        """Recover in the scope that failed — the failed item's parent — and
+        climb one level only when that scope cannot. False ends the run."""
+        node, first = failed, True
+        while True:
+            scope = node.parent
+            if scope is None:
+                return False
+            verdict = self._repair(run, llm, scope, node, result if first else None,
+                                   reason if first else (reason or "failed below"))
+            if first and node.kind == "leaf" and started is not None and node.step is not None:
+                # The recipe-or-lesson decision waits for this verdict, as the
+                # flat run's did: a goal the screen proves done still teaches.
+                self._learn_goal(run, node.step, verdict == "completed", started)
+            first = False
+            if verdict == "completed":
+                self._set_node(node, "done", evidence=node.evidence or "code")
+                return True
+            if verdict == "revised":
+                self._set_node(node, "failed")
+                node.superseded = True
+                if node.kind == "leaf" and not self._flat(run, scope, node):
+                    self._subgoal_lesson(run, scope, node)
+                return True
+            if verdict == "skip":
+                self._set_node(node, "skipped")
+                return True
+            if verdict == "retry":
+                self._set_node(node, "pending")
+                node.acted = 0
+                return True
+            if verdict == "give_up":
+                return False
+            self._set_node(node, "failed")
+            if scope is run.tree:
+                return False
+            scope.status = "failed"
+            scope.stop_reason = node.stop_reason or "failed below"
+            scope.note = scope.note or node.note
+            if scope.children and all(c.source == "memory" for c in scope.children
+                                      if not c.superseded):
+                try:
+                    self.experience.decomposition_failed(scope.app or self._target_app(),
+                                                         scope.goal)
+                except Exception:
+                    pass
+            self._event(run, "repair", "phase %s could not be repaired in place; asking the level "
+                                       "above" % scope.id, {"scope": scope.id, "failed": node.id,
+                                                            "verdict": "escalate_up"})
+            node = scope
+
+    def _subgoal_lesson(self, run: Run, scope: PlanNode, node: PlanNode) -> None:
+        if run.dry_run or not run.memory:
+            return
+        app = node.app or scope.app or self._target_app()
+        if not app:
+            return
+        try:
+            self.experience.learn_subgoal_lesson(app, scope.goal, node.goal,
+                                                 node.stop_reason or "failed")
+            run.learned["lessons_learned"] += 1
+        except Exception:
+            pass
+
+    def _repair(self, run: Run, llm: Any, scope: PlanNode, failed: Optional[PlanNode],
+                result: Any, reason: str) -> str:
+        """One verdict for ``failed`` inside ``scope``: completed, revised, skip,
+        retry, give_up or escalate_up. Code first — a screen that proves the
+        work done costs no call — then the bounds, then one model call: the
+        flat run's own prompt when the plan is flat, else the tree prompt."""
         snapshot = None
         if not run.dry_run:
-            try:
-                snapshot = self._observe_hook()
-            except Stopped:
-                raise
-            except Exception:
-                snapshot = None
-            verified, why = self._code_verify(run, step, snapshot)
-            if verified:
-                run.learned["code_verified"] += 1
-                self._event(run, "replan", "goal %d is complete — verified in code, no model "
-                                           "call: %s" % (index + 1, why))
-                return "completed"
-        if llm is None or run.replans >= MAX_REPLANS:
-            return "give_up"
-        run.replans += 1
-        remaining = [s.to_dict() for s in run.plan[index + 1:]]
+            snapshot = self._fresh_observation()
+            if failed is not None and snapshot is not None:
+                if failed.kind == "leaf" and failed.step is not None:
+                    ok, why = self._code_verify(run, failed.step, snapshot)
+                else:
+                    ok = evaluate_checks(failed.checks, snapshot)[0] is True or \
+                        bool(literal_check(failed.done_when, snapshot))
+                    why = "its checks hold on the screen"
+                if ok:
+                    run.learned["code_verified"] += 1
+                    failed.evidence = "code"
+                    index = self._plan_index(run, failed)
+                    self._event(run, "replan" if self._flat(run, scope, failed) else "repair",
+                                "goal %d is complete — verified in code, no model call: %s" % (
+                                    index + 1, why), {"scope": scope.id, "failed": failed.id,
+                                                      "verdict": "completed"})
+                    return "completed"
+        if llm is None or scope.repairs >= MAX_REPAIRS_PER_NODE or \
+                run.repairs_total >= MAX_REPAIRS_TOTAL or run.spend["llm_calls"] >= run.llm_cap:
+            if llm is not None:
+                self._event(run, "repair", "no repair left for %s (%d here, %d this run)" % (
+                    "the plan" if scope is run.tree else "phase %s" % scope.id, scope.repairs,
+                    run.repairs_total), {"scope": scope.id,
+                                         "failed": failed.id if failed else None,
+                                         "verdict": "escalate_up"})
+            return "escalate_up"
+        scope.repairs += 1
+        run.repairs_total += 1
+        run.replans = run.repairs_total
+        previous, self._current_node = self._current_node, scope
+        try:
+            if failed is not None and self._flat(run, scope, failed):
+                verdict = self._flat_replan(run, llm, scope, failed, result, snapshot)
+            else:
+                verdict = self._tree_repair(run, llm, scope, failed, result, reason, snapshot)
+        finally:
+            self._current_node = previous
+        self._checkpoint(run, force=True)
+        return verdict
+
+    @staticmethod
+    def _flat(run: Run, scope: PlanNode, failed: Optional[PlanNode]) -> bool:
+        return scope is run.tree and failed is not None and failed.kind == "leaf" and \
+            all(c.kind == "leaf" for c in scope.children)
+
+    @staticmethod
+    def _plan_index(run: Run, node: PlanNode) -> int:
+        try:
+            return run.plan.index(node.step)
+        except ValueError:
+            return len(run.plan)
+
+    def _flat_replan(self, run: Run, llm: Any, scope: PlanNode, failed: PlanNode,
+                     result: Any, snapshot: Any) -> str:
+        """The flat run's re-plan, unchanged: same prompt, same payload."""
+        index = self._plan_index(run, failed)
+        step = failed.step
+        remaining = [c.step.to_dict() for c in scope.children
+                     if c.status == "pending" and c.step is not None]
         screen: Dict[str, Any] = {"dry_run": True} if run.dry_run else {}
         if snapshot is not None:
             try:
@@ -1636,58 +2751,282 @@ class Operator:
             "`launch`). If the task cannot continue safely, set give_up to the reason. Reply "
             "with JSON only: {\"completed\": false, \"steps\": [...], \"give_up\": null}"),
             json.dumps(dict({"command": run.command, "failed_goal": step.to_dict(),
-                             "stop_reason": result.stop_reason, "error": result.error,
+                             "stop_reason": getattr(result, "stop_reason", failed.stop_reason),
+                             "error": getattr(result, "error", failed.note),
                              "remaining": remaining, "screen": screen},
-                            **self._memory_context(run, step)), ensure_ascii=False))
+                            **self._memory_context(run, step, tried=failed.tried or None)),
+                       ensure_ascii=False))
         data = reply.json() if reply is not None else None
         if not isinstance(data, dict):
             return "give_up"
         if data.get("completed") is True:
+            failed.evidence = "model"
             self._event(run, "replan", "%s judged goal %d complete" % (run.model, index + 1))
             return "completed"
         if data.get("give_up"):
             self._event(run, "replan", "%s gives up: %s" % (run.model, str(data["give_up"])[:200]))
             run.error = str(data["give_up"])[:200]
             return "give_up"
-        steps = self._steps_from(data)
-        if not steps:
+        items = data.get("steps")
+        if not isinstance(items, list):
             return "give_up"
-        del run.plan[index + 1:]
-        run.plan.extend(steps)
+        try:
+            children = coerce_tree([self._flat_item(i) for i in items], depth=1,
+                                   id_prefix=repair_prefix(scope, scope.generation + 1),
+                                   source="repair", make_step=_step_for,
+                                   max_items=MAX_PLAN_STEPS)
+        except ValueError:
+            return "give_up"
+        self._replace_pending(scope, children)
         self._event(run, "replan", "%s revised the plan: %d step%s remain" % (
-            run.model, len(steps), "" if len(steps) == 1 else "s"),
-            {"steps": [s.to_dict() for s in steps]})
+            run.model, len(children), "" if len(children) == 1 else "s"),
+            {"steps": [c.step.to_dict() for c in children if c.step is not None]})
         return "revised"
 
-    def _steps_from(self, data: Any) -> List[PlanStep]:
-        items = data.get("steps") if isinstance(data, dict) else data
-        if not isinstance(items, list):
-            return []
-        out: List[PlanStep] = []
-        for item in items[:MAX_PLAN_STEPS]:
-            try:
-                step = self._coerce_step(item)
-            except ValueError:
-                continue
-            out.append(step)
-        return out
-
     @staticmethod
-    def _coerce_step(item: Any) -> PlanStep:
-        if isinstance(item, str):
-            goal = item.strip()
-            if not goal:
-                raise ValueError("empty goal")
-            return PlanStep(goal=goal)
-        if isinstance(item, dict):
-            goal = str(item.get("goal") or "").strip()
-            if not goal:
-                raise ValueError("empty goal")
-            launch = item.get("launch")
-            launch = str(launch).strip() if isinstance(launch, str) and launch.strip() else None
-            return PlanStep(goal=goal[:400], done_when=str(item.get("done_when") or "")[:300],
-                            launch=launch)
-        raise ValueError("a step is a string or an object")
+    def _replace_pending(scope: PlanNode, children: List[PlanNode]) -> None:
+        """Drop the scope's children that never ran, add the revised ones."""
+        scope.children = [c for c in scope.children if c.status != "pending"]
+        scope.generation += 1
+        scope.add_children(children)
+
+    def _failed_twice(self, scope: PlanNode, failed: Optional[PlanNode]) -> List[str]:
+        counts: Dict[str, int] = {}
+        names: Dict[str, str] = {}
+        for child in scope.children:
+            if child.status == "failed" or child is failed:
+                key = goal_key(child.goal)[0]
+                counts[key] = counts.get(key, 0) + 1
+                names[key] = child.goal
+        return [names[k] for k, n in counts.items() if n >= MAX_SAME_GOAL_FAILS]
+
+    def _tree_repair(self, run: Run, llm: Any, scope: PlanNode, failed: Optional[PlanNode],
+                     result: Any, reason: str, snapshot: Any, *, interrupted: bool = False) -> str:
+        twice = self._failed_twice(scope, failed)
+        payload: Dict[str, Any] = {
+            "command": run.command,
+            "scope": {"id": scope.id, "goal": scope.goal, "done_when": scope.done_when,
+                      "kind": scope.kind, "checks": [c.to_dict() for c in scope.checks]},
+            "children": [{"id": c.id, "goal": c.goal, "status": c.status, "evidence": c.evidence}
+                         for c in scope.children if not c.superseded],
+            "failed": ({"id": failed.id, "goal": failed.goal, "done_when": failed.done_when,
+                        "stop_reason": failed.stop_reason,
+                        "error": str(getattr(result, "error", "") or failed.note)[:200],
+                        "tried": list(failed.tried)} if failed is not None else None),
+            "reason": reason or "goal ended without done",
+            "interrupted": bool(interrupted), "acted": int(failed.acted if failed else 0),
+            "failed_twice": twice,
+            "screen": self._screen(snapshot) if snapshot is not None else
+            ({"dry_run": True} if run.dry_run else {})}
+        app = (failed.app if failed is not None else "") or scope.app or self._target_app()
+        if run.memory and app:
+            try:
+                lessons = self.experience.lessons_for(app, scope.goal)
+                recipe = self.experience.recipe_for(app, failed.goal, usable_only=False) \
+                    if failed is not None else None
+            except Exception:
+                lessons, recipe = [], None
+            if lessons:
+                payload["lessons"] = lessons
+            if recipe is not None and recipe.steps:
+                payload["remembered"] = [s.describe() for s in recipe.steps]
+        reply = self._llm(run, llm, "repair", REPAIR_SYSTEM, json.dumps(payload, ensure_ascii=False))
+        data = reply.json() if reply is not None else None
+        where = "the plan" if scope is run.tree else "phase %s" % scope.id
+
+        def said(verdict: str, text: str) -> str:
+            self._event(run, "repair", "%s: %s" % (where, text),
+                        {"scope": scope.id, "failed": failed.id if failed else None,
+                         "verdict": verdict})
+            return verdict
+
+        if not isinstance(data, dict):
+            return said("escalate_up", "%s gave no usable repair" % run.model)
+        if data.get("give_up"):
+            run.error = str(data["give_up"])[:200]
+            return said("give_up", "%s gives up: %s" % (run.model, run.error))
+        question = data.get("ask_user")
+        if isinstance(question, str) and question.strip():
+            question = question.strip()[:200]
+            if self._ask(run, question, {"op": "continue", "name": question}):
+                return said("retry", "the user answered; trying again")
+            run.error = question
+            if failed is not None:
+                failed.note = question
+            return said("give_up", "the user did not continue: %s" % question)
+        steps = data.get("steps") if isinstance(data.get("steps"), list) else []
+        if data.get("completed") is True:
+            if quote_on_screen(str(data.get("quote") or ""), snapshot):
+                (failed if failed is not None else scope).evidence = "model"
+                return said("completed", "%s showed it done on the screen: %r" % (
+                    run.model, str(data.get("quote"))[:80]))
+            if not steps:
+                return said("escalate_up", "%s said done without a quote from the screen" % run.model)
+        if data.get("skip") is True and failed is not None and failed.optional:
+            return said("skip", "%s skips an optional item: %s" % (run.model, failed.goal[:80]))
+        if data.get("escalate_up") is True:
+            return said("escalate_up", "%s says the level above must re-plan" % run.model)
+        blocked = {goal_key(g)[0] for g in twice}
+        steps = [s for s in steps if not (
+            isinstance(s, (str, dict)) and goal_key(s if isinstance(s, str) else
+                                                    str(s.get("goal") or ""))[0] in blocked)]
+        room = max(0, run.max_leaves - len([n for n in run.tree.leaves() if not n.superseded]))
+        children: List[PlanNode] = []
+        if steps and room:
+            try:
+                children = coerce_tree(steps, depth=scope.depth + 1,
+                                       id_prefix=repair_prefix(scope, scope.generation + 1),
+                                       source="repair", make_step=_step_for,
+                                       max_items=min(MAX_CHILDREN, room))
+            except ValueError:
+                children = []
+        if not children:
+            return said("escalate_up", "%s proposed nothing new to try" % run.model)
+        self._replace_pending(scope, children)
+        return said("revised", "%s revised it: %d item%s" % (
+            run.model, len(children), "" if len(children) == 1 else "s"))
+
+    # ------------------------------------------------------------ resume
+    def _resume_leaf(self, run: Run, llm: Any, node: PlanNode) -> str:
+        """An interrupted goal: ``done`` (the screen proves it), ``run`` (safe
+        to run again), ``handled`` (a repair decided) or ``failed``.
+
+        A goal that had acted is never simply rerun: the text may be typed
+        already, the file saved. Code looks first; then the model is asked
+        with ``interrupted`` and ``acted`` in view, or — Jev only — the user.
+        """
+        self._current_node = node
+        if not run.dry_run:
+            self._before_goal(run, node, launch=False)
+            snapshot = self._fresh_observation()
+            phase = node.parent
+            ok = False
+            if snapshot is not None and node.step is not None:
+                ok = bool(self._code_verify(run, node.step, snapshot)[0])
+                if not ok and phase is not None and phase is not run.tree and phase.checks:
+                    ok = evaluate_checks(phase.checks, snapshot)[0] is True
+            if ok:
+                run.learned["code_verified"] += 1
+                self._set_node(node, "done", evidence="code")
+                self._event(run, "resume", "interrupted goal already done — verified in code: %s"
+                            % node.goal[:100], {"node_id": node.id})
+                self._checkpoint(run, force=True)
+                return "done"
+        if not node.acted and not node.irreversible:
+            self._resumed_leaf = node.id
+            self._set_node(node, "pending")
+            return "run"
+        if llm is not None:
+            scope = node.parent or run.tree
+            snapshot = None if run.dry_run else self._last_snapshot
+            if scope.repairs < MAX_REPAIRS_PER_NODE and run.repairs_total < MAX_REPAIRS_TOTAL:
+                scope.repairs += 1
+                run.repairs_total += 1
+                run.replans = run.repairs_total
+                verdict = self._tree_repair(run, llm, scope, node, None, "interrupted", snapshot,
+                                            interrupted=True)
+            else:
+                verdict = "escalate_up"
+            if verdict == "completed":
+                self._set_node(node, "done", evidence=node.evidence or "model")
+                return "handled"
+            if verdict == "revised":
+                self._set_node(node, "failed")
+                node.superseded = True
+                return "handled"
+            if verdict == "retry":
+                self._resumed_leaf = node.id
+                self._set_node(node, "pending")
+                return "run"
+            if verdict == "skip":
+                self._set_node(node, "skipped")
+                return "handled"
+            return "failed"
+        question = "resume: '%s' had already acted %d time%s before the interruption; run it " \
+                   "again?" % (node.goal[:120], node.acted, "" if node.acted == 1 else "s")
+        if self._ask(run, question, {"op": "redo", "name": node.goal[:120]}):
+            self._resumed_leaf = node.id
+            self._set_node(node, "pending")
+            return "run"
+        node.stop_reason = node.stop_reason or "redo_refused"
+        node.note = node.note or "not run again after the interruption"
+        return "failed"
+
+    # ------------------------------------------------------------ pause
+    def _pause_point(self, run: Run) -> None:
+        """Hold here, between goals, while a pause is requested."""
+        if not self._pause_requested:
+            return
+        paused_at = time.time()
+        run.paused_since = paused_at
+        self._set_state(run, "paused")
+        self._event(run, "pause", "paused between goals — nothing acts until you continue; "
+                                  "STOP still works")
+        self._checkpoint(run, force=True)
+        try:
+            while self._pause_requested:
+                self._resume_event.wait(0.2)
+                self.kill.raise_if_tripped()
+                if time.time() - paused_at > PAUSE_MAX_S:
+                    raise Stopped("paused for more than %.0f min" % (PAUSE_MAX_S / 60.0))
+                self._checkpoint(run)
+        finally:
+            run.paused_s += time.time() - paused_at
+            run.paused_since = 0.0
+        self._set_state(run, "running")
+        self._event(run, "resume", "continuing after %.1f s paused" % (time.time() - paused_at))
+        self._checkpoint(run, force=True)
+
+    # ------------------------------------------------------------ journal
+    def _checkpoint(self, run: Run, force: bool = False) -> None:
+        """Write the run's state so it can be resumed; a heartbeat when not
+        forced (at most every HEARTBEAT_S). A failed write warns once and the
+        run goes on — it only loses the ability to resume."""
+        if not run.persist:
+            return
+        now = time.time()
+        if not force and now - self._last_checkpoint < HEARTBEAT_S:
+            return
+        self._last_checkpoint = now
+        run.heartbeat_at = now
+        try:
+            ok = self._journal.checkpoint(run.id, self._checkpoint_payload(run))
+        except Exception:
+            ok = False
+        if not ok and not self._checkpoint_warned:
+            self._checkpoint_warned = True
+            self._event(run, "checkpoint", "could not write the checkpoint under %s; the run goes "
+                                           "on but cannot be resumed" % self._journal.root)
+
+    def _checkpoint_payload(self, run: Run) -> Dict[str, Any]:
+        hwnd = int(self._target.get("hwnd") or 0)
+        return {
+            "schema": 1, "run_id": run.id, "command": run.command, "model": run.model,
+            "dry_run": run.dry_run, "hierarchical": run.hierarchical, "memory": run.memory,
+            "limits": {"max_steps": run.max_steps, "budget_s": run.budget_s,
+                       "total_budget_s": run.total_budget_s, "usd_cap": run.usd_cap,
+                       "llm_cap": run.llm_cap, "llm_cap_explicit": run.llm_cap_explicit,
+                       "max_leaves": run.max_leaves},
+            "state": run.state, "stop_reason": run.stop_reason, "error": run.error,
+            "plan_source": run.plan_source, "plan_memory": run.plan_memory,
+            "tree": run.tree.to_dict() if run.tree is not None else None,
+            "spend": dict(run.spend), "learned": dict(run.learned),
+            "repairs_total": run.repairs_total,
+            "target": {"hwnd": hwnd, "pid": int(self._target.get("pid") or 0),
+                       "process": self._target_app(), "title": self._title_of(hwnd) if hwnd else ""},
+            "active_s": round(run.active_seconds(), 2), "paused_s": round(run.paused_s, 2),
+            "segment": run.segment, "events_next": run.events_base + len(run.events),
+            "heartbeat_at": run.heartbeat_at, "pid": os.getpid(), "progress": run.progress(),
+        }
+
+    def _charge(self, **amounts: float) -> None:
+        """Roll spend up the current node's path, root included."""
+        node = self._current_node
+        while node is not None:
+            for key, value in amounts.items():
+                node.spend[key] = node.spend.get(key, 0) + value
+            node = node.parent
+
 
     # ------------------------------------------------------------ LLM plumbing
     def _model_id(self, model: Optional[str]) -> Optional[str]:
@@ -1707,9 +3046,9 @@ class Operator:
 
     def _llm(self, run: Run, llm: Any, purpose: str, system: str, user: str,
              **chat_kw: Any) -> Any:
-        if run.spend["llm_calls"] >= MAX_LLM_CALLS:
+        if run.spend["llm_calls"] >= run.llm_cap:
             self._event(run, "llm_cap", "the planning model was asked %d times; no more this run"
-                        % MAX_LLM_CALLS)
+                        % run.llm_cap)
             return None
         self.kill.raise_if_tripped()
         try:
@@ -1721,6 +3060,7 @@ class Operator:
         run.spend["llm_tokens"] += reply.tokens_in + reply.tokens_out
         run.spend["llm_usd"] += float(reply.cost_usd)
         run.spend["usd"] = run.spend["jev_usd"] + run.spend["llm_usd"]
+        self._charge(llm_calls=1, llm_usd=float(reply.cost_usd))
         self._event(run, "llm", "%s · %s · %d+%d tok · $%.6f · %.0f ms" % (
             purpose, reply.model, reply.tokens_in, reply.tokens_out, reply.cost_usd,
             reply.latency_ms))
@@ -1897,6 +3237,17 @@ class Operator:
             run.stop_reason = stop_reason or run.stop_reason
             run.error = error or run.error
             run.pending_confirm = None
+            run.paused_since = 0.0
+            if run.tree is not None:
+                # The tree keeps what is left to do — a STOP leaves the goal it
+                # interrupted `stopped` and everything after it `pending`, which
+                # is what a resume starts from. The flat view below reports the
+                # run's end the way it always has.
+                for node in run.tree.walk():
+                    if node.kind == "leaf" and node.status == "running":
+                        node.status = "stopped" if state == "stopped" else "failed"
+                if state == "done":
+                    run.tree.status = "done"
             for step in run.plan:
                 if step.status == "running":
                     step.status = "stopped" if state == "stopped" else "failed"
@@ -1910,18 +3261,33 @@ class Operator:
         if error:
             summary += " · " + error
         self._event(run, "end", summary)
+        self._checkpoint(run, force=True)
 
     def _event(self, run: Run, kind: str, text: str, data: Optional[Dict[str, Any]] = None) -> None:
+        """Append an event: to the in-memory ring the page polls and, for a
+        real run, to ``events.jsonl``. The list used to stop growing at
+        EVENT_LIMIT and drop everything after — a long mission's end, which is
+        the part a person reads. Now the oldest go, ``events_base`` counts them,
+        and the file keeps all of them."""
         with self._lock:
-            if len(run.events) >= EVENT_LIMIT:
-                return
-            item: Dict[str, Any] = {"i": len(run.events), "t": round(time.time() - run.started_at, 2),
+            item: Dict[str, Any] = {"i": run.events_base + len(run.events),
+                                    "t": round(time.time() - run.started_at, 2),
                                     "kind": kind, "text": text}
             if data:
                 item["data"] = data
             run.events.append(item)
+            overflow = len(run.events) - EVENT_LIMIT
+            if overflow > 0:
+                del run.events[:overflow]
+                run.events_base += overflow
+        if run.persist:
+            try:
+                self._journal.append_event(run.id, item)
+            except Exception:
+                pass
 
 
-__all__ = ["CONFIRM_TIMEOUT_S", "CONSOLE_TITLE", "LAUNCH_ALLOW", "MAX_LLM_CALLS",
-           "MAX_PLAN_STEPS", "MAX_REPLANS", "Operator", "OperatorBusy",
-           "OperatorUnavailable", "PlanStep", "Run", "platform_status", "quoted_text"]
+__all__ = ["CONFIRM_TIMEOUT_S", "CONSOLE_TITLE", "HEARTBEAT_S", "LAUNCH_ALLOW",
+           "LLM_CAP_CEIL", "MAX_LLM_CALLS", "MAX_PLAN_STEPS", "MAX_REPLANS", "NotRunning",
+           "Operator", "OperatorBusy", "OperatorUnavailable", "PAUSE_MAX_S", "PlanStep", "Run",
+           "RunNotResumable", "UnknownRun", "platform_status", "quoted_text"]

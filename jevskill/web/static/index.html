@@ -151,6 +151,14 @@
               <input type="number" id="cu-budget" min="5" max="3600" step="5" value="90">
             </p>
             <p class="cu-field">
+              <label for="cu-total-budget">total budget (s) — active time, pauses excluded</label>
+              <input type="number" id="cu-total-budget" min="10" max="86400" step="30" value="600">
+            </p>
+            <p class="cu-field">
+              <label for="cu-max-llm">max LLM calls — empty = automatic</label>
+              <input type="number" id="cu-max-llm" min="1" max="200" step="1" placeholder="auto">
+            </p>
+            <p class="cu-field">
               <label for="cu-cap">spend cap USD</label>
               <input type="number" id="cu-cap" min="0" max="100" step="0.05" value="0.50">
             </p>
@@ -161,11 +169,15 @@
           <p class="cu-dry">
             <label class="switch" for="cu-memory"><input type="checkbox" id="cu-memory" checked> memory — reuse what earlier runs learned; a remembered goal replays without Jev or the model</label>
           </p>
+          <p class="cu-dry">
+            <label class="switch" for="cu-flat"><input type="checkbox" id="cu-flat"> flat plan — 1-8 one-window goals only; a long command is not split into phases broken down later</label>
+          </p>
         </details>
 
         <div class="btn-row cu-actions">
           <button type="button" class="tiny" id="cu-plan-btn">plan</button>
           <button type="button" class="btn-primary" id="cu-start">simulate</button>
+          <button type="button" id="cu-pause" aria-pressed="false" disabled>pause</button>
           <button type="button" id="cu-stop" disabled>STOP</button>
         </div>
         <p class="note mono" id="cu-hint"></p>
@@ -185,18 +197,23 @@
 
         <div class="cu-strip">
           <span class="pill" id="cu-state" aria-live="polite">idle</span>
+          <span class="cu-stale hidden" id="cu-stale" role="status"></span>
           <span class="cu-sim hidden" id="cu-sim">simulated</span>
           <span class="mono cu-meta" id="cu-elapsed"></span>
           <span class="mono cu-meta" id="cu-spend"></span>
         </div>
+        <p class="note mono hidden" id="cu-progress"></p>
         <p class="note hidden" id="cu-platform"></p>
 
         <div id="cu-confirm" class="cu-confirm hidden" role="dialog" aria-live="assertive" aria-label="the agent is waiting for a confirmation"></div>
+
+        <div id="cu-resume" class="cu-resume hidden" role="region" aria-label="unfinished runs that can be resumed"></div>
 
         <p class="microlabel cu-sub">plan</p>
         <div id="cu-plan"></div>
 
         <p class="microlabel cu-sub">event log</p>
+        <p class="note mono hidden" id="cu-log-note">earlier events are in events.jsonl — the run's checkpoint directory next to the ledger (cu_runs/&lt;run id&gt;/)</p>
         <div id="cu-log" class="cu-log mono" tabindex="0" aria-label="event log"></div>
 
         <details id="cu-memory-panel" class="cu-memory">

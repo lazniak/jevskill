@@ -687,6 +687,76 @@ def cu_models_payload() -> dict:
     }
 
 
+def _flag(payload: dict, key: str, default: bool) -> bool:
+    """A boolean field where an absent key *and* a JSON ``null`` mean the default.
+
+    ``bool(payload.get(key, True))`` turns ``{"hierarchical": null}`` into
+    ``False`` — a page that sends an unset checkbox as null would silently get
+    today's flat planner instead of the tree it did not opt out of.
+    """
+    value = payload.get(key)
+    return default if value is None else bool(value)
+
+
+def _bounded_int(payload: dict, key: str, default: Optional[int], low: int, high: int) -> Optional[int]:
+    """An optional integer limit, refused (``ValueError`` -> 400) out of range.
+
+    Refused rather than clamped: a ``max_llm_calls`` of 5000 is a typo, and a
+    console that quietly ran with 200 instead would be spending on a number
+    nobody chose. ``null``/absent/"" is the default (``None`` = automatic).
+    """
+    value = payload.get(key)
+    if value is None or value == "":
+        return default
+    wrong = ValueError("%s must be a whole number from %d to %d, got %r" % (key, low, high, value))
+    if isinstance(value, bool):
+        raise wrong
+    if isinstance(value, float):
+        if not value.is_integer():  # 2.5 -> 2 would be another number nobody chose
+            raise wrong
+        number = int(value)
+    elif isinstance(value, int):
+        number = value
+    elif isinstance(value, str):
+        try:
+            number = int(value.strip())
+        except ValueError:
+            raise wrong
+    else:
+        raise wrong
+    if not low <= number <= high:
+        raise ValueError("%s must be from %d to %d, got %d" % (key, low, high, number))
+    return number
+
+
+def _optional_float(payload: dict, key: str) -> Optional[float]:
+    """``None`` when absent or null (resume then keeps the checkpoint's limit)."""
+    value = payload.get(key)
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        raise ValueError("%s must be a number, got %r" % (key, value))
+    number = float(value)
+    if number < 0 or number != number:
+        raise ValueError("%s must be a non-negative number, got %r" % (key, value))
+    return number
+
+
+#: The 400 hint per computer-use route: the one sentence that says what the
+#: body should have looked like.
+_CU_HINTS = {
+    "/api/cu/start": "command is a non-empty string; model an OpenRouter id or null; plan a "
+                     "list of goals (flat, or phases with children); max_llm_calls and "
+                     "max_leaves integers from 1 to 200.",
+    "/api/cu/plan": "command is a non-empty string; model an OpenRouter id or null.",
+    "/api/cu/pause": "send {\"pause\": true} to hold at the next goal, false to continue.",
+    "/api/cu/resume": "run_id is an id from GET /api/cu/runs (YYYYMMDD-HHMMSS-xxxxxx); "
+                      "total_budget_s and usd_cap non-negative numbers; max_llm_calls 1-200.",
+    "/api/cu/memory/forget": "forget takes kind (recipe, plan, lesson) and key.",
+    "/api/cu/memory/clear": "clearing the memory needs {\"confirm\": true}.",
+}
+
+
 class _Handler(BaseHTTPRequestHandler):
     """The whole HTTP surface. Every failure leaves as JSON, never as HTML.
 
@@ -860,6 +930,10 @@ class _Handler(BaseHTTPRequestHandler):
                 self._json(cu_models_payload())
             elif route == "/api/cu/memory":
                 self._json(self.console.operator().experience.listing())
+            elif route == "/api/cu/runs":
+                # What `jevskill cu runs` prints: stopped, interrupted, or failed
+                # with work left — never a finished run, never the live one.
+                self._json({"runs": self.console.operator().runs()})
             elif route in ("/", "/index.html"):
                 self._static("index.html")
             elif route.startswith("/api/"):
@@ -876,8 +950,11 @@ class _Handler(BaseHTTPRequestHandler):
         if not self._guard_origin():
             return
         route = urlparse(self.path).path
+        # The whitelist runs *after* the Host/Origin guard above, so every route
+        # added here inherits it — pause and resume move the desktop too.
         if route not in ("/api/decide", "/api/estimate", "/api/plan", "/api/cu/start",
                          "/api/cu/plan", "/api/cu/stop", "/api/cu/confirm",
+                         "/api/cu/pause", "/api/cu/resume",
                          "/api/cu/memory/forget", "/api/cu/memory/clear"):
             self._error(404, f"no such endpoint: {route}", "See GET / for the console.")
             return
@@ -914,16 +991,29 @@ class _Handler(BaseHTTPRequestHandler):
             self._unexpected(exc)
 
     def _computer_use(self, route: str, payload: dict) -> None:
-        """The computer-use writes — start, plan, stop, confirm, and forgetting
-        what the operator learned. Status codes are the contract:
+        """The computer-use writes — start, plan, pause, resume, stop, confirm,
+        and forgetting what the operator learned. Status codes are the contract:
 
-        * ``409`` a run is active (start) or nothing is waiting (confirm)
+        * ``202`` a run started (start) or continues from its checkpoint (resume)
+        * ``400`` a malformed body: an empty command, a plan with no usable
+          goal, a limit out of range, or a ``run_id`` that is not a run id
+          (``../x`` never reaches the filesystem)
+        * ``404`` resume: no checkpoint exists for that (well-formed) run id
+        * ``409`` a run is active (start, resume), nothing is waiting (confirm),
+          no run is active (pause), or the run cannot be resumed — it finished,
+          or its checkpoint is fresh and it may be alive in another console
         * ``501`` a live run cannot happen on this machine (the reason says why)
         * ``503`` a key is missing — Jev's, or the planning model's
         * ``502`` the planning model's provider failed
+
+        ``UnknownRun``, ``RunNotResumable`` and ``NotRunning`` are all
+        ``LookupError`` subclasses, so they are caught *before* the generic
+        ``LookupError`` that answers confirm's "nothing is waiting" with 409 —
+        in the other order an unknown run would read as a busy console.
         """
         from ..cu.llm import LLMError
-        from ..cu.runner import OperatorBusy, OperatorUnavailable
+        from ..cu.runner import (NotRunning, OperatorBusy, OperatorUnavailable,
+                                 RunNotResumable, UnknownRun)
 
         operator = self.console.operator()
         try:
@@ -938,11 +1028,27 @@ class _Handler(BaseHTTPRequestHandler):
                     total_budget_s=float(payload.get("total_budget_s", 600) or 600),
                     usd_cap=float(payload.get("usd_cap", 0.5) or 0.0),
                     memory=bool(payload.get("memory", True)),
+                    hierarchical=_flag(payload, "hierarchical", True),
+                    max_llm_calls=_bounded_int(payload, "max_llm_calls", None, 1, 200),
+                    max_leaves=_bounded_int(payload, "max_leaves", 60, 1, 200),
                 )
                 self._json({"ok": True, "run_id": run_id, "status": operator.status()}, 202)
             elif route == "/api/cu/plan":
                 self._json(operator.plan(str(payload.get("command", "")), payload.get("model"),
-                                         memory=bool(payload.get("memory", True))))
+                                         memory=bool(payload.get("memory", True)),
+                                         hierarchical=_flag(payload, "hierarchical", True)))
+            elif route == "/api/cu/pause":
+                self._json({"ok": True,
+                            "status": operator.pause(_flag(payload, "pause", True))})
+            elif route == "/api/cu/resume":
+                run_id = operator.resume(
+                    payload.get("run_id"),
+                    payload.get("model"),
+                    total_budget_s=_optional_float(payload, "total_budget_s"),
+                    usd_cap=_optional_float(payload, "usd_cap"),
+                    max_llm_calls=_bounded_int(payload, "max_llm_calls", None, 1, 200),
+                )
+                self._json({"ok": True, "run_id": run_id, "status": operator.status()}, 202)
             elif route == "/api/cu/memory/forget":
                 forgot = operator.experience.forget(str(payload.get("kind", "")),
                                                     str(payload.get("key", "")))
@@ -962,13 +1068,20 @@ class _Handler(BaseHTTPRequestHandler):
             self._error(409, str(exc), "Stop the active run first.", status_payload=operator.status())
         except OperatorUnavailable as exc:
             self._error(501, str(exc), "A dry run (dry_run: true) still works here.")
+        except UnknownRun as exc:
+            self._error(404, "no checkpoint for run %s" % (exc,),
+                        "GET /api/cu/runs lists the runs that can be resumed.")
+        except RunNotResumable as exc:
+            self._error(409, str(exc), "Only a stopped, interrupted or failed run with work left "
+                                       "can be resumed; start a new run instead.")
+        except NotRunning as exc:
+            self._error(409, str(exc), "Pause holds an active run between goals; nothing is running.")
         except LookupError as exc:
             self._error(409, str(exc), "The run is not waiting for a confirmation.")
         except LLMError as exc:
             self._error(502, str(exc), "The planning model's provider failed; pick another model or retry.")
         except (TypeError, ValueError) as exc:
-            self._error(400, str(exc), "command is a non-empty string; model an OpenRouter id or "
-                                       "null; forget takes kind (recipe, plan, lesson) and key.")
+            self._error(400, str(exc), _CU_HINTS.get(route, _CU_HINTS["/api/cu/start"]))
 
     def _unexpected(self, exc: Exception) -> None:  # pragma: no cover - defensive
         # The hint promises a traceback in the terminal; print it, or the

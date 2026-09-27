@@ -19,6 +19,8 @@ jevskill advice                # what to do about it: KEEP / STOP / ESCALATE / U
 jevskill web                   # the local console on http://127.0.0.1:8765
 jevskill cu run "<command>" --model <id>   # drive this desktop: Jev per step, the model between
 jevskill cu stop               # stop the active run, from any terminal
+jevskill cu runs               # runs that can be resumed; jevskill cu resume <run_id>
+jevskill cu memory             # what the operator learned; --forget KIND KEY, --clear
 ```
 
 ### `jevskill web` — the local console
@@ -50,16 +52,21 @@ The JSON API behind it is the same surface, for scripting: `GET /api/doctor`
 ### `jevskill cu` — computer use from a terminal
 
 The operator behind the console's *computer use* view, without the page. A
-natural-language command becomes 1–8 sub-goals; Jev decides every step; the
-planning model (`--model`, any OpenRouter id) is consulted only between steps —
-to plan, compose text, verify, escalate, re-plan. Omit `--model` and the command
-is one goal with nothing generated. Events print as they happen; a destructive
-step asks `y/N` on stdin.
+natural-language command becomes 1–8 sub-goals — or, for a long command, up to
+12 phases broken down into goals when the run reaches them; Jev decides every
+step; the planning model (`--model`, any OpenRouter id) is consulted only
+between steps — to plan, break a phase down, compose text, verify, escalate,
+repair. Omit `--model` and the command is one goal with nothing generated.
+Events print as they happen; a destructive step asks `y/N` on stdin. What a run
+learns (recipes, plans, lessons) is replayed on the next run of the same goal
+and checked in code before any model is asked.
 
 ```bash
 jevskill cu run "Open Notepad and type \"hello\"" --model anthropic/claude-sonnet-5
 jevskill cu run "Open Notepad and type \"hello\"" --dry-run      # plan for real, simulate the steps
 jevskill cu stop                                                  # from any other terminal
+jevskill cu runs                                                  # stopped / interrupted runs
+jevskill cu resume 20260927-221530-a1b2c3                         # continue one where it stopped
 ```
 
 | Flag (`run`) | Default | Effect |
@@ -69,7 +76,16 @@ jevskill cu stop                                                  # from any oth
 | `--max-steps N` | `25` | Jev steps per sub-goal |
 | `--budget-s S` | `90` | seconds per sub-goal |
 | `--usd-cap USD` | `0.50` | stop when Jev + model spend passes this |
-| `--ledger-dir DIR` | — | directory holding `.jevskill/ledger.jsonl` (and the stop file) |
+| `--total-budget-s S` | `600` | active seconds for the whole run (pauses excluded, carried across a resume) |
+| `--max-llm-calls N` | auto | planning-model calls allowed: 40, plus 6 per phase for a tree, at most 200 |
+| `--flat` | off | plan only one-window goals (no phases) — the planning prompt of 0.14.0 |
+| `--no-memory` | off | neither replay nor learn |
+| `--ledger-dir DIR` | — | directory holding `.jevskill/ledger.jsonl` (and the stop file, `cu_runs/`) |
+
+`cu resume <run_id>` takes `--model`, `--total-budget-s` and `--usd-cap` to
+override the checkpoint's; an unknown id exits `2`. A goal that had already
+acted when the run stopped is not simply rerun — the screen is checked in code
+first, then the model is told how far it got, or (no model) you are asked.
 
 **To stop a run:** Ctrl+C in its terminal, **Ctrl+Alt+Esc** on the keyboard, the
 mouse in the **top-left corner** of the screen, or `jevskill cu stop` — which
@@ -77,7 +93,11 @@ touches `.jevskill/cu.stop`, polled every 50 ms while a run is armed. The check
 runs before every decision and again before every action reaches the desktop.
 Needs Windows and the `cu` extra (`pip install "jevskill[cu]"`) for a live run;
 a dry run works anywhere. The console exposes the same operator as
-`GET /api/cu/status`, `GET /api/cu/models`, `POST /api/cu/start|plan|stop|confirm`.
+`GET /api/cu/status`, `GET /api/cu/models`, `GET /api/cu/runs`, `GET /api/cu/memory`,
+`POST /api/cu/start|plan|stop|confirm|pause|resume`, `POST /api/cu/memory/forget|clear`.
+`start` takes `hierarchical` (default true), `max_llm_calls` (1–200) and `max_leaves`
+(default 60); `resume` answers `404` for an unknown run and `409` for a finished
+one or one still alive in another console.
 
 ## The zero-install scripts (`skills/jev/scripts/`)
 
