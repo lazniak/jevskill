@@ -120,6 +120,54 @@ told they had been tried.
 - The total budget counts active time: pauses are excluded, and a resumed run
   carries its earlier segments.
 
+### Fixed — before release, from an adversarial review of the tree
+
+An adversarial review of the unreleased tree code confirmed 25 defects (one
+more was rejected); each fix has a regression test that failed on the first
+version (`tests/test_cu_mission_review.py`, `tests/test_cu_review_memory.py`).
+The ones that could act on the wrong thing:
+
+- **A phase in a program with no window ran in the window pinned before** — in
+  the simulator a Calculator goal typed into Notepad and the run ended `done`.
+  A goal now works only in a window of the program it names: an allow-listed
+  program with no window is opened (through the execute hook), otherwise the
+  user is asked to bring it up; the old pin is never borrowed.
+- **A resume whose window had closed pinned the user's other document** of the
+  same program. Re-finding a window is now strict about the saved title, and
+  with several windows of one program the run prefers the one it worked in.
+- **The total budget used wall time**, so a pause longer than what was left
+  ended the run on *continue*, and every resume granted a fresh budget. It is
+  active time across segments now; a resume with the budget spent is refused
+  until a larger one is given. A running phase's seconds are checkpointed, so a
+  resumed phase no longer gets its whole budget back.
+- **No heartbeat during a model call** (up to 60 s, against a 30 s staleness
+  mark): a second console could list a live run as interrupted and resume it
+  onto the same desktop. A timer thread writes a heartbeat file every 5 s.
+- **`give_up`, or the user's *no*, at a phase acceptance was sent to the level
+  above**, which re-planned and kept acting. It ends the run. **STOP during a
+  repair question** ended the run *failed* (and counted against a remembered
+  plan); it is *stopped*. An interrupted goal on resume goes up the tree like
+  any other failure instead of failing the run with repairs left above it.
+- **Plans were cut**: a user or remembered plan over 8 goals lost its tail
+  (the Save and the Close) and the run still reported `done`; `max_leaves` was
+  not applied to a model's tree or to a repair's nested children (4 × 8 goals
+  ran under a limit of 10). Remembered and user plans are used whole; a model
+  tree over the limit is broken down as it is reached, or refused.
+- **False proof of done**: yesterday's file satisfied a `file_exists` check
+  and rescued today's failed save; an unsaved title (`*hello.txt - Notatnik`)
+  passed three title checks; a typed value still in its field passed for a goal
+  whose committing click never happened. File checks now count only files
+  written since the run began, a dirty title is undecided, and a field's value
+  is evidence only when typing it was the goal's last step.
+- **Memory**: dry runs could demote a remembered break-down; a break-down
+  carrying the command's file name was replayed inside the next mission; a
+  phase accepted with a failed goal was stored without it; a replay that did
+  every step but missed the goal was never demoted; a `forget` from the CLI did
+  not reach a running console; the size bounds were undone by the merge on
+  save; a malformed recipe row crashed verification. All fixed.
+- A resume numbered its events from the last checkpoint and reused indices a
+  crashed segment had already written.
+
 ## [0.14.0] — 2026-09-21
 
 ### Added — a computer-use panel: one command, Jev per step, an LLM between

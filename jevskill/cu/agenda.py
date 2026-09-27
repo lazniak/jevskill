@@ -84,6 +84,26 @@ IRREVERSIBLE_VERBS: Tuple[str, ...] = (
 # boundary on both sides would miss every inflected Polish form.
 _VERB_RE = re.compile(r"(?<!\w)(?:%s)" % "|".join(re.escape(v) for v in IRREVERSIBLE_VERBS))
 _WIN_VAR_RE = re.compile(r"%([^%\s]+)%")
+#: Unsaved-document dots. A leading ``*`` is the classic marker ("*hello.txt -
+#: Notatnik"); the dots are counted anywhere because editors put them in
+#: different places — in front of the name, after it, between it and the app.
+UNSAVED_DOTS: Tuple[str, ...] = ("•", "●")
+#: How much older than ``since`` a file may be and still count as written by
+#: this run: file-system mtimes are coarse (FAT keeps two seconds, NTFS flushes
+#: lazily), and a save that landed a moment before the mark is still this save.
+MTIME_SLACK_S = 1.0
+
+
+def is_unsaved_title(title: Any) -> bool:
+    """Does this window title say the document has unsaved changes?
+
+    A title is the operator's cheapest proof that a save happened — and
+    ``*hello.txt - Notatnik`` contains ``hello.txt`` exactly like the saved
+    ``hello.txt - Notatnik`` does. Reading the dirty title as "saved" closed a
+    save goal whose document was never written (review finding #18).
+    """
+    text = str(title or "").lstrip()
+    return text.startswith("*") or any(dot in text for dot in UNSAVED_DOTS)
 
 
 # --------------------------------------------------------------------------- #
@@ -147,17 +167,34 @@ def _expand_path(path: str) -> str:
     return os.path.expanduser(os.path.expandvars(path))
 
 
-def _eval_one(check: Check, snapshot: Any) -> Tuple[Optional[bool], str]:
+def _eval_one(check: Check, snapshot: Any,
+              since: Optional[float] = None) -> Tuple[Optional[bool], str]:
     if check.kind == "title_contains":
         title = getattr(snapshot, "window_title", None) if snapshot is not None else None
         if not isinstance(title, str):
             return None, "title_contains %r: undecided" % check.arg
         ok = check.arg.casefold() in title.casefold()
+        if ok and is_unsaved_title(title):
+            # The name is there, but so is the unsaved marker: the document
+            # this title names has not been written yet. Not a no either —
+            # the save may be one keystroke away — so it is left undecided.
+            return None, "title_contains %r: unsaved title, undecided" % check.arg
         return ok, "title_contains %r: %s" % (check.arg, str(ok).lower())
     path = _expand_path(check.arg)
     if not os.path.isfile(path):
         return False, "%s %s: false" % (check.kind, path)
+    stale = False
+    if since is not None:
+        try:
+            stale = os.path.getmtime(path) < float(since) - MTIME_SLACK_S
+        except (OSError, TypeError, ValueError):
+            return None, "%s %s: mtime unreadable" % (check.kind, path)
     if check.kind == "file_exists":
+        if stale:
+            # Yesterday's hello.txt on the Desktop is not proof that today's
+            # save happened (review finding #17): only a file written since the
+            # run started can close the goal in code.
+            return None, "file_exists %s: stale" % path
         return True, "file_exists %s: true" % path
     try:
         with open(path, "rb") as fh:
@@ -167,12 +204,17 @@ def _eval_one(check: Check, snapshot: Any) -> Tuple[Optional[bool], str]:
         # not a definite no, so not a reason to repair.
         return None, "file_contains %s: unreadable" % path
     ok = check.text in head.decode("utf-8", errors="replace")
+    if ok and stale:
+        # ``since`` only ever weakens a yes: an old file that lacks the text
+        # is still a definite no about the file as it is now.
+        return None, "file_contains %s: stale" % path
     # The detail never quotes the file: it lands in events, the journal and
     # the ledger, and the file may be the user's document.
     return ok, "file_contains %s: %s" % (path, str(ok).lower())
 
 
-def evaluate_checks(checks: Optional[Sequence[Any]], snapshot: Any) -> Tuple[Optional[bool], str]:
+def evaluate_checks(checks: Optional[Sequence[Any]], snapshot: Any, *,
+                    since: Optional[float] = None) -> Tuple[Optional[bool], str]:
     """``(True, detail)`` all hold, ``(False, detail)`` one is definitely false,
     ``(None, "")`` nothing to decide on or one cannot be decided.
 
@@ -180,6 +222,12 @@ def evaluate_checks(checks: Optional[Sequence[Any]], snapshot: Any) -> Tuple[Opt
     file whatever the title says. Never raises — it runs at a phase close on
     the operator thread, and an exception there would end the run over a
     probe.
+
+    ``since`` (a ``time.time()`` stamp, normally the run's start) makes a file
+    check prove only what this run wrote: a file whose mtime is older than
+    ``since`` minus :data:`MTIME_SLACK_S` is undecided rather than true. A
+    missing file is still false. ``None`` keeps the check blind to age, as it
+    always was.
     """
     parsed: List[Check] = []
     for c in checks or ():
@@ -192,7 +240,7 @@ def evaluate_checks(checks: Optional[Sequence[Any]], snapshot: Any) -> Tuple[Opt
     results: List[Tuple[Optional[bool], str]] = []
     for c in parsed:
         try:
-            results.append(_eval_one(c, snapshot))
+            results.append(_eval_one(c, snapshot, since))
         except Exception:  # noqa: BLE001 - see docstring
             results.append((None, "%s: error" % c.kind))
     detail = "; ".join(d for _, d in results)
@@ -519,13 +567,18 @@ def _as_weight(value: Any) -> float:
     return min(WEIGHT_MAX, max(WEIGHT_MIN, w))
 
 
-def _normalise(item: Any, depth: int) -> Optional[Dict[str, Any]]:
+def _normalise(item: Any, depth: int,
+               max_children: Optional[int] = None) -> Optional[Dict[str, Any]]:
     """One raw item -> a clean dict, or None for garbage.
 
     Collapse and depth forcing happen here, before any id exists, so a
     collapsed one-child phase takes its parent's id instead of leaving a gap
     ("1", "3") that a reader would take for a dropped goal.
+
+    ``max_children`` is the per-phase fan-out, at every level below this one;
+    ``None`` is :data:`MAX_CHILDREN`, the bound on a fresh model reply.
     """
+    child_cap = MAX_CHILDREN if max_children is None else max(0, int(max_children))
     if isinstance(item, str):
         goal = item.strip()
         if not goal:
@@ -571,11 +624,11 @@ def _normalise(item: Any, depth: int) -> Optional[Dict[str, Any]]:
     children: List[Dict[str, Any]] = []
     if isinstance(raw_children, list):
         for raw in raw_children:
-            norm = _normalise(raw, depth + 1)
+            if len(children) >= child_cap:
+                break
+            norm = _normalise(raw, depth + 1, max_children)
             if norm is not None:
                 children.append(norm)
-            if len(children) >= MAX_CHILDREN:
-                break
     if len(children) == 1:
         # A phase of one goal is that goal; keeping the level would cost a
         # phase close (and maybe a check read) for nothing.
@@ -613,17 +666,24 @@ def _build(norm: Dict[str, Any], depth: int, node_id: str, source: str,
 
 def coerce_tree(items: Any, *, depth: int, id_prefix: str, source: str,
                 make_step: Optional[Callable[[PlanNode], Any]] = None,
-                max_items: Optional[int] = None) -> List[PlanNode]:
+                max_items: Optional[int] = None,
+                max_children: Optional[int] = None) -> List[PlanNode]:
     """Model, memory or user items -> nodes, dropping what cannot be used.
 
     Today's flat reply (strings, ``{goal, done_when, launch}``) comes out as the
     same leaves the flat planner made, so a short command costs exactly what
     it cost before the tree. The returned top-level nodes have no parent: the
     caller attaches them where they belong with :meth:`PlanNode.add_children`.
+
+    ``max_items`` caps the top level; ``max_children`` caps each nested
+    phase's children (``None``: :data:`MAX_CHILDREN`). The defaults bound a
+    model's reply. A tree the user wrote, or one memory replays, already ran or
+    was asked for as it is: capping its phases at eight silently dropped the
+    tail of a ten-child phase (review finding #1), so the caller lifts both.
     """
     if not isinstance(items, (list, tuple)):
         raise ValueError("a plan is a list")
-    normed = [n for n in (_normalise(i, depth) for i in items) if n is not None]
+    normed = [n for n in (_normalise(i, depth, max_children) for i in items) if n is not None]
     if max_items is not None:
         cap = max(0, int(max_items))
     else:

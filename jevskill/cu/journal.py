@@ -42,6 +42,7 @@ __all__ = [
     "STALE_S",
     "ACTIVE_STATES",
     "EVENTS_FILE",
+    "HEARTBEAT_FILE",
     "RUN_FILE",
     "UnknownRun",
     "RunNotResumable",
@@ -69,6 +70,15 @@ STALE_S = 30.0
 
 EVENTS_FILE = "events.jsonl"
 RUN_FILE = "run.json"
+#: A tiny file holding the last heartbeat, written by a timer thread while a
+#: run is alive. ``run.json`` alone was not enough: it is written from the run
+#: thread, and that thread blocks for up to a minute inside a model call — longer
+#: than STALE_S — so a live run looked dead to a second console (review finding,
+#: 2026-09-27). A separate file lets the beat be written without serialising the
+#: tree the run thread is changing.
+HEARTBEAT_FILE = "heartbeat"
+#: How much of the end of ``events.jsonl`` ``last_event_index`` reads.
+_TAIL_BYTES = 65536
 
 #: Leaf/phase statuses that still represent open work inside a checkpointed
 #: tree. Duplicated here (rather than imported from ``agenda.py``) because
@@ -240,7 +250,79 @@ class RunStore:
             raise UnknownRun(run_id)
         if data.get("schema") != SCHEMA:
             raise UnknownRun(run_id)
+        beat = self._beat_at(run_id)
+        if beat is not None:
+            saved = data.get("heartbeat_at")
+            if not _is_number(saved) or beat > saved:
+                data["heartbeat_at"] = beat
         return data
+
+    def beat(self, run_id: str, when: Optional[float] = None) -> bool:
+        """Record that the run is alive, without touching ``run.json``.
+
+        Atomic like :meth:`checkpoint`, and as forgiving: a failed beat only
+        makes a live run look older to another console.
+        """
+        run_id = valid_run_id(run_id)
+        run_dir = self.root / run_id
+        try:
+            run_dir.mkdir(parents=True, exist_ok=True)
+            handle, tmp = tempfile.mkstemp(dir=str(run_dir), prefix=HEARTBEAT_FILE + ".",
+                                           suffix=".tmp")
+        except OSError:
+            return False
+        try:
+            with os.fdopen(handle, "w", encoding="utf-8") as stream:
+                stream.write(repr(float(time.time() if when is None else when)))
+            os.replace(tmp, str(run_dir / HEARTBEAT_FILE))
+        except OSError:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            return False
+        return True
+
+    def _beat_at(self, run_id: str) -> Optional[float]:
+        try:
+            text = (self.root / run_id / HEARTBEAT_FILE).read_text(encoding="utf-8")
+            value = float(text.strip())
+        except (OSError, ValueError):
+            return None
+        return value if value > 0 else None
+
+    def last_event_index(self, run_id: str) -> int:
+        """The largest ``i`` in ``events.jsonl``, or -1.
+
+        Events reach the file as they happen; ``events_next`` in ``run.json``
+        only at checkpoints. A resume that numbered from the checkpoint reused
+        up to a heartbeat's worth of indices a crashed segment had already
+        written, and ``events(since)`` then returned both copies interleaved.
+        Only the tail is read: the file of a long mission is large and the
+        last index is at its end.
+        """
+        run_id = valid_run_id(run_id)
+        path = self.root / run_id / EVENTS_FILE
+        try:
+            with open(path, "rb") as stream:
+                stream.seek(0, os.SEEK_END)
+                size = stream.tell()
+                stream.seek(max(0, size - _TAIL_BYTES))
+                tail = stream.read().decode("utf-8", errors="replace")
+        except OSError:
+            return -1
+        best = -1
+        for raw in tail.splitlines():
+            raw = raw.strip()
+            if not raw:
+                continue
+            try:
+                item = json.loads(raw)
+            except ValueError:
+                continue  # a torn line, or the cut-off first line of the tail
+            if isinstance(item, dict) and _is_number(item.get("i")):
+                best = max(best, int(item["i"]))
+        return best
 
     def events(
         self, run_id: str, since: int = 0, limit: Optional[int] = None

@@ -64,6 +64,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
+from .agenda import UNSAVED_DOTS, is_unsaved_title
 from .hashing import tree_hash
 from .macros import goal_fingerprint
 from .reduce import candidates as reduce_candidates
@@ -258,6 +259,51 @@ def _template_items(items: Iterable[Any], goal_slots: Sequence[str] = (),
     return out
 
 
+def _item_texts(items: Iterable[Any]) -> Iterable[str]:
+    """Every string of nested plan items a replay would act on or check: the
+    fields :func:`_template_items` templates, plus ``app``, which it copies."""
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        for key in ("goal", "done_when", "launch", "app"):
+            if isinstance(item.get(key), str):
+                yield item[key]
+        for check in item.get("checks") or []:
+            if isinstance(check, dict):
+                for key in ("arg", "text"):
+                    if isinstance(check.get(key), str):
+                        yield check[key]
+        children = item.get("children")
+        if isinstance(children, list):
+            yield from _item_texts(children)
+
+
+def _value_pattern(value: str) -> "re.Pattern[str]":
+    """``value`` as a whole word, case-insensitively: the quoted ``a`` of a
+    command must not be found inside "Save As", yet ``Hello.txt`` written by
+    the model is still the user's ``hello.txt``."""
+    lead = r"(?<!\w)" if re.match(r"\w", value) else ""
+    tail = r"(?!\w)" if re.search(r"\w$", value) else ""
+    return re.compile(lead + re.escape(value) + tail, re.IGNORECASE)
+
+
+def _leaks_command_value(items: Iterable[Any], goal_slots: Sequence[str],
+                         command_slots: Sequence[str]) -> bool:
+    """Would templating ``items`` with ``goal_slots`` alone leave one of the
+    command's values behind as a literal? The goal's own values are cut out
+    first, exactly as :func:`make_template` will, so ``hello`` is not found
+    inside a ``hello.txt`` that becomes ``⟦g0⟧``."""
+    extra = [v for v in command_slots if v and v.strip() and v not in goal_slots]
+    if not extra:
+        return False
+    patterns = [_value_pattern(v) for v in extra]
+    for text in _item_texts(items):
+        rest = make_template(text, goal_slots, ()) or ""
+        if any(p.search(rest) for p in patterns):
+            return True
+    return False
+
+
 def _fill_items(items: Iterable[Any], goal_slots: Sequence[str] = (),
                 command_slots: Optional[Sequence[str]] = ()) -> Optional[List[Dict[str, Any]]]:
     """The inverse of :func:`_template_items`, or ``None`` if any marker has no
@@ -318,8 +364,18 @@ def _plan_kind(key: str) -> str:
 
 
 def _norm_title(title: str) -> str:
-    """A title without Notepad's unsaved marker and without spacing noise."""
-    return " ".join(str(title or "").replace("•", " ").lstrip("* ").split()).casefold()
+    """A title without the unsaved marker and without spacing noise.
+
+    Stripping the marker is right for "is this the same window?" — typing
+    into ``hello.txt`` turns its title into ``*hello.txt`` and opens nothing
+    new. It is wrong for "is the goal done?": a caller that uses a title as
+    proof must also compare :func:`is_unsaved_title`, as :func:`recipe_check`
+    does, or ``*hello.txt - Notatnik`` proves a save that never happened.
+    """
+    text = str(title or "")
+    for dot in UNSAVED_DOTS:
+        text = text.replace(dot, " ")
+    return " ".join(text.lstrip("* ").split()).casefold()
 
 
 def _app_key(app: str) -> str:
@@ -392,6 +448,27 @@ def describe(op: str, identity: Optional[Sequence[str]], key: Optional[str] = No
 # --------------------------------------------------------------------------- #
 
 
+def _learned_at(data: Dict[str, Any]) -> float:
+    """When a stored row was last *learned*. A row written before the field
+    existed falls back to ``last_used``: the latest a learn can have been."""
+    if data.get("learned_at") is not None:
+        return float(data["learned_at"])
+    return float(data.get("last_used", 0.0))
+
+
+def _value_row(row: Any) -> bool:
+    """``[identity, text]``: a non-empty list of strings and a string.
+
+    Anything else in the file — ``[[]]``, a three-element row, a number for the
+    text — was accepted once and then crashed :func:`recipe_check` on the
+    tuple unpacking, at a goal's verification (review finding #24).
+    """
+    return (isinstance(row, list) and len(row) == 2
+            and isinstance(row[0], list) and bool(row[0])
+            and all(isinstance(part, str) for part in row[0])
+            and isinstance(row[1], str))
+
+
 @dataclass
 class RecipeStep:
     op: str
@@ -448,6 +525,9 @@ class Recipe:
     created: float = 0.0
     last_used: float = 0.0
     last_error: str = ""
+    #: When the recipe was last learned from a real run — not replayed, not
+    #: failed. Only a learn after a "forget" brings a forgotten row back.
+    learned_at: float = 0.0
 
     @property
     def usable(self) -> bool:
@@ -462,7 +542,7 @@ class Recipe:
                 "failures": self.failures, "streak_failed": self.streak_failed,
                 "learned_ms": round(self.learned_ms, 1), "replay_ms": round(self.replay_ms, 1),
                 "created": self.created, "last_used": self.last_used,
-                "last_error": self.last_error}
+                "last_error": self.last_error, "learned_at": self.learned_at}
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Recipe":
@@ -473,7 +553,8 @@ class Recipe:
                           if isinstance(s, dict)],
                    start_title=str(data.get("start_title", "")),
                    end_title=str(data.get("end_title", "")),
-                   values=[list(v) for v in data.get("values") or [] if isinstance(v, list)],
+                   values=[[list(v[0]), v[1]] for v in data.get("values") or []
+                           if _value_row(v)],
                    after_launch=bool(data.get("after_launch", False)),
                    successes=int(data.get("successes", 0)),
                    failures=int(data.get("failures", 0)),
@@ -482,7 +563,8 @@ class Recipe:
                    replay_ms=float(data.get("replay_ms", 0.0)),
                    created=float(data.get("created", 0.0)),
                    last_used=float(data.get("last_used", 0.0)),
-                   last_error=str(data.get("last_error", "")))
+                   last_error=str(data.get("last_error", "")),
+                   learned_at=_learned_at(data))
 
 
 @dataclass
@@ -496,6 +578,8 @@ class PlanMemory:
     streak_failed: int = 0
     created: float = 0.0
     last_used: float = 0.0
+    #: See :attr:`Recipe.learned_at`.
+    learned_at: float = 0.0
 
     @property
     def usable(self) -> bool:
@@ -505,7 +589,7 @@ class PlanMemory:
         return {"command": self.command, "example": self.example, "steps": self.steps,
                 "model": self.model, "successes": self.successes, "failures": self.failures,
                 "streak_failed": self.streak_failed, "created": self.created,
-                "last_used": self.last_used}
+                "last_used": self.last_used, "learned_at": self.learned_at}
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "PlanMemory":
@@ -516,7 +600,8 @@ class PlanMemory:
                    failures=int(data.get("failures", 0)),
                    streak_failed=int(data.get("streak_failed", 0)),
                    created=float(data.get("created", 0.0)),
-                   last_used=float(data.get("last_used", 0.0)))
+                   last_used=float(data.get("last_used", 0.0)),
+                   learned_at=_learned_at(data))
 
 
 @dataclass
@@ -531,6 +616,8 @@ class Lesson:
     error: str = ""
     worked_instead: str = ""
     last_used: float = 0.0
+    #: See :attr:`Recipe.learned_at`; every recorded failure is a learn.
+    learned_at: float = 0.0
 
     def line(self) -> str:
         what = describe(self.op, self.identity, self.key)
@@ -555,7 +642,8 @@ class Lesson:
         return {"app": self.app, "goal": self.goal, "op": self.op,
                 "identity": list(self.identity) if self.identity else None, "key": self.key,
                 "kind": self.kind, "count": self.count, "error": self.error,
-                "worked_instead": self.worked_instead, "last_used": self.last_used}
+                "worked_instead": self.worked_instead, "last_used": self.last_used,
+                "learned_at": self.learned_at}
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Lesson":
@@ -566,7 +654,8 @@ class Lesson:
                    key=data.get("key"), kind=str(data.get("kind", "unchanged")),
                    count=int(data.get("count", 0)), error=str(data.get("error", "")),
                    worked_instead=str(data.get("worked_instead", "")),
-                   last_used=float(data.get("last_used", 0.0)))
+                   last_used=float(data.get("last_used", 0.0)),
+                   learned_at=_learned_at(data))
 
 
 # --------------------------------------------------------------------------- #
@@ -718,10 +807,12 @@ def literal_check(done_when: str, snapshot: Any) -> Optional[bool]:
     model, it is not evidence of "not done".
 
     Conservative on purpose. A ``done_when`` that talks about the title is
-    checked against the title only. Otherwise the values must sit in an editor
-    (``document`` or ``edit``) **with no dialog up** — while a Save As dialog is
-    open, ``hello.txt`` sitting in its file-name field says nothing about
-    whether the file was saved.
+    checked against the title only, and a title with an unsaved marker
+    (``*hello.txt - Notatnik``) proves nothing: it names the file the document
+    will be saved as, not one that was written. Otherwise the values must sit
+    in an editor (``document`` or ``edit``) **with no dialog up** — while a
+    Save As dialog is open, ``hello.txt`` sitting in its file-name field says
+    nothing about whether the file was saved.
     """
     text = str(done_when or "")
     quotes = extract_slots(text) + [m.group(1) for m in _SINGLE.finditer(text)]
@@ -729,9 +820,12 @@ def literal_check(done_when: str, snapshot: Any) -> Optional[bool]:
     if not quotes or snapshot is None:
         return None
     lowered = text.casefold()
-    title = str(getattr(snapshot, "window_title", "") or "").casefold()
+    raw_title = str(getattr(snapshot, "window_title", "") or "")
+    title = raw_title.casefold()
     if "title" in lowered or "tytu" in lowered:
-        return True if all(q.casefold() in title for q in quotes) else None
+        if not all(q.casefold() in title for q in quotes):
+            return None
+        return None if is_unsaved_title(raw_title) else True
     elements = as_elements(getattr(snapshot, "elements", []) or [])
     if any(el.role == "dialog" for el in elements):
         return None
@@ -740,6 +834,24 @@ def literal_check(done_when: str, snapshot: Any) -> Optional[bool]:
     if values and all(any(q.casefold() in v for v in values) for q in quotes):
         return True
     return None
+
+
+def _values_are_the_end(recipe: "Recipe") -> bool:
+    """May "every typed value is still in its field" prove this goal done?
+
+    Only when typing was the goal's last act: its last step is the ``type``
+    that produced one of the values. A recipe that typed ``foo`` into Find and
+    then clicked "Find next" left ``foo`` in the field — and so does a run that
+    typed ``foo`` and never clicked (review finding #22). What committed that
+    goal was the click, and a field cannot show a click.
+    """
+    if not recipe.steps:
+        return False
+    last = recipe.steps[-1]
+    if last.op != "type" or not last.identity or last.text is None:
+        return False
+    return any(list(row[0]) == list(last.identity) and row[1] == last.text
+               for row in recipe.values)
 
 
 def recipe_check(recipe: Optional["Recipe"], snapshot: Any, *,
@@ -751,21 +863,39 @@ def recipe_check(recipe: Optional["Recipe"], snapshot: Any, *,
     a goal that types into Notepad leaves the title as it was, and "the title
     matches" would then be true before anything was typed. A goal with no steps
     (the launch already did it) is the exception — its check *is* "this is the
-    window it ended in". Otherwise every recorded field value must be present.
+    window it ended in". The title must also be as saved as it was then: the
+    comparison ignores the unsaved marker, so without that ``*hello.txt -
+    Notatnik`` matched a learned ``hello.txt - Notatnik`` and proved a save that
+    never happened (review finding #18).
+
+    Failing that, the recorded field values — but only for a goal whose last
+    step typed one of them (see :func:`_values_are_the_end`).
+
+    Never raises: a malformed row that slipped past :meth:`Recipe.from_dict`
+    is "cannot tell", not an exception at a goal's verification.
     """
+    try:
+        return _recipe_check(recipe, snapshot, goal_slots, command_slots)
+    except Exception:  # noqa: BLE001 - see docstring
+        return None
+
+
+def _recipe_check(recipe: Optional["Recipe"], snapshot: Any, goal_slots: Sequence[str],
+                  command_slots: Optional[Sequence[str]]) -> Optional[bool]:
     if recipe is None or snapshot is None:
         return None
-    title = _norm_title(getattr(snapshot, "window_title", ""))
+    raw_title = str(getattr(snapshot, "window_title", "") or "")
+    title = _norm_title(raw_title)
     end = fill(recipe.end_title, goal_slots, command_slots)
     start = fill(recipe.start_title, goal_slots, command_slots)
     if recipe.steps:
         discriminative = bool(end) and _norm_title(end) != _norm_title(start or "")
     else:
         discriminative = bool(end) and recipe.after_launch
-    if discriminative and end is not None:
-        if _norm_title(end) == title:
-            return True
-    if recipe.values:
+    if discriminative and end is not None and _norm_title(end) == title \
+            and is_unsaved_title(end) == is_unsaved_title(raw_title):
+        return True
+    if recipe.values and _values_are_the_end(recipe):
         elements = as_elements(getattr(snapshot, "elements", []) or [])
         for identity, text_t in recipe.values:
             text = fill(text_t, goal_slots, command_slots)
@@ -791,11 +921,17 @@ class Experience:
         self.plans: Dict[str, PlanMemory] = {}
         self.lessons: Dict[str, Lesson] = {}
         #: ``section -> key -> when it was forgotten``, written to the file.
-        #: A merge drops every entry not used since its tombstone, so a
+        #: A merge drops every entry not *learned* since its tombstone, so a
         #: "forget" in the console survives another process's save — the macro
         #: cache's in-process tombstones did not, and a test here proved it.
-        #: Relearning after the forget (a newer ``last_used``) brings it back.
+        #: Relearning after the forget (a newer ``learned_at``) brings it back;
+        #: merely using a stale copy (a failure, a replay) does not.
         self._forgotten: Dict[str, Dict[str, float]] = {s: {} for s in SECTIONS}
+        #: ``(inode, mtime_ns, size)`` of the file as this instance last read or
+        #: wrote it; a lookup re-reads the tombstones only when it differs. The
+        #: inode is there because every save replaces the file with a new one,
+        #: so two saves inside one coarse mtime tick still differ.
+        self._disk_stamp: Optional[Tuple[int, int, int]] = None
         self._lock = threading.RLock()
         self.load()
 
@@ -816,10 +952,47 @@ class Experience:
         ident = "\x1e".join(identity) if identity else ""
         return "\x1f".join((_app_key(app), goal_key(goal)[0], op, ident, str(key or "")))
 
+    # ---- another process's forgets ------------------------------------------
+    def _stamp(self) -> Optional[Tuple[int, int, int]]:
+        try:
+            st = self.path.stat()
+        except OSError:
+            return None
+        return (st.st_ino, st.st_mtime_ns, st.st_size)
+
+    def _refresh(self) -> None:
+        """Take in the tombstones another process wrote since this one looked.
+
+        The console holds one ``Experience`` for its whole life. ``jevskill cu
+        memory --forget`` in a terminal wrote its tombstone to the file, and the
+        console went on serving the forgotten plan from memory — and the next
+        success relearned it over the tombstone (review finding #21). Every
+        lookup therefore stats the file (one syscall) and, only when it changed,
+        re-reads the tombstones and drops each held entry not learned since.
+        New rows another process learned are not pulled in here; they arrive
+        with the next save's merge, as before.
+        """
+        stamp = self._stamp()
+        with self._lock:
+            if stamp == self._disk_stamp:
+                return
+            disk = self._read()
+            self._disk_stamp = stamp
+            forgotten = disk.get("forgotten", {})
+            for section in SECTIONS:
+                mine = self._forgotten[section]
+                for key, when in forgotten.get(section, {}).items():
+                    if when > mine.get(key, float("-inf")):
+                        mine[key] = when
+                store = getattr(self, section)
+                for key in [k for k, v in store.items() if v.learned_at <= mine.get(k, -1.0)]:
+                    store.pop(key, None)
+
     # ---- plans ------------------------------------------------------------
     def plan_for(self, command: str) -> Optional[Tuple[List[Dict[str, Any]], PlanMemory]]:
         """The remembered goals for this command, filled with its values."""
         key, values = command_key(command)
+        self._refresh()
         with self._lock:
             memory = self.plans.get(key)
         if memory is None or not memory.usable or not memory.steps:
@@ -852,7 +1025,8 @@ class Experience:
                                 model=model or (old.model if old else ""),
                                 successes=(old.successes if old else 0) + 1,
                                 failures=old.failures if old else 0, streak_failed=0,
-                                created=old.created if old else now, last_used=now)
+                                created=old.created if old else now, last_used=now,
+                                learned_at=now)
             self.plans[key] = memory
             self._bound(self.plans, MAX_PLANS)
         self._autosave()
@@ -880,7 +1054,7 @@ class Experience:
                 model=model or (old.model if old else ""),
                 successes=(old.successes if old else 0) + 1,
                 failures=old.failures if old else 0, streak_failed=0,
-                created=old.created if old else now, last_used=now)
+                created=old.created if old else now, last_used=now, learned_at=now)
             self._bound(self.plans, MAX_PLANS)
         self._autosave()
 
@@ -895,6 +1069,7 @@ class Experience:
         self._autosave()
 
     def _usable_steps(self, key: str) -> Optional[PlanMemory]:
+        self._refresh()
         with self._lock:
             memory = self.plans.get(key)
         if memory is None or not memory.usable or not memory.steps:
@@ -930,21 +1105,36 @@ class Experience:
         self._row_failed(tree_key(command))
 
     def learn_decomposition(self, app: str, goal: str, children: Iterable[Dict[str, Any]],
-                            model: str = "") -> None:
-        """Keep how a phase goal split into children in ``app``.
+                            model: str = "", *, command: str = "") -> bool:
+        """Keep how a phase goal split into children in ``app``. ``True`` when
+        it was stored.
 
         Templated with the **phase goal's** slots (``g`` markers), so "Save the
         document as ⟦g0⟧" serves any file name, inside any mission that
         contains the phase. A child value that is not in the phase goal stays
         literal, and a phase whose goal differs in any other word misses.
+
+        That literal is only safe when it is not the user's. The phase "Save
+        the document on the Desktop" names no file, yet its child "Type
+        hello.txt into the file name field" does — the value came from the
+        command. Stored, it served the next mission's identical phase, and that
+        mission typed ``hello.txt`` again (review finding #19). So when the
+        mission's ``command`` is given, a decomposition whose children carry
+        any of the command's values that the phase goal does not is refused:
+        the next mission pays one expand call instead of saving the wrong file.
         """
         if not _app_key(app):
-            return
+            return False
+        items = [item for item in children or [] if isinstance(item, dict)]
+        goal_slots = goal_key(goal)[1]
+        if command and _leaks_command_value(items, goal_slots, command_key(command)[1]):
+            return False
         key = phase_key(app, goal)
-        rows = _template_items(children, goal_key(goal)[1], ())
+        rows = _template_items(items, goal_slots, ())
         if not rows:
-            return
+            return False
         self._store_plan(key, key, "phase: " + str(goal)[:290], rows, model)
+        return True
 
     def decomposition_for(self, app: str, goal: str
                           ) -> Optional[Tuple[List[Dict[str, Any]], PlanMemory]]:
@@ -982,12 +1172,14 @@ class Experience:
             lesson.error = str(stop_reason if stop_reason is not None else "")[:200]
             lesson.count += 1
             lesson.last_used = now
+            lesson.learned_at = now
             self.lessons[key] = lesson
             self._bound(self.lessons, MAX_LESSONS)
         self._autosave()
 
     # ---- recipes ----------------------------------------------------------
     def recipe_for(self, app: str, goal: str, *, usable_only: bool = True) -> Optional[Recipe]:
+        self._refresh()
         with self._lock:
             recipe = self.recipes.get(self.recipe_key(app, goal))
         if recipe is None or (usable_only and not recipe.usable):
@@ -1054,7 +1246,7 @@ class Experience:
                     successes=(old.successes if old else 0) + 1,
                     failures=old.failures if old else 0, streak_failed=0,
                     learned_ms=float(wall_ms), replay_ms=old.replay_ms if old else 0.0,
-                    created=old.created if old else now, last_used=now)
+                    created=old.created if old else now, last_used=now, learned_at=now)
                 self.recipes[rkey] = recipe
             self._bound(self.recipes, MAX_RECIPES)
         self._autosave()
@@ -1093,6 +1285,7 @@ class Experience:
                 if instead:
                     lesson.worked_instead = instead
                 lesson.last_used = now
+                lesson.learned_at = now
                 self.lessons[key] = lesson
                 count += 1
             self._bound(self.lessons, MAX_LESSONS)
@@ -1105,6 +1298,7 @@ class Experience:
         """Lines for a prompt: this goal's lessons first, then the app's."""
         app_k = _app_key(app)
         gkey = goal_key(goal)[0] if goal else None
+        self._refresh()
         with self._lock:
             mine = [l for l in self.lessons.values() if l.app == app_k]
         mine.sort(key=lambda l: (l.goal != gkey, -l.count, -l.last_used))
@@ -1113,6 +1307,7 @@ class Experience:
 
     def skills_for(self, app: Optional[str] = None, limit: int = PROMPT_SKILLS) -> List[str]:
         """Goals this machine has completed before, in the words that hit."""
+        self._refresh()
         with self._lock:
             recipes = [r for r in self.recipes.values()
                        if r.usable and (app is None or r.app == _app_key(app))]
@@ -1130,6 +1325,7 @@ class Experience:
 
     # ---- reporting and forgetting -----------------------------------------
     def stats(self) -> Dict[str, Any]:
+        self._refresh()
         with self._lock:
             return {
                 "path": str(self.path),
@@ -1140,6 +1336,7 @@ class Experience:
             }
 
     def listing(self, limit: int = 50) -> Dict[str, Any]:
+        self._refresh()
         with self._lock:
             recipes = sorted(self.recipes.items(), key=lambda kv: -kv[1].last_used)[:limit]
             plans = sorted(self.plans.items(), key=lambda kv: -kv[1].last_used)[:limit]
@@ -1177,13 +1374,22 @@ class Experience:
         return existed
 
     def clear(self) -> int:
+        """Forget everything — including what another process learned since
+        this one loaded. Tombstoning only the keys held in memory let a plan
+        the CLI learned after the console started survive the console's
+        "clear" (review finding #21), so the file's keys are read and
+        tombstoned too, the same way :meth:`save` reads them. The count is
+        every distinct entry forgotten."""
         with self._lock:
-            count = len(self.recipes) + len(self.plans) + len(self.lessons)
+            disk = self._read()
             now = time.time()
+            count = 0
             for section in SECTIONS:
                 store = getattr(self, section)
-                for key in store:
+                keys = set(store) | set(disk.get(section, {}))
+                for key in keys:
                     self._forgotten[section][key] = now
+                count += len(keys)
                 store.clear()
         self._autosave()
         return count
@@ -1191,10 +1397,16 @@ class Experience:
     # ---- persistence ------------------------------------------------------
     @staticmethod
     def _bound(store: Dict[str, Any], limit: int) -> None:
+        """Evict the least recently used rows until ``store`` holds ``limit``."""
         if len(store) <= limit:
             return
         for key, _ in sorted(store.items(), key=lambda kv: kv[1].last_used)[:len(store) - limit]:
             store.pop(key, None)
+
+    @staticmethod
+    def _limit(section: str) -> int:
+        """The bound of a section, read at call time (tests shrink it)."""
+        return {"recipes": MAX_RECIPES, "plans": MAX_PLANS, "lessons": MAX_LESSONS}[section]
 
     def _autosave(self) -> None:
         if self.autosave:
@@ -1233,8 +1445,10 @@ class Experience:
     def load(self) -> int:
         """Read the store. A damaged or foreign file is ignored, never raised:
         a memory that cannot be read must not stop the run it was meant to speed up."""
+        stamp = self._stamp()   # before the read: a write in between re-reads later
         disk = self._read()
         with self._lock:
+            self._disk_stamp = stamp
             self.recipes = dict(disk.get("recipes", {}))
             self.plans = dict(disk.get("plans", {}))
             self.lessons = dict(disk.get("lessons", {}))
@@ -1244,7 +1458,13 @@ class Experience:
 
     def save(self) -> bool:
         """Merge into the file: newer ``last_used`` wins a key both hold, and an
-        entry not used since it was forgotten — by any process — is dropped.
+        entry not *learned* since it was forgotten — by any process — is
+        dropped. Used is not enough: a stale copy that merely failed or replayed
+        after the forget used to outlive the tombstone (review finding #21).
+
+        The merged sections are then bounded again. The in-memory bound after
+        a learn was undone right here — every row it evicted came back from the
+        file, and ``MAX_*`` bounded nothing (review finding #25).
         ``False`` on any failure."""
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -1270,7 +1490,8 @@ class Experience:
                     if other is None or value.last_used >= other.last_used:
                         merged[key] = value
                 merged = {k: v for k, v in merged.items()
-                          if v.last_used > tombstones.get(k, -1.0)}
+                          if v.learned_at > tombstones.get(k, -1.0)}
+                self._bound(merged, self._limit(section))
                 setattr(self, section, merged)
                 self._forgotten[section] = tombstones
                 payload[section] = {k: v.to_dict() for k, v in merged.items()}
@@ -1284,6 +1505,9 @@ class Experience:
                 with os.fdopen(handle, "w", encoding="utf-8") as stream:
                     json.dump(payload, stream, ensure_ascii=False)
                 os.replace(tmp, self.path)
+                # Our own write holds nothing this instance lacks: the next
+                # lookup must not re-read it.
+                self._disk_stamp = self._stamp()
             except OSError:
                 try:
                     os.unlink(tmp)

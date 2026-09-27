@@ -6,6 +6,8 @@ runner's PlanStep because agenda.py must not import the runner.
 
 from __future__ import annotations
 
+import os
+import time
 from dataclasses import dataclass
 from types import SimpleNamespace
 
@@ -344,6 +346,67 @@ def test_title_contains():
     assert evaluate_checks(checks, snap("hello.txt - Notatnik"))[0] is True
     assert evaluate_checks(checks, snap("Bez tytułu - Notatnik"))[0] is False
     assert evaluate_checks(checks, SimpleNamespace(window_title="x hello.txt"))[0] is True
+
+
+def test_title_contains_is_undecided_on_an_unsaved_title():
+    """Review #18: ``*hello.txt - Notatnik`` names the file, but nothing was
+    written yet — it must not close a save phase with evidence ``code``."""
+    check = Check("title_contains", "hello.txt")
+    dirty = (["*hello.txt - Notatnik", "  *hello.txt - Notatnik"]
+             + ["%s hello.txt - Editor" % dot for dot in agenda.UNSAVED_DOTS]
+             + ["hello.txt %s - Editor" % dot for dot in agenda.UNSAVED_DOTS])
+    for title in dirty:
+        assert agenda.is_unsaved_title(title), title
+        verdict, detail = agenda._eval_one(check, snap(title))
+        assert verdict is None and "undecided" in detail, title
+        assert evaluate_checks([check], snap(title)) == (None, ""), title
+    assert not agenda.is_unsaved_title("hello.txt - Notatnik")
+    assert evaluate_checks([check], snap("hello.txt - Notatnik"))[0] is True
+    # The marker never turns a definite no into a maybe.
+    assert evaluate_checks([check], snap("*Bez tytułu - Notatnik"))[0] is False
+
+
+def test_since_makes_a_file_older_than_the_run_prove_nothing(tmp_path):
+    """Review #17: yesterday's hello.txt on the Desktop is not today's save."""
+    path = tmp_path / "hello.txt"
+    path.write_text("hello world", encoding="utf-8")
+    start = time.time()
+    old = start - agenda.MTIME_SLACK_S - 3600.0
+    os.utime(path, (old, old))
+    checks = [Check("file_exists", str(path)), Check("file_contains", str(path), "hello")]
+    for check in checks:
+        assert evaluate_checks([check], None)[0] is True, "no since: blind to age, as before"
+        assert evaluate_checks([check], None, since=start) == (None, "")
+        verdict, detail = agenda._eval_one(check, None, start)
+        assert verdict is None and "stale" in detail
+    # Inside the slack it is still this run's save.
+    recent = start - agenda.MTIME_SLACK_S / 2
+    os.utime(path, (recent, recent))
+    assert evaluate_checks(checks, None, since=start)[0] is True
+    # Missing is still false, and an old file lacking the text a definite no.
+    os.utime(path, (old, old))
+    missing = Check("file_exists", str(tmp_path / "missing.txt"))
+    assert evaluate_checks([missing], None, since=start)[0] is False
+    assert evaluate_checks([Check("file_contains", str(path), "zakupy")], None,
+                           since=start)[0] is False
+
+
+def test_max_children_lifts_the_per_phase_cap_for_a_known_tree():
+    """Review #1: a remembered or user tree with a phase wider than a model
+    reply may be must not lose that phase's tail."""
+    wide = MAX_CHILDREN + 2
+    names = ["c%d" % i for i in range(wide)]
+    items = [phase("Big", names), phase("Outer", [phase("Inner", names), "x"]), "after"]
+    capped = coerce_tree(items, depth=1, id_prefix="", source="model")
+    assert len(capped[0].children) == MAX_CHILDREN
+    assert len(capped[1].children[0].children) == MAX_CHILDREN
+    kept = coerce_tree(items, depth=1, id_prefix="", source="memory", max_children=wide)
+    assert [c.goal for c in kept[0].children] == names
+    assert [c.goal for c in kept[1].children[0].children] == names, "nested phases too"
+    assert kept[0].children[-1].id == "1.%d" % wide
+    # max_items still caps only the top level.
+    assert len(coerce_tree(items, depth=1, id_prefix="", source="memory", max_items=1,
+                           max_children=wide)[0].children) == wide
 
 
 def test_undecided_and_definite_false(tmp_path):

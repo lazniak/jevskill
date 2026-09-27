@@ -412,8 +412,19 @@ blind rerun stops being safe. A resumed goal that had acted is not rerun: code
 checks the screen first, then the model is told it was interrupted after N
 actions, or — Jev only — the user is asked. A run with a fresh heartbeat is
 refused (it may be alive in another console), a finished one is refused, and a
-dry run resumes dry. Run ids arrive over HTTP and are matched against a strict
-pattern before any path is built.
+dry run resumes dry. The heartbeat is its own file, written by a timer thread:
+the run thread blocks for up to a minute in a model call, past the 30 s
+staleness mark, and a live run used to look dead. Run ids arrive over HTTP and
+are matched against a strict pattern before any path is built.
+
+**A goal works only in a window of the program it names.** A phase in another
+program pins that program's window once; with several windows of it, the one
+this run already worked in, or the only one — never a guess among the user's
+documents. With no window, an allow-listed program is opened through the
+execute hook and anything else waits for the user. The window pinned before is
+never borrowed: the first version of the tree did, and the simulator recorded a
+Calculator goal typing into Notepad. A resume whose window closed takes only a
+window with the saved title.
 
 **Rejected.** Look-ahead expansion in a background thread (a prediction of a
 screen, plus locks around spend and events, for a latency nobody has measured);

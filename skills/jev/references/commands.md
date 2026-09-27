@@ -83,9 +83,13 @@ jevskill cu resume 20260927-221530-a1b2c3                         # continue one
 | `--ledger-dir DIR` | — | directory holding `.jevskill/ledger.jsonl` (and the stop file, `cu_runs/`) |
 
 `cu resume <run_id>` takes `--model`, `--total-budget-s` and `--usd-cap` to
-override the checkpoint's; an unknown id exits `2`. A goal that had already
-acted when the run stopped is not simply rerun — the screen is checked in code
-first, then the model is told how far it got, or (no model) you are asked.
+override the checkpoint's; an unknown id exits `2`, and so does a run whose
+active time already used its total budget (resume it with a larger
+`--total-budget-s`). A goal that had already acted when the run stopped is not
+simply rerun — the screen is checked in code first, then the model is told how
+far it got, or (no model) you are asked. If the run's window has closed, only a
+window with the saved title is taken; otherwise you are asked to bring the
+window up — another document of the same program is never picked for you.
 
 **To stop a run:** Ctrl+C in its terminal, **Ctrl+Alt+Esc** on the keyboard, the
 mouse in the **top-left corner** of the screen, or `jevskill cu stop` — which
