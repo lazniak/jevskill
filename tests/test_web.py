@@ -480,6 +480,32 @@ class TestHttpContract:
         assert status == 403
         assert json.loads(text)["hint"]
 
+    @pytest.mark.parametrize("path,origin,expected", [
+        ("/api/decide", "https://evil.example", 403),
+        ("/api/nope", None, 404),
+    ])
+    def test_a_refusal_is_read_even_with_a_large_body(self, keyed, tmp_path, path, origin,
+                                                      expected):
+        """A refusal written before the body was read closed the socket over
+        unread data; Windows then resets the connection and the client never
+        sees the 403 (WinError 10053, a flake of the surfaces suite)."""
+        # Larger than the loopback socket buffers, so the client is still
+        # writing when the server answers; under the drain cap (4x the limit).
+        body = json.dumps({"state": "x" * (MAX_BODY_BYTES * 3)}).encode()
+        headers = {"Content-Type": "application/json"}
+        if origin:
+            headers["Origin"] = origin
+        with running(client=FakeClient(), ledger_root=str(tmp_path)) as (port, _server):
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=15)
+            try:
+                conn.request("POST", path, body=body, headers=headers)
+                response = conn.getresponse()
+                status, text = response.status, response.read().decode()
+            finally:
+                conn.close()
+        assert status == expected
+        assert json.loads(text)["status"] == expected
+
 
 class TestStaticAssets:
     @pytest.mark.parametrize("path,expected", [

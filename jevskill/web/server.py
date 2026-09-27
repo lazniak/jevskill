@@ -823,6 +823,7 @@ class _Handler(BaseHTTPRequestHandler):
         host = (self.headers.get("Host") or "").strip()
         hostname = host.rsplit(":", 1)[0].strip("[]") if host else ""
         if hostname and hostname.lower() not in LOOPBACK_HOSTS:
+            self._discard_body()
             self._error(
                 403,
                 f"refusing a request for host {host!r}",
@@ -834,6 +835,7 @@ class _Handler(BaseHTTPRequestHandler):
         if origin:
             parsed = urlparse(origin)
             if (parsed.hostname or "").lower() not in LOOPBACK_HOSTS:
+                self._discard_body()
                 self._error(
                     403,
                     f"refusing a cross-origin request from {origin!r}",
@@ -858,6 +860,23 @@ class _Handler(BaseHTTPRequestHandler):
             if not chunk:
                 break
             remaining -= len(chunk)
+
+    def _discard_body(self) -> None:
+        """Drain the body of a request refused before ``_read_body`` ran.
+
+        The Host/Origin guard and the unknown-route answer came before any read,
+        so the refusal was written and the socket closed with the body still
+        unread — and Windows answers that with a reset, which reached the client
+        as WinError 10053 *instead of* the 403 (1 run in ~40 of the surfaces
+        suite; every time with a body of a few hundred kilobytes).
+        """
+        if self.command != "POST":
+            return
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            return
+        self._drain(length)
 
     def _read_body(self) -> Optional[dict]:
         """The JSON body, or ``None`` when the request was already answered."""
@@ -956,6 +975,7 @@ class _Handler(BaseHTTPRequestHandler):
                          "/api/cu/plan", "/api/cu/stop", "/api/cu/confirm",
                          "/api/cu/pause", "/api/cu/resume",
                          "/api/cu/memory/forget", "/api/cu/memory/clear"):
+            self._discard_body()
             self._error(404, f"no such endpoint: {route}", "See GET / for the console.")
             return
         payload = self._read_body()
