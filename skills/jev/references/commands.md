@@ -17,6 +17,8 @@ jevskill outcome <decision_id> correct|incorrect|escalated|overridden|no_action
 jevskill stats                 # measured latency, cost, savings, accuracy per pattern
 jevskill advice                # what to do about it: KEEP / STOP / ESCALATE / UNPROVEN
 jevskill web                   # the local console on http://127.0.0.1:8765
+jevskill cu run "<command>" --model <id>   # drive this desktop: Jev per step, the model between
+jevskill cu stop               # stop the active run, from any terminal
 ```
 
 ### `jevskill web` — the local console
@@ -44,6 +46,38 @@ The JSON API behind it is the same surface, for scripting: `GET /api/doctor`
 `POST /api/estimate`, `POST /api/decide`, `POST /api/plan`, `GET /api/templates`,
 `GET /api/history?limit=20`, `GET /healthz`. Every failure is
 `{"error", "hint", "status"}`, with the `hint` a provider error carries.
+
+### `jevskill cu` — computer use from a terminal
+
+The operator behind the console's *computer use* view, without the page. A
+natural-language command becomes 1–8 sub-goals; Jev decides every step; the
+planning model (`--model`, any OpenRouter id) is consulted only between steps —
+to plan, compose text, verify, escalate, re-plan. Omit `--model` and the command
+is one goal with nothing generated. Events print as they happen; a destructive
+step asks `y/N` on stdin.
+
+```bash
+jevskill cu run "Open Notepad and type \"hello\"" --model anthropic/claude-sonnet-5
+jevskill cu run "Open Notepad and type \"hello\"" --dry-run      # plan for real, simulate the steps
+jevskill cu stop                                                  # from any other terminal
+```
+
+| Flag (`run`) | Default | Effect |
+|---|---|---|
+| `--model ID` | none | planning model; without it the command is one Jev-only goal |
+| `--dry-run` | off | plan, then simulate — the desktop is not touched, no Jev spend |
+| `--max-steps N` | `25` | Jev steps per sub-goal |
+| `--budget-s S` | `90` | seconds per sub-goal |
+| `--usd-cap USD` | `0.50` | stop when Jev + model spend passes this |
+| `--ledger-dir DIR` | — | directory holding `.jevskill/ledger.jsonl` (and the stop file) |
+
+**To stop a run:** Ctrl+C in its terminal, **Ctrl+Alt+Esc** on the keyboard, the
+mouse in the **top-left corner** of the screen, or `jevskill cu stop` — which
+touches `.jevskill/cu.stop`, polled every 50 ms while a run is armed. The check
+runs before every decision and again before every action reaches the desktop.
+Needs Windows and the `cu` extra (`pip install "jevskill[cu]"`) for a live run;
+a dry run works anywhere. The console exposes the same operator as
+`GET /api/cu/status`, `GET /api/cu/models`, `POST /api/cu/start|plan|stop|confirm`.
 
 ## The zero-install scripts (`skills/jev/scripts/`)
 

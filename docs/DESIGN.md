@@ -230,3 +230,65 @@ these are facts, and code settles facts faster and more reliably than a model: t
 plainly changed. Everything a step can know without judgement is computed in
 `reduce`/`hashing`; the model is asked only which of the remaining controls the
 goal wants.
+
+## ADR — the planning model sits *between* Jev steps, never instead of them (2026-09-21, 0.14.0)
+
+**Decision.** `jevskill.cu.runner.Operator` lets the user pick any OpenRouter
+model, and calls it for exactly five things: splitting a command into sub-goals,
+composing the text a field needs, judging a sub-goal's `done_when`, answering an
+escalation, and re-planning when a sub-goal ends without `done` (at most twice
+per run). Every per-step decision — which control, which op, is it destructive,
+is the goal reached — stays with Jev through the unchanged `jevskill.cu.loop.run`.
+
+**Why.** The loop is fast because the model in it answers typed questions in
+~300 ms and is never asked to write. The things it cannot do are all *language*:
+reading a Polish sentence, producing "hello world", deciding that "saved as
+hello.txt" holds. A frontier model doing the whole step costs seconds and
+dollars per step (`docs/research-2026-09-20-jev-cu.md`: 5.2 s vs 0.13-0.38 s); a
+frontier model doing only the five language jobs costs a handful of calls per
+run. The split keeps the per-step budget and buys the understanding. Its cost is
+visible: each call is a ledger row (`which="cu_llm"`) next to the loop's `act`
+rows, so `jevskill stats` reports what a command actually cost, both halves.
+
+**The escalation answer is still validated.** A model's proposal goes through
+`validate()` and the destructive gate like a Jev decision — the loop's own rule
+from 0.12.0 (`_escalate`), which this module relies on rather than repeats.
+
+## ADR — the kill switch lives in the hooks, so the loop stays unchanged (2026-09-21, 0.14.0)
+
+**Decision.** Stopping is implemented as a `KillSwitch` checked inside the
+`observe` and `execute` callables the operator injects, not as a new parameter
+of `run()`. A tripped switch raises `Stopped`; the loop already treats any
+exception as the end of the run and records the name; the operator maps that
+name to *stopped*.
+
+**Why.** Two checks per step are the two moments that matter: before spending a
+decision, and — after the 300 ms the decision took — before the action reaches
+the desktop. Putting them in the hooks covers every path through the loop
+(ordinary step, macro replay, escalation answer) without a third copy of the
+check and without touching a module whose 0.12.0 behaviour is pinned by 200
+tests. Four triggers feed one event: the panel's STOP, `Ctrl+Alt+Esc` polled with
+`GetAsyncKeyState` (no message loop, no hotkey collision, works over a
+full-screen window), the cursor in the top-left corner, and a stop file that
+`jevskill cu stop` touches so a second terminal, SSH or a scheduled task can end
+a run that the browser started. The switch is armed only while a run is active,
+so a mouse parked in the corner between runs does nothing.
+
+**Measured, then amended (2026-09-21, live).** The first live runs happened
+with the user working on the same desktop, and the switch was not what ended
+most of them: the operator was. It observed "the foreground window" and, when
+the user switched away, pulled its window back before every observation and
+action — three times in 40 s while the user typed in Discord, until Windows
+itself refused. A first amendment, *bring it back once, stop on the second
+loss*, ended the next run because the user was reading the console. The rule
+that held is: **reading needs no screen, keys do.** The pinned window is
+observed by handle (`GetLastActivePopup` finds a dialog it opened), in front or
+not; only synthetic input — a key chord, text into a control without a
+`ValuePattern`, a click by point, the wheel — takes the foreground, after
+waiting up to 10 s for the user's hands to pause (`GetLastInputInfo`), and the
+switch to a freshly launched window waits the same way, because the user's
+next two keystrokes once landed in it. The corner trigger fired once, 1.5 s
+after a launch, as the user's cursor crossed the corner: the convention working
+as documented, and it stays a hair trigger — a dwell requirement would not tell
+a parked mouse from a fling to the first browser tab, and the cost of a false
+stop is one re-run.

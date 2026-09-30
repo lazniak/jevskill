@@ -939,6 +939,64 @@ def cmd_web(args: argparse.Namespace) -> int:
     )
 
 
+def cmd_cu(args: argparse.Namespace) -> int:
+    """``jevskill cu run "<command>"`` and ``jevskill cu stop``.
+
+    The same operator the web console's panel drives, without the page: events
+    print as they happen, a destructive step asks on stdin, Ctrl+C stops the
+    run. ``stop`` touches the stop file the operator polls, so it works from a
+    second terminal, over SSH, or from a scheduled task — whichever front end
+    started the run.
+    """
+    import sys as _sys
+
+    from .cu.killswitch import STOP_FILE_NAME, touch_stop_file
+    from .stats import ledger_path
+
+    stop_file = ledger_path(args.ledger_dir).parent / STOP_FILE_NAME
+    if args.cu_command == "stop":
+        touch_stop_file(stop_file)
+        print(f"stop requested via {stop_file}")
+        return 0
+
+    from .cu.runner import Operator, OperatorUnavailable
+    from .errors import JevConfigError as _ConfigError
+
+    operator = Operator(ledger_root=args.ledger_dir)
+    try:
+        run_id = operator.start(args.command_text, args.model, dry_run=args.dry_run,
+                                max_steps=args.max_steps, budget_s=args.budget_s,
+                                usd_cap=args.usd_cap)
+    except (OperatorUnavailable, _ConfigError, ValueError) as exc:
+        print(f"error: {exc}", file=_sys.stderr)
+        return 2
+    print(f"run {run_id} — Ctrl+C here, Ctrl+Alt+Esc anywhere, or `jevskill cu stop`",
+          flush=True)
+    seen = 0
+    try:
+        while True:
+            status = operator.status(seen)
+            for event in status["events"]:
+                print(f"[{event['t']:7.2f}] {event['kind']:<14} {event['text']}", flush=True)
+            seen = status["next"]
+            pending = status.get("pending_confirm")
+            if pending:
+                answer = input(f"  allow {pending['prompt']} [y/N] ").strip().lower()
+                operator.confirm(answer in ("y", "yes", "t", "tak"))
+                continue
+            if not status.get("busy"):
+                break
+            time.sleep(0.3)
+    except KeyboardInterrupt:
+        operator.stop("Ctrl+C")
+        operator.wait(10)
+        status = operator.status(seen)
+        for event in status["events"]:
+            print(f"[{event['t']:7.2f}] {event['kind']:<14} {event['text']}", flush=True)
+        return 130
+    return 0 if status.get("state") == "done" else 1
+
+
 # --------------------------------------------------------------------------- #
 # Parser
 # --------------------------------------------------------------------------- #
@@ -1140,6 +1198,39 @@ def build_parser() -> argparse.ArgumentParser:
                    help="do not open the default browser (the URL is still printed)")
     p.add_argument("--ledger-dir", help="directory holding .jevskill/ledger.jsonl")
     p.set_defaults(func=cmd_web)
+
+    p = sub.add_parser(
+        "cu",
+        help="computer use: run one desktop command (Jev per step, an LLM between) or stop it",
+        description=(
+            "Drive this Windows desktop from a natural-language command. Jev decides "
+            "every step; the planning model you pick (--model, any OpenRouter id) splits "
+            "the command into sub-goals, writes text, verifies and re-plans between "
+            "steps. Destructive steps wait for a y/N on stdin. The same operator serves "
+            "the 'computer use' panel of 'jevskill web'."
+        ),
+        epilog=(
+            "To stop a run: Ctrl+C in this terminal, Ctrl+Alt+Esc on the keyboard, the "
+            "mouse in the top-left corner of the screen, or 'jevskill cu stop' from any "
+            "other terminal."
+        ),
+    )
+    cu_sub = p.add_subparsers(dest="cu_command", required=True)
+    r = cu_sub.add_parser("run", help="run one command on this desktop")
+    r.add_argument("command_text", metavar="COMMAND", help="what to do, in any language")
+    r.add_argument("--model", help="OpenRouter model id for planning and escalation; "
+                                   "omit for Jev only (the command is one goal)")
+    r.add_argument("--dry-run", action="store_true",
+                   help="plan for real, then simulate the steps — nothing on the desktop is touched")
+    r.add_argument("--max-steps", type=int, default=25, help="Jev steps per sub-goal (default 25)")
+    r.add_argument("--budget-s", type=float, default=90.0, help="seconds per sub-goal (default 90)")
+    r.add_argument("--usd-cap", type=float, default=0.5,
+                   help="stop when Jev + model spend passes this (default 0.50)")
+    r.add_argument("--ledger-dir", help="directory holding .jevskill/ledger.jsonl")
+    r.set_defaults(func=cmd_cu)
+    s = cu_sub.add_parser("stop", help="stop the active run, from any terminal")
+    s.add_argument("--ledger-dir", help="directory holding .jevskill/ledger.jsonl")
+    s.set_defaults(func=cmd_cu)
 
     # outcome
     p = sub.add_parser("outcome", help="pair a decision with what actually happened")

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "jevskill"
-version = "0.13.0"
+version = "0.14.0"
 description = "Teach your coding agent to stop burning context: Jev (System One) decisions via OpenRouter for routing, triage, classification, gating and reducing large data before it reaches your LLM. A/B tested: 99.3% fewer model input tokens with accuracy up, not down."
 readme = "README.md"
 requires-python = ">=3.9"

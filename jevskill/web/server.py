@@ -39,8 +39,10 @@ from __future__ import annotations
 import importlib.resources as resources
 import json
 import re
+import sys
 import threading
 import time
+import traceback
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable, Optional
@@ -380,6 +382,7 @@ class Console:
         self._owns_client = client is None
         self.warm_ms: Optional[float] = None
         self.started_at = time.time()
+        self._operator: Any = None
         if self._client is None:
             self._client = self._build_client()
         if self._client is not None:
@@ -413,12 +416,30 @@ class Console:
         return self._client
 
     def close(self) -> None:
+        if self._operator is not None and self._operator.busy:
+            try:
+                self._operator.stop("console closing")
+            except Exception:  # pragma: no cover
+                pass
         if self._owns_client and self._client is not None:
             try:
                 self._client.close()
             except Exception:  # pragma: no cover
                 pass
             self._client = None
+
+    # -- computer use ------------------------------------------------------
+    def operator(self) -> Any:
+        """The computer-use operator, built on first use.
+
+        Lazy because :mod:`jevskill.cu` is ~100 ms of imports the decide-only
+        user never pays for, and because tests inject their own.
+        """
+        if self._operator is None:
+            from ..cu.runner import Operator
+
+            self._operator = Operator(ledger_root=self.ledger_root, client_getter=self.client)
+        return self._operator
 
 
 def config() -> Config:
@@ -638,6 +659,34 @@ def plan_payload(request: dict) -> dict:
 # --------------------------------------------------------------------------- #
 
 
+def cu_models_payload() -> dict:
+    """The planning-model picker: OpenRouter's list when reachable, else a fallback.
+
+    ``key_found`` is a boolean and nothing else — the page needs to know whether
+    a model *can* be chosen, never what the key is.
+    """
+    from ..config import find_api_key
+    from ..cu.llm import cached_models, default_model, recommended
+
+    models, source = cached_models()
+    try:
+        key_found = bool(find_api_key("openrouter"))
+    except JevError:
+        key_found = False
+    return {
+        "source": source,
+        "key_found": key_found,
+        "key_hint": "OPENROUTER_API_KEY" if not key_found else "",
+        "default": default_model(models),
+        "recommended": [
+            {"id": m["id"], "name": m.get("name", m["id"]),
+             "prompt": m.get("prompt", 0.0), "completion": m.get("completion", 0.0)}
+            for m in recommended(models)
+        ],
+        "all": sorted(m["id"] for m in models),
+    }
+
+
 class _Handler(BaseHTTPRequestHandler):
     """The whole HTTP surface. Every failure leaves as JSON, never as HTML.
 
@@ -800,6 +849,15 @@ class _Handler(BaseHTTPRequestHandler):
                 except ValueError:
                     limit = 20
                 self._json(history_payload(self.console, limit))
+            elif route == "/api/cu/status":
+                query = parse_qs(parsed.query)
+                try:
+                    since = int((query.get("since") or ["0"])[0])
+                except ValueError:
+                    since = 0
+                self._json(self.console.operator().status(since))
+            elif route == "/api/cu/models":
+                self._json(cu_models_payload())
             elif route in ("/", "/index.html"):
                 self._static("index.html")
             elif route.startswith("/api/"):
@@ -816,7 +874,8 @@ class _Handler(BaseHTTPRequestHandler):
         if not self._guard_origin():
             return
         route = urlparse(self.path).path
-        if route not in ("/api/decide", "/api/estimate", "/api/plan"):
+        if route not in ("/api/decide", "/api/estimate", "/api/plan", "/api/cu/start",
+                         "/api/cu/plan", "/api/cu/stop", "/api/cu/confirm"):
             self._error(404, f"no such endpoint: {route}", "See GET / for the console.")
             return
         payload = self._read_body()
@@ -827,6 +886,8 @@ class _Handler(BaseHTTPRequestHandler):
                 self._json(estimate_payload(payload.get("state", "")))
             elif route == "/api/plan":
                 self._json(plan_payload(payload))
+            elif route.startswith("/api/cu/"):
+                self._computer_use(route, payload)
             else:
                 self._json(decide_payload(self.console, payload))
         except JevQuestionError as exc:
@@ -849,7 +910,54 @@ class _Handler(BaseHTTPRequestHandler):
         except Exception as exc:  # pragma: no cover - defensive
             self._unexpected(exc)
 
+    def _computer_use(self, route: str, payload: dict) -> None:
+        """The four computer-use writes. Status codes are the contract:
+
+        * ``409`` a run is active (start) or nothing is waiting (confirm)
+        * ``501`` a live run cannot happen on this machine (the reason says why)
+        * ``503`` a key is missing — Jev's, or the planning model's
+        * ``502`` the planning model's provider failed
+        """
+        from ..cu.llm import LLMError
+        from ..cu.runner import OperatorBusy, OperatorUnavailable
+
+        operator = self.console.operator()
+        try:
+            if route == "/api/cu/start":
+                run_id = operator.start(
+                    str(payload.get("command", "")),
+                    payload.get("model"),
+                    dry_run=bool(payload.get("dry_run", False)),
+                    plan=payload.get("plan") or None,
+                    max_steps=int(payload.get("max_steps", 25) or 25),
+                    budget_s=float(payload.get("budget_s", 90) or 90),
+                    total_budget_s=float(payload.get("total_budget_s", 600) or 600),
+                    usd_cap=float(payload.get("usd_cap", 0.5) or 0.0),
+                )
+                self._json({"ok": True, "run_id": run_id, "status": operator.status()}, 202)
+            elif route == "/api/cu/plan":
+                self._json(operator.plan(str(payload.get("command", "")), payload.get("model")))
+            elif route == "/api/cu/stop":
+                self._json({"ok": True, "status": operator.stop(
+                    str(payload.get("reason") or "STOP button"))})
+            else:
+                self._json({"ok": True, "status": operator.confirm(bool(payload.get("allow")))})
+        except OperatorBusy as exc:
+            self._error(409, str(exc), "Stop the active run first.", status_payload=operator.status())
+        except OperatorUnavailable as exc:
+            self._error(501, str(exc), "A dry run (dry_run: true) still works here.")
+        except LookupError as exc:
+            self._error(409, str(exc), "The run is not waiting for a confirmation.")
+        except LLMError as exc:
+            self._error(502, str(exc), "The planning model's provider failed; pick another model or retry.")
+        except (TypeError, ValueError) as exc:
+            self._error(400, str(exc), "command is a non-empty string; model an OpenRouter id or null.")
+
     def _unexpected(self, exc: Exception) -> None:  # pragma: no cover - defensive
+        # The hint promises a traceback in the terminal; print it, or the
+        # promise is empty — the first 500 from /api/cu/plan had to be
+        # reproduced by hand because nothing was logged.
+        traceback.print_exception(type(exc), exc, exc.__traceback__, file=sys.stderr)
         self._error(
             500,
             f"{type(exc).__name__}: {exc}",

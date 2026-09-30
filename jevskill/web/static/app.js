@@ -857,7 +857,14 @@ function wire() {
   $('#refresh-history').addEventListener('click', loadHistory);
 
   document.addEventListener('keydown', (event) => {
-    if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') { event.preventDefault(); run(); }
+    if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
+      // Only the decide view answers to this. A computer-use run takes the
+      // mouse and the keyboard of this machine; it is asked for with a click
+      // or not at all.
+      if ($('#view-decide').classList.contains('hidden')) return;
+      event.preventDefault();
+      run();
+    }
     if (event.key === 'Escape') {
       closeMenus();
       $('#raw-json').classList.add('hidden');
@@ -866,8 +873,624 @@ function wire() {
   });
 }
 
+/* ======================================================== computer use ====
+ *
+ * A run in this view does not draw a chart: it takes the mouse and the
+ * keyboard of the machine the page is open on. So the panel is built around
+ * the way *out*, not the way in — STOP is the tallest control in the command
+ * panel, the ways to stop are printed under it in both languages and are
+ * always visible, and **nothing here starts a run from the keyboard**: a run
+ * that takes the desktop has to be asked for with a click.
+ */
+
+const CU_POLL_BUSY_MS = 400;
+const CU_POLL_IDLE_MS = 3000;
+const CU_ACTIVE = ['planning', 'waiting_window', 'running', 'waiting_confirm'];
+const CU_GLYPH = {
+  pending: '○', running: '◐', done: '●', failed: '✕', stopped: '■', skipped: '–',
+};
+const CU_STATE_TEXT = {
+  idle: 'idle', planning: 'planning', waiting_window: 'waiting for window',
+  running: 'running', waiting_confirm: 'waiting for confirm',
+  done: 'done', stopped: 'stopped', failed: 'failed',
+};
+/* Kinds that are the machinery talking, not the run making progress. */
+const CU_DIM_KINDS = ['llm', 'verify', 'escalate', 'replan', 'text'];
+
+const cu = {
+  since: 0, runId: null, busy: false, lost: false, sending: false,
+  timer: null, immediate: false,
+  models: null, preview: null, previewFor: '', note: '',
+  lines: [], stick: true, confirmKey: '', killKey: '', last: null,
+};
+
+/* localStorage throws outright in some privacy modes; a console that cannot
+ * remember a preference must still run. */
+function lsGet(key, fallback) {
+  try {
+    const value = localStorage.getItem(key);
+    return value === null ? fallback : value;
+  } catch (_) { return fallback; }
+}
+
+function lsSet(key, value) {
+  try { localStorage.setItem(key, value); } catch (_) { /* not important enough to fail on */ }
+}
+
+/* Six decimals, because a planning call costs a fraction of a cent and a run
+ * that spent nothing should say so rather than print eight zeroes. */
+function cuMoney(value) {
+  const n = Number(value || 0);
+  return n === 0 ? '$0' : '$' + n.toFixed(6);
+}
+
+/* OpenRouter quotes per token; people price models per million. */
+function perMtok(price) {
+  const n = Number(price || 0) * 1e6;
+  if (!isFinite(n)) return '$?';
+  return '$' + String(Number(n.toFixed(2)));
+}
+
+/* ------------------------------------------------------------ the views */
+
+function setView(name) {
+  const wantCu = name === 'cu';
+  $('#view-decide').classList.toggle('hidden', wantCu);
+  $('#view-cu').classList.toggle('hidden', !wantCu);
+  $('#tab-decide').setAttribute('aria-pressed', String(!wantCu));
+  $('#tab-cu').setAttribute('aria-pressed', String(wantCu));
+  lsSet('jev.view', wantCu ? 'cu' : 'decide');
+  try {
+    history.replaceState(null, '', wantCu ? '#cu' : location.pathname + location.search);
+  } catch (_) { /* file:// and old engines */ }
+  // A hidden element has no scroll height, so the log has to be pinned again
+  // on the way in.
+  if (wantCu && cu.stick) { const log = $('#cu-log'); log.scrollTop = log.scrollHeight; }
+}
+
+/* ----------------------------------------------------------- the picker */
+
+function cuModel() {
+  const select = $('#cu-model');
+  if (select.value === '__custom') return $('#cu-model-custom').value.trim() || null;
+  return select.value || null;
+}
+
+function cuModelNotes(lines) {
+  const host = $('#cu-model-note');
+  host.textContent = '';
+  for (const line of lines) host.appendChild(el('p', { class: 'note', text: line }));
+}
+
+function cuSyncModelUi() {
+  $('#cu-model-custom').classList.toggle('hidden', $('#cu-model').value !== '__custom');
+  cuUpdateButtons();
+}
+
+function cuRestoreModel(payload) {
+  const select = $('#cu-model');
+  const stored = lsGet('jev.cu.model', null);
+  let wanted = stored !== null ? stored : ((payload && payload.default) || '');
+  // No key means no planning model can run, so the page says so and picks the
+  // one option that still works rather than pre-selecting a failure.
+  if (payload && !payload.key_found) wanted = '';
+  if (!wanted) select.value = '';
+  else if (Array.prototype.some.call(select.options, (o) => o.value === wanted)) select.value = wanted;
+  else { select.value = '__custom'; $('#cu-model-custom').value = wanted; }
+  cuSyncModelUi();
+}
+
+async function cuLoadModels() {
+  const select = $('#cu-model');
+  const custom = select.querySelector('option[value="__custom"]');
+  let payload;
+  try {
+    payload = await api('/api/cu/models');
+  } catch (_) {
+    cuModelNotes(['the model list could not be read — an id can still be typed under custom id…']);
+    cuRestoreModel(null);
+    return;
+  }
+  cu.models = payload;
+  const group = el('optgroup', { label: 'recommended' });
+  for (const model of payload.recommended || []) {
+    group.appendChild(el('option', {
+      value: model.id,
+      text: (model.name || model.id) + ' · ' + perMtok(model.prompt) +
+            ' / ' + perMtok(model.completion) + ' per Mtok',
+    }));
+  }
+  select.insertBefore(group, custom);
+
+  const list = $('#cu-models-all');
+  list.textContent = '';
+  for (const id of payload.all || []) list.appendChild(el('option', { value: id }));
+
+  const notes = [];
+  if (!payload.key_found) {
+    notes.push('planning model needs ' + (payload.key_hint || 'OPENROUTER_API_KEY') +
+               ' — Jev-only still works');
+  }
+  if (payload.source === 'fallback') {
+    notes.push('model list is the built-in fallback (OpenRouter unreachable); ' +
+               'any id can still be typed');
+  }
+  cuModelNotes(notes);
+  cuRestoreModel(payload);
+}
+
+/* --------------------------------------------------------- the settings */
+
+function cuNumber(selector, fallback) {
+  const value = Number($(selector).value);
+  return isFinite(value) && value > 0 ? value : fallback;
+}
+
+/* The cap is the one field where a blank box must not mean zero: the server
+ * reads a cap of 0 as "no cap at all", so an emptied field falls back to the
+ * default rather than quietly uncapping the run. A typed 0 is still honoured. */
+function cuCap() {
+  const raw = $('#cu-cap').value.trim();
+  const value = Number(raw);
+  return raw === '' || !isFinite(value) || value < 0 ? 0.5 : value;
+}
+
+function cuRestorePrefs() {
+  for (const [selector, key] of [['#cu-max-steps', 'jev.cu.max_steps'],
+                                 ['#cu-budget', 'jev.cu.budget_s'],
+                                 ['#cu-cap', 'jev.cu.usd_cap']]) {
+    const stored = lsGet(key, null);
+    if (stored !== null && stored !== '' && isFinite(Number(stored))) $(selector).value = stored;
+  }
+  // Dry run is the default, and stays the default until it is switched off by
+  // hand: the cheap mistake is a simulation nobody wanted.
+  $('#cu-dry').checked = lsGet('jev.cu.dry', '1') !== '0';
+}
+
+function cuSavePrefs() {
+  lsSet('jev.cu.max_steps', $('#cu-max-steps').value);
+  lsSet('jev.cu.budget_s', $('#cu-budget').value);
+  lsSet('jev.cu.usd_cap', $('#cu-cap').value);
+  lsSet('jev.cu.dry', $('#cu-dry').checked ? '1' : '0');
+}
+
+function cuUpdateButtons() {
+  const command = $('#cu-command').value.trim();
+  const model = cuModel();
+  const dry = $('#cu-dry').checked;
+  const start = $('#cu-start');
+  start.textContent = dry ? 'simulate' : 'start';
+  start.disabled = cu.busy || cu.sending || !command;
+  $('#cu-plan-btn').disabled = cu.busy || cu.sending || !command || !model;
+  const stop = $('#cu-stop');
+  stop.disabled = !cu.busy;
+  stop.classList.toggle('is-armed', cu.busy);
+
+  let hint = cu.note || '';
+  if (!command) hint = 'write a command first';
+  else if (cu.busy) hint = 'a run is active — STOP takes the desktop back';
+  else if (!model) hint = 'plan needs a planning model';
+  else if (!hint && cu.preview) hint = 'plan ready — start runs exactly these steps';
+  $('#cu-hint').textContent = hint;
+}
+
+/* ----------------------------------------------------------- the writes */
+
+function cuShowError(err) {
+  const payload = (err && err.payload) || { error: (err && err.message) || 'request failed' };
+  const status = (err && err.status) || payload.status;
+  const box = $('#cu-error');
+  box.textContent = '';
+  // Asking to start while a run is active is a fact about the console, not a
+  // failure — it gets a line, not a boxed alarm.
+  if (status === 409) {
+    box.appendChild(el('p', {
+      class: 'note',
+      text: (payload.error || 'busy') + (payload.hint ? ' — ' + payload.hint : ''),
+    }));
+    return;
+  }
+  showError('#cu-error', payload);
+}
+
+async function cuStart() {
+  if ($('#cu-start').disabled) return;
+  const command = $('#cu-command').value.trim();
+  if (!command) return;
+  cu.sending = true;
+  cuUpdateButtons();
+  $('#cu-error').textContent = '';
+  const body = {
+    command: command,
+    model: cuModel(),
+    dry_run: $('#cu-dry').checked,
+    max_steps: cuNumber('#cu-max-steps', 25),
+    budget_s: cuNumber('#cu-budget', 90),
+    total_budget_s: 600,
+    usd_cap: cuCap(),
+  };
+  // What the user read is what runs: a plan shown in the list is sent back
+  // verbatim rather than planned again behind their back.
+  if (cu.preview && cu.previewFor === command) body.plan = cu.preview;
+  try {
+    await postJSON('/api/cu/start', body);
+    cu.note = '';
+  } catch (err) {
+    cuShowError(err);
+  } finally {
+    cu.sending = false;
+    cuUpdateButtons();
+    cuPollSoon();
+  }
+}
+
+async function cuPlanNow() {
+  if ($('#cu-plan-btn').disabled) return;
+  const command = $('#cu-command').value.trim();
+  const button = $('#cu-plan-btn');
+  cu.sending = true;
+  cuUpdateButtons();
+  button.textContent = 'planning…';
+  $('#cu-error').textContent = '';
+  try {
+    const payload = await postJSON('/api/cu/plan', { command: command, model: cuModel() });
+    cu.preview = (payload.steps || []).map((step) => Object.assign({}, step, { status: 'pending' }));
+    cu.previewFor = command;
+    cu.note = payload.note || '';
+    cuRenderPlanSteps(cu.preview);
+    cuAppendEvents(payload.events || []);
+  } catch (err) {
+    cuShowError(err);
+  } finally {
+    button.textContent = 'plan';
+    cu.sending = false;
+    cuUpdateButtons();
+  }
+}
+
+async function cuStop() {
+  if ($('#cu-stop').disabled) return;
+  try {
+    await postJSON('/api/cu/stop', { reason: 'STOP button' });
+  } catch (err) {
+    cuShowError(err);
+  }
+  cuPollSoon();
+}
+
+async function cuAnswer(allow) {
+  try {
+    await postJSON('/api/cu/confirm', { allow: !!allow });
+  } catch (err) {
+    cuShowError(err);
+  }
+  cuPollSoon();
+}
+
+/* --------------------------------------------------------- the polling */
+
+function cuPollSoon() {
+  cu.immediate = true;
+  clearTimeout(cu.timer);
+  cu.timer = setTimeout(cuPoll, 60);
+}
+
+async function cuPoll() {
+  const sent = cu.since;
+  try {
+    const payload = await api('/api/cu/status?since=' + sent);
+    cu.lost = false;
+    cuApply(payload, sent);
+  } catch (_) {
+    // Keep the last state on screen; only the pill admits the gap.
+    cu.lost = true;
+    cuRenderStatus(null);
+  }
+  clearTimeout(cu.timer);
+  const wait = cu.immediate ? 0 : (cu.busy ? CU_POLL_BUSY_MS : CU_POLL_IDLE_MS);
+  cu.immediate = false;
+  cu.timer = setTimeout(cuPoll, wait);
+}
+
+function cuApply(payload, sent) {
+  cu.last = payload;
+  cu.busy = !!payload.busy;
+  const runId = payload.run || null;
+  let skipEvents = false;
+  if (runId !== cu.runId) {
+    // A different run (this page started it, or `jevskill cu` did): the log on
+    // screen belongs to the previous one, and `since` is counted per run.
+    cu.runId = runId;
+    cu.since = 0;
+    cu.preview = null;
+    cu.previewFor = '';
+    cuClearLog();
+    if (sent !== 0) { skipEvents = true; cu.immediate = true; }
+  }
+  if (!skipEvents) {
+    cuAppendEvents(payload.events || []);
+    cu.since = Number(payload.next || 0);
+  }
+  cuRenderStatus(payload);
+  cuRenderPlan(payload);
+  cuRenderConfirm(payload);
+  cuRenderHowToStop(payload.kill_switch);
+  cuUpdateButtons();
+}
+
+/* -------------------------------------------------------- the rendering */
+
+function cuRenderStatus(payload) {
+  const pill = $('#cu-state');
+  if (cu.lost) {
+    pill.textContent = 'connection lost';
+    pill.classList.add('is-lost');
+    return;
+  }
+  pill.classList.remove('is-lost');
+  if (!payload) return;
+  const state = String(payload.state || 'idle');
+  let label = CU_STATE_TEXT[state] || state;
+  const plan = payload.plan || [];
+  if (state === 'running' && plan.length && Number(payload.current) >= 0) {
+    label += ' ' + (Number(payload.current) + 1) + '/' + plan.length;
+  }
+  pill.textContent = label;
+  pill.classList.toggle('is-live', CU_ACTIVE.includes(state));
+
+  $('#cu-sim').classList.toggle('hidden', !(payload.run && payload.dry_run));
+  $('#cu-elapsed').textContent = payload.run ? Number(payload.elapsed_s || 0).toFixed(1) + ' s' : '';
+
+  const spend = payload.spend || {};
+  const calls = Number(spend.jev_calls || 0) + Number(spend.llm_calls || 0);
+  $('#cu-spend').textContent = payload.run
+    ? 'jev ' + cuMoney(spend.jev_usd) + ' · llm ' + cuMoney(spend.llm_usd) +
+      ' · ' + calls + (calls === 1 ? ' call' : ' calls')
+    : '';
+
+  const platform = payload.platform || { ok: true, reason: '' };
+  const note = $('#cu-platform');
+  note.classList.toggle('hidden', !!platform.ok);
+  if (!platform.ok) note.textContent = (platform.reason || 'live runs are unavailable here') +
+    ' — a dry run still works';
+}
+
+function cuStepRow(step, index) {
+  const status = String(step.status || 'pending');
+  const main = el('div', {}, [
+    el('span', { class: 'cu-goal', text: String(step.goal || 'goal ' + (index + 1)) }),
+    step.launch ? el('span', { class: 'cu-launch', text: 'launch ' + step.launch }) : null,
+    step.done_when ? el('span', { class: 'cu-when', text: String(step.done_when) }) : null,
+  ]);
+  const meta = [];
+  const steps = Number(step.steps || 0);
+  if (steps) meta.push(steps + (steps === 1 ? ' step' : ' steps'));
+  if (step.stop_reason) meta.push(String(step.stop_reason));
+  return el('div', { class: 'cu-step is-' + status }, [
+    el('span', {
+      class: 'cu-glyph', role: 'img', title: status, 'aria-label': status,
+      text: CU_GLYPH[status] || '·',
+    }),
+    main,
+    el('span', { class: 'cu-step-meta', text: meta.join(' · ') }),
+  ]);
+}
+
+function cuRenderPlanSteps(steps) {
+  const host = $('#cu-plan');
+  host.textContent = '';
+  if (!steps || !steps.length) {
+    host.appendChild(el('p', {
+      class: 'cu-empty', text: 'no plan yet — write a command, then plan or start',
+    }));
+    return;
+  }
+  steps.forEach((step, index) => host.appendChild(cuStepRow(step, index)));
+}
+
+function cuRenderPlan(payload) {
+  cuRenderPlanSteps(cu.preview || (payload && payload.plan) || []);
+}
+
+function cuRenderConfirm(payload) {
+  const box = $('#cu-confirm');
+  const pending = payload && payload.pending_confirm;
+  if (!pending) {
+    if (cu.confirmKey) {
+      box.textContent = '';
+      box.classList.add('hidden');
+      cu.confirmKey = '';
+    }
+    return;
+  }
+  const key = String(pending.asked_at) + '|' + String(pending.prompt);
+  if (key !== cu.confirmKey) {
+    cu.confirmKey = key;
+    box.textContent = '';
+    box.appendChild(el('p', { class: 'ask' }, [
+      document.createTextNode('The agent wants to: '),
+      el('b', { text: String(pending.prompt || 'act on this desktop') }),
+    ]));
+    const facts = [];
+    if (pending.name) facts.push('name ' + pending.name);
+    if (pending.target) facts.push('target ' + pending.target);
+    if (pending.key) facts.push('key ' + pending.key);
+    if (facts.length) box.appendChild(el('p', { class: 'facts', text: facts.join('  ·  ') }));
+    // Deny takes the focus, not allow: the default answer to "may I touch the
+    // desktop" should never be one stray Enter away.
+    const deny = el('button', { type: 'button', text: 'deny', onclick: () => cuAnswer(false) });
+    box.appendChild(el('div', { class: 'btn-row' }, [
+      el('button', { type: 'button', class: 'btn-primary', text: 'allow', onclick: () => cuAnswer(true) }),
+      deny,
+    ]));
+    box.appendChild(el('p', { class: 'countdown' }));
+    box.appendChild(el('p', { class: 'facts', text: 'STOP denies and ends the run' }));
+    box.classList.remove('hidden');
+    deny.focus();
+  }
+  // The server denies on timeout; this only shows the clock it is running.
+  const left = Math.max(0, Math.round(
+    Number(pending.asked_at || 0) + Number(pending.timeout_s || 0) - Date.now() / 1000));
+  const countdown = box.querySelector('.countdown');
+  countdown.textContent = '';
+  countdown.appendChild(el('span', {
+    class: left <= 15 ? 'warn' : null,
+    text: left ? 'answer within ' + left + ' s' : 'time is up — the agent denied it',
+  }));
+}
+
+function cuRenderHowToStop(kill) {
+  const info = kill || { button: true, hotkey: null, corner: null, cli: 'jevskill cu stop' };
+  const key = JSON.stringify([info.hotkey, info.corner, info.cli]);
+  if (key === cu.killKey) return;
+  cu.killKey = key;
+  const cli = info.cli || 'jevskill cu stop';
+
+  const line = (lead, ways) => {
+    const node = el('p', {}, [el('span', { text: lead })]);
+    ways.forEach((way, index) => {
+      if (index) node.appendChild(document.createTextNode(' · '));
+      for (const part of way) {
+        node.appendChild(part.k
+          ? el('span', { class: 'k', text: part.k })
+          : document.createTextNode(part.t));
+      }
+    });
+    return node;
+  };
+
+  const pl = [[{ t: 'przycisk STOP' }]];
+  const en = [[{ t: 'the STOP button' }]];
+  if (info.hotkey) {
+    pl.push([{ k: info.hotkey }, { t: ' (gdziekolwiek)' }]);
+    en.push([{ k: info.hotkey }, { t: ' anywhere' }]);
+  }
+  if (info.corner) {
+    pl.push([{ t: 'mysz w lewy górny róg ekranu' }]);
+    en.push([{ t: 'mouse to the top-left corner' }]);
+  }
+  pl.push([{ k: cli }, { t: ' w terminalu' }]);
+  en.push([{ k: cli }, { t: ' in a terminal' }]);
+
+  const host = $('#cu-howstop');
+  host.textContent = '';
+  host.appendChild(line('Jak przerwać: ', pl));
+  host.appendChild(line('To stop: ', en));
+  host.appendChild(el('p', {
+    class: 'after',
+    text: 'Po starcie kliknij okno, w którym agent ma pracować — konsola nie może ' +
+          'zostać na wierzchu. / After start, click the window the agent should work ' +
+          'in; the console must not stay in front.',
+  }));
+}
+
+/* -------------------------------------------------------------- the log */
+
+function cuLineClass(event) {
+  const kind = String(event.kind || '');
+  const text = String(event.text || '');
+  if (kind === 'llm_error' || kind === 'goal_stalled') return 'is-stop';
+  if (kind === 'end') return text.indexOf('failed') === 0 ? 'is-stop' : 'is-end';
+  if (kind === 'confirm' || kind === 'confirm_result') return 'is-gold';
+  if (CU_DIM_KINDS.indexOf(kind) >= 0) return 'is-dim';
+  return '';
+}
+
+function cuLogLine(event) {
+  return el('div', { class: ('cu-line ' + cuLineClass(event)).trim() }, [
+    el('span', { class: 't', text: Number(event.t || 0).toFixed(2) }),
+    el('span', { class: 'kind', text: String(event.kind || '') }),
+    el('span', { class: 'what', text: String(event.text || '') }),
+  ]);
+}
+
+function cuAppendEvents(events) {
+  if (!events || !events.length) return;
+  const log = $('#cu-log');
+  for (const event of events) {
+    cu.lines.push(event);
+    log.appendChild(cuLogLine(event));
+  }
+  // Follow the tail, unless the reader has scrolled back to look at something.
+  if (cu.stick) log.scrollTop = log.scrollHeight;
+}
+
+function cuClearLog() {
+  $('#cu-log').textContent = '';
+  cu.lines = [];
+  cu.stick = true;
+}
+
+function cuLogText() {
+  return cu.lines.map((event) =>
+    Number(event.t || 0).toFixed(2).padStart(7) + '  ' +
+    String(event.kind || '').padEnd(14) + ' ' + String(event.text || '')).join('\n');
+}
+
+/* ------------------------------------------------------------- the wire */
+
+function cuWire() {
+  $('#tab-decide').addEventListener('click', () => setView('decide'));
+  $('#tab-cu').addEventListener('click', () => setView('cu'));
+  window.addEventListener('hashchange', () => {
+    if (location.hash === '#cu') setView('cu');
+    else if (!location.hash || location.hash === '#') setView('decide');
+  });
+
+  $('#cu-command').addEventListener('input', () => {
+    // The plan on screen described the old command; it is no longer what would
+    // run, so it stops being what start sends.
+    if (cu.previewFor && cu.previewFor !== $('#cu-command').value.trim()) {
+      cu.preview = null;
+      cu.previewFor = '';
+      cu.note = '';
+      cuRenderPlan(cu.last);
+    }
+    cuUpdateButtons();
+  });
+
+  $('#cu-model').addEventListener('change', () => {
+    cuSyncModelUi();
+    lsSet('jev.cu.model', cuModel() || '');
+  });
+  $('#cu-model-custom').addEventListener('input', () => {
+    lsSet('jev.cu.model', cuModel() || '');
+    cuUpdateButtons();
+  });
+
+  for (const selector of ['#cu-max-steps', '#cu-budget', '#cu-cap']) {
+    $(selector).addEventListener('change', cuSavePrefs);
+  }
+  $('#cu-dry').addEventListener('change', () => { cuSavePrefs(); cuUpdateButtons(); });
+
+  $('#cu-plan-btn').addEventListener('click', cuPlanNow);
+  $('#cu-start').addEventListener('click', cuStart);
+  $('#cu-stop').addEventListener('click', cuStop);
+
+  const log = $('#cu-log');
+  log.addEventListener('scroll', () => {
+    cu.stick = log.scrollTop + log.clientHeight >= log.scrollHeight - 8;
+  });
+  $('#cu-copy-log').addEventListener('click', (event) => copyText(cuLogText(), event.target));
+  $('#cu-clear-log').addEventListener('click', cuClearLog);
+}
+
+function cuBoot() {
+  cuWire();
+  cuRestorePrefs();
+  cuRenderPlanSteps([]);
+  cuRenderHowToStop(null);
+  cuUpdateButtons();
+  setView(location.hash === '#cu' ? 'cu' : (lsGet('jev.view', 'decide') === 'cu' ? 'cu' : 'decide'));
+  cuLoadModels();
+  // Poll from boot, not from the first click: a run started by `jevskill cu`
+  // in a terminal is this page's business too.
+  cuPoll();
+}
+
 async function boot() {
   wire();
+  cuBoot();
   // Start empty: the quick gate is the fast path, a template the second, and an
   // empty card only produced a 400 from the server on the first click.
   state.cards = [];

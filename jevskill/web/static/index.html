@@ -17,6 +17,10 @@
 
   <header class="topbar">
     <h1 class="wordmark">jev · console</h1>
+    <nav class="views" aria-label="view">
+      <button type="button" class="view-tab" id="tab-decide" aria-pressed="true">decide</button>
+      <button type="button" class="view-tab" id="tab-cu" aria-pressed="false">computer use</button>
+    </nav>
     <span class="pill" id="doctor-pill">connecting…</span>
     <div class="totals" aria-live="polite">
       <div>calls<b id="t-calls">0</b></div>
@@ -27,6 +31,9 @@
   </header>
 
   <div id="banner"></div>
+
+  <!-- ==================================================== view: decide -->
+  <div id="view-decide">
 
   <main class="columns">
 
@@ -111,6 +118,87 @@
     <div id="history"></div>
     <p class="note mono" id="history-note"></p>
   </section>
+
+  </div>
+
+  <!-- =============================================== view: computer use -->
+  <div id="view-cu" class="hidden">
+    <div class="columns">
+
+      <!-- ----------------------------------------------------- command -->
+      <section class="panel" id="cu-command-panel">
+        <label class="microlabel" for="cu-command">command</label>
+        <textarea id="cu-command" rows="6" spellcheck="false" placeholder="Otwórz Notatnik, wpisz „hello world” i zapisz jako hello.txt na pulpicie&#10;Open Notepad, type &quot;hello world&quot;, save it as hello.txt on the desktop"></textarea>
+
+        <label class="microlabel cu-sub" for="cu-model">planning model</label>
+        <select id="cu-model">
+          <option value="">none — Jev only (no planning model)</option>
+          <option value="__custom">custom id…</option>
+        </select>
+        <input type="text" id="cu-model-custom" class="mono hidden" list="cu-models-all" spellcheck="false" autocomplete="off" aria-label="custom planning model id" placeholder="an OpenRouter id, e.g. vendor/model">
+        <datalist id="cu-models-all"></datalist>
+        <div id="cu-model-note"></div>
+
+        <details id="cu-advanced">
+          <summary>advanced</summary>
+          <div class="cu-fields">
+            <p class="cu-field">
+              <label for="cu-max-steps">max steps per goal</label>
+              <input type="number" id="cu-max-steps" min="1" max="200" step="1" value="25">
+            </p>
+            <p class="cu-field">
+              <label for="cu-budget">seconds per goal</label>
+              <input type="number" id="cu-budget" min="5" max="3600" step="5" value="90">
+            </p>
+            <p class="cu-field">
+              <label for="cu-cap">spend cap USD</label>
+              <input type="number" id="cu-cap" min="0" max="100" step="0.05" value="0.50">
+            </p>
+          </div>
+          <p class="cu-dry">
+            <label class="switch" for="cu-dry"><input type="checkbox" id="cu-dry" checked> dry run — plan, then simulate; the desktop is not touched</label>
+          </p>
+        </details>
+
+        <div class="btn-row cu-actions">
+          <button type="button" class="tiny" id="cu-plan-btn">plan</button>
+          <button type="button" class="btn-primary" id="cu-start">simulate</button>
+          <button type="button" id="cu-stop" disabled>STOP</button>
+        </div>
+        <p class="note mono" id="cu-hint"></p>
+        <div id="cu-error"></div>
+
+        <div class="cu-howstop" id="cu-howstop"></div>
+      </section>
+
+      <!-- --------------------------------------------------------- run -->
+      <section class="panel" id="cu-run-panel">
+        <p class="microlabel">
+          run
+          <span class="spacer"></span>
+          <button type="button" class="tiny" id="cu-copy-log">copy log</button>
+          <button type="button" class="tiny" id="cu-clear-log">clear</button>
+        </p>
+
+        <div class="cu-strip">
+          <span class="pill" id="cu-state" aria-live="polite">idle</span>
+          <span class="cu-sim hidden" id="cu-sim">simulated</span>
+          <span class="mono cu-meta" id="cu-elapsed"></span>
+          <span class="mono cu-meta" id="cu-spend"></span>
+        </div>
+        <p class="note hidden" id="cu-platform"></p>
+
+        <div id="cu-confirm" class="cu-confirm hidden" role="dialog" aria-live="assertive" aria-label="the agent is waiting for a confirmation"></div>
+
+        <p class="microlabel cu-sub">plan</p>
+        <div id="cu-plan"></div>
+
+        <p class="microlabel cu-sub">event log</p>
+        <div id="cu-log" class="cu-log mono" tabindex="0" aria-label="event log"></div>
+      </section>
+
+    </div>
+  </div>
 
 </div>
 

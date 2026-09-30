@@ -1,0 +1,1168 @@
+{
+  "what": "The full computer-use command issued through the console on a real Windows 11 desktop (model anthropic/claude-sonnet-5), six attempts on 2026-09-21 between 02:39 and 03:57 local time, the user working on the same desktop and, from the fourth attempt, starting the run from the panel's start button with dry run off. Each attempt is the run's status payload exactly as the page polled it; step rows are in the ledger under session_id = \"<run_id>:<goal index>\" (which=act), planning-model calls under session_id = run_id (which=cu_llm). The sixth attempt saved hello.txt on the user's Desktop containing \"hello world\". Everything the attempts exposed was fixed in the same PR with a regression test.",
+  "command": "Otwórz Notatnik, wpisz „hello world” i zapisz jako hello.txt na pulpicie",
+  "settings": {
+    "max_steps": 10,
+    "budget_s": 60,
+    "total_budget_s": 240,
+    "usd_cap": 0.3,
+    "confirm_policy": "allow only a confirm that mentions save/zapisz, deny anything else"
+  },
+  "attempts": [
+    {
+      "name": "before the fixes",
+      "run": {
+        "run_id": "20260921-023754-52638f",
+        "state": "failed",
+        "stop_reason": "escalated",
+        "elapsed_s": 118.0,
+        "spend": {
+          "jev_calls": 5,
+          "jev_tokens": 47946,
+          "jev_usd": 0.00201373,
+          "llm_calls": 18,
+          "llm_tokens": 50652,
+          "llm_usd": 0.138472,
+          "usd": 0.14048573
+        },
+        "goals": [
+          [
+            "Open Notepad",
+            "done",
+            "done",
+            1
+          ],
+          [
+            "Type the text \"hello world\" into the Notepad editing area",
+            "done",
+            "done",
+            2
+          ],
+          [
+            "Open the Save As dialog using Ctrl+S",
+            "failed",
+            "escalated",
+            3
+          ],
+          [
+            "In the Save As dialog, click on 'Pulpit' (Desktop) in the navigation pane to navigate to the Desktop folder",
+            "failed",
+            "budget",
+            9
+          ],
+          [
+            "Type \"%USERPROFILE%\\Desktop\\hello.txt\" into the file name field of the Save As dialog (this bypasses the need to navigate the folder tree) and click the Save button",
+            "failed",
+            "escalated",
+            1
+          ]
+        ]
+      },
+      "exposed": [
+        "key chords were not executed: SendInput sent 0 of 6 events — the INPUT union lacked MOUSEINPUT, so sizeof(INPUT) was wrong on x64 (fixed in jevskill/cu/act.py)",
+        "the user switched to Chrome mid-run; the loop observed Chrome and the model proposed the Windows key — the target window is now pinned by pid, observation and action refuse to act in another process (runner._ensure_target_in_front)",
+        "ten escalations in a row answered with an action that did not execute — three consecutive unexecuted escalation actions now end the goal",
+        "in the Save As dialog every Jev step was unknown_op: the 60-candidate cap dropped the file-name edit and the Save button and the region cascade found no region — the operator passes cap=150 (single decide: type file-name 0.91, click Save 0.94) and observes with a 1500 ms budget"
+      ],
+      "payload": {
+        "run_id": "20260921-023754-52638f",
+        "command": "Otwórz Notatnik, wpisz „hello world” i zapisz jako hello.txt na pulpicie",
+        "model": "anthropic/claude-sonnet-5",
+        "dry_run": false,
+        "state": "failed",
+        "plan": [
+          {
+            "goal": "Open Notepad",
+            "done_when": "Notepad window is in foreground with title containing 'Notatnik'",
+            "launch": "notepad.exe",
+            "status": "done",
+            "stop_reason": "done",
+            "note": "",
+            "steps": 1,
+            "tokens_in": 5164,
+            "cost_usd": 0.00021689,
+            "wall_ms": 3840.7
+          },
+          {
+            "goal": "Type the text \"hello world\" into the Notepad editing area",
+            "done_when": "The text editor control shows the value \"hello world\"",
+            "launch": null,
+            "status": "done",
+            "stop_reason": "done",
+            "note": "",
+            "steps": 2,
+            "tokens_in": 11360,
+            "cost_usd": 0.00047712,
+            "wall_ms": 3553.9
+          },
+          {
+            "goal": "Open the Save As dialog using Ctrl+S",
+            "done_when": "A dialog titled 'Save As' is visible",
+            "launch": null,
+            "status": "failed",
+            "stop_reason": "escalated",
+            "note": "escalated: unknown_op",
+            "steps": 3,
+            "tokens_in": 11979,
+            "cost_usd": 0.00050312,
+            "wall_ms": 9925.8
+          },
+          {
+            "goal": "In the Save As dialog, click on 'Pulpit' (Desktop) in the navigation pane to navigate to the Desktop folder",
+            "done_when": "The file list shows Desktop folder contents and the address bar/navigation indicates Pulpit is selected",
+            "launch": null,
+            "status": "failed",
+            "stop_reason": "budget",
+            "note": "escalated: unknown_op; escalation handled: scroll_down",
+            "steps": 9,
+            "tokens_in": 17330,
+            "cost_usd": 0.00072786,
+            "wall_ms": 65214.6
+          },
+          {
+            "goal": "Type \"%USERPROFILE%\\Desktop\\hello.txt\" into the file name field of the Save As dialog (this bypasses the need to navigate the folder tree) and click the Save button",
+            "done_when": "Dialog closes and Notepad title bar shows 'hello.txt — Notatnik'",
+            "launch": null,
+            "status": "failed",
+            "stop_reason": "escalated",
+            "note": "escalated: unknown_op",
+            "steps": 1,
+            "tokens_in": 2113,
+            "cost_usd": 8.875e-05,
+            "wall_ms": 8187.1
+          }
+        ],
+        "current": 4,
+        "events": [
+          {
+            "i": 66,
+            "t": 118.04,
+            "kind": "llm",
+            "text": "escalate · anthropic/claude-sonnet-5 · 3081+250 tok · $0.008662 · 6714 ms"
+          },
+          {
+            "i": 67,
+            "t": 118.04,
+            "kind": "escalate",
+            "text": "anthropic/claude-sonnet-5: none — The Save As dialog's file name edit field isn't present in the current element list, so no safe target exists to type th"
+          },
+          {
+            "i": 68,
+            "t": 118.04,
+            "kind": "step",
+            "text": "#0 -  · jev · conf 0.00 · not executed · 884 ms · escalated: unknown_op",
+            "data": {
+              "index": 0,
+              "op": null,
+              "target": null,
+              "decided_by": "jev",
+              "confidence": 0.0,
+              "executed": false,
+              "stages_ms": {
+                "observe": 593.0,
+                "reduce": 0.8,
+                "decide": 290.3,
+                "validate": 0.0
+              },
+              "note": "escalated: unknown_op"
+            }
+          },
+          {
+            "i": 69,
+            "t": 118.04,
+            "kind": "goal_stalled",
+            "text": "goal 5 ended: escalated — escalated: unknown_op"
+          },
+          {
+            "i": 70,
+            "t": 118.04,
+            "kind": "end",
+            "text": "failed after 118.0 s · 5 goals · jev $0.002014 · llm $0.138472 · escalated · escalated: unknown_op"
+          }
+        ],
+        "next": 71,
+        "pending_confirm": null,
+        "spend": {
+          "jev_calls": 5,
+          "jev_tokens": 47946,
+          "jev_usd": 0.00201373,
+          "llm_calls": 18,
+          "llm_tokens": 50652,
+          "llm_usd": 0.138472,
+          "usd": 0.14048573
+        },
+        "started_at": 1789951074.776826,
+        "ended_at": 1789951192.8162026,
+        "elapsed_s": 118.0,
+        "stop_reason": "escalated",
+        "error": "escalated: unknown_op",
+        "limits": {
+          "max_steps": 10,
+          "budget_s": 60.0,
+          "total_budget_s": 240.0,
+          "usd_cap": 0.3
+        },
+        "run": "20260921-023754-52638f",
+        "busy": false,
+        "platform": {
+          "ok": true,
+          "reason": ""
+        },
+        "kill_switch": {
+          "button": true,
+          "hotkey": "Ctrl+Alt+Esc",
+          "corner": "top-left",
+          "stop_file": "D:\\code\\jevskill\\.jevskill\\cu.stop",
+          "cli": "jevskill cu stop",
+          "armed": false,
+          "tripped": false,
+          "reason": ""
+        }
+      }
+    },
+    {
+      "name": "stopped by the corner",
+      "run": {
+        "run_id": "20260921-024606-4891a4",
+        "state": "stopped",
+        "stop_reason": "mouse in the top-left corner",
+        "elapsed_s": 10.0,
+        "spend": {
+          "jev_calls": 0,
+          "jev_tokens": 0,
+          "jev_usd": 0.0,
+          "llm_calls": 1,
+          "llm_tokens": 1173,
+          "llm_usd": 0.007474,
+          "usd": 0.007474
+        },
+        "goals": [
+          [
+            "Open Notepad",
+            "stopped",
+            "",
+            0
+          ],
+          [
+            "Type the text into the editor",
+            "skipped",
+            "",
+            0
+          ],
+          [
+            "Open the Save As dialog",
+            "skipped",
+            "",
+            0
+          ],
+          [
+            "Enter the full file path and save",
+            "skipped",
+            "",
+            0
+          ]
+        ]
+      },
+      "exposed": [
+        "the corner trigger fired 1.5 s after notepad.exe launched: the cursor visited the top-left corner while the user worked; one plan call ($0.0075) spent, nothing touched — the stop path itself is what this attempt measures"
+      ],
+      "payload": {
+        "run_id": "20260921-024606-4891a4",
+        "command": "Otwórz Notatnik, wpisz „hello world” i zapisz jako hello.txt na pulpicie",
+        "model": "anthropic/claude-sonnet-5",
+        "dry_run": false,
+        "state": "stopped",
+        "plan": [
+          {
+            "goal": "Open Notepad",
+            "done_when": "A window titled 'Notepad' or 'Untitled - Notepad' is in the foreground with an empty text editing area",
+            "launch": "notepad.exe",
+            "status": "stopped",
+            "stop_reason": "",
+            "note": "",
+            "steps": 0,
+            "tokens_in": 0,
+            "cost_usd": 0.0,
+            "wall_ms": 0.0
+          },
+          {
+            "goal": "Type the text into the editor",
+            "done_when": "The text editor control's value equals \"hello world\"",
+            "launch": null,
+            "status": "skipped",
+            "stop_reason": "",
+            "note": "",
+            "steps": 0,
+            "tokens_in": 0,
+            "cost_usd": 0.0,
+            "wall_ms": 0.0
+          },
+          {
+            "goal": "Open the Save As dialog",
+            "done_when": "A dialog titled 'Save As' is visible with a 'File name' field",
+            "launch": null,
+            "status": "skipped",
+            "stop_reason": "",
+            "note": "",
+            "steps": 0,
+            "tokens_in": 0,
+            "cost_usd": 0.0,
+            "wall_ms": 0.0
+          },
+          {
+            "goal": "Enter the full file path and save",
+            "done_when": "The Save As dialog closes and the Notepad window title shows 'hello.txt'",
+            "launch": null,
+            "status": "skipped",
+            "stop_reason": "",
+            "note": "",
+            "steps": 0,
+            "tokens_in": 0,
+            "cost_usd": 0.0,
+            "wall_ms": 0.0
+          }
+        ],
+        "current": 0,
+        "events": [
+          {
+            "i": 7,
+            "t": 10.04,
+            "kind": "end",
+            "text": "stopped after 10.0 s · 4 goals · jev $0.000000 · llm $0.007474 · mouse in the top-left corner"
+          }
+        ],
+        "next": 8,
+        "pending_confirm": null,
+        "spend": {
+          "jev_calls": 0,
+          "jev_tokens": 0,
+          "jev_usd": 0.0,
+          "llm_calls": 1,
+          "llm_tokens": 1173,
+          "llm_usd": 0.007474,
+          "usd": 0.007474
+        },
+        "started_at": 1789951566.2526147,
+        "ended_at": 1789951576.289719,
+        "elapsed_s": 10.0,
+        "stop_reason": "mouse in the top-left corner",
+        "error": "",
+        "limits": {
+          "max_steps": 10,
+          "budget_s": 60.0,
+          "total_budget_s": 240.0,
+          "usd_cap": 0.3
+        },
+        "run": "20260921-024606-4891a4",
+        "busy": false,
+        "platform": {
+          "ok": true,
+          "reason": ""
+        },
+        "kill_switch": {
+          "button": true,
+          "hotkey": "Ctrl+Alt+Esc",
+          "corner": "top-left",
+          "stop_file": "D:\\code\\jevskill\\.jevskill\\cu.stop",
+          "cli": "jevskill cu stop",
+          "armed": false,
+          "tripped": false,
+          "reason": ""
+        }
+      }
+    },
+    {
+      "name": "after the fixes",
+      "run": {
+        "run_id": "20260921-025220-709b6c",
+        "state": "failed",
+        "stop_reason": "error",
+        "elapsed_s": 52.7,
+        "spend": {
+          "jev_calls": 5,
+          "jev_tokens": 50111,
+          "jev_usd": 0.00210466,
+          "llm_calls": 10,
+          "llm_tokens": 15758,
+          "llm_usd": 0.048636,
+          "usd": 0.05074066
+        },
+        "goals": [
+          [
+            "Open Notepad",
+            "done",
+            "done",
+            1
+          ],
+          [
+            "Type the text into the editor",
+            "failed",
+            "escalated",
+            2
+          ],
+          [
+            "Open the Save As dialog",
+            "done",
+            "done",
+            3
+          ],
+          [
+            "Enter the full file path and save",
+            "failed",
+            "escalated",
+            1
+          ],
+          [
+            "Open Save As dialog and save file as hello.txt on Desktop",
+            "failed",
+            "error",
+            0
+          ]
+        ]
+      },
+      "reached": [
+        "goal 1 Open Notepad: launched, switched to in 1.6 s, verified by the model",
+        "goal 2 Type the text: typed from the quoted done_when, text_ok 0.90",
+        "goal 3 Open the Save As dialog: ctrl+shift+s from an escalation, dialog verified present",
+        "goal 4 Enter the full file path and save: not reached — see exposed"
+      ],
+      "exposed": [
+        "goal 2 ended `escalated` although the text was in the editor: Jev said done with a target (incoherent_terminal), the escalation model answered none/\"nothing left to do\" and the goal still bought a re-plan ($0.004, 2.5 s) — the escalation prompt now offers `done` and the operator closes the goal on it",
+        "goal 4: the escalation reply ran to the 900-token cap and never closed its JSON ($0.015, 13.4 s, \"gave no usable answer\") — an unusable reply is now retried once with a terse instruction and max_tokens 300, and the head of the bad reply is in the event",
+        "the target window was pulled back in front of the user's Discord three times in 40 s until Windows refused the fourth — one bring-back per run now; a second loss of the foreground stops the run with \"the desktop is theirs\""
+      ],
+      "payload": {
+        "run_id": "20260921-025220-709b6c",
+        "command": "Otwórz Notatnik, wpisz „hello world” i zapisz jako hello.txt na pulpicie",
+        "model": "anthropic/claude-sonnet-5",
+        "dry_run": false,
+        "state": "failed",
+        "plan": [
+          {
+            "goal": "Open Notepad",
+            "done_when": "A Notepad window is in the foreground with an empty edit area",
+            "launch": "notepad.exe",
+            "status": "done",
+            "stop_reason": "done",
+            "note": "",
+            "steps": 1,
+            "tokens_in": 5164,
+            "cost_usd": 0.00021689,
+            "wall_ms": 3737.2
+          },
+          {
+            "goal": "Type the text into the editor",
+            "done_when": "The Notepad edit area contains \"hello world\"",
+            "launch": null,
+            "status": "failed",
+            "stop_reason": "escalated",
+            "note": "escalated: incoherent_terminal",
+            "steps": 2,
+            "tokens_in": 6563,
+            "cost_usd": 0.00027565,
+            "wall_ms": 3935.3
+          },
+          {
+            "goal": "Open the Save As dialog",
+            "done_when": "A 'Save As' dialog window is visible",
+            "launch": null,
+            "status": "done",
+            "stop_reason": "done",
+            "note": "",
+            "steps": 3,
+            "tokens_in": 21978,
+            "cost_usd": 0.00092308,
+            "wall_ms": 10728.8
+          },
+          {
+            "goal": "Enter the full file path and save",
+            "done_when": "The Notepad title bar shows 'hello.txt' and the Save As dialog is closed",
+            "launch": null,
+            "status": "failed",
+            "stop_reason": "escalated",
+            "note": "escalated: low_confidence",
+            "steps": 1,
+            "tokens_in": 16406,
+            "cost_usd": 0.00068905,
+            "wall_ms": 14550.5
+          },
+          {
+            "goal": "Open Save As dialog and save file as hello.txt on Desktop",
+            "done_when": "The Notepad title bar shows 'hello.txt' without an asterisk and no Save As dialog is open",
+            "launch": null,
+            "status": "failed",
+            "stop_reason": "error",
+            "note": "RuntimeError: the target window lost the foreground before the action and could not be brought back; not acting on 'Discord - AI Lounge'",
+            "steps": 0,
+            "tokens_in": 3805,
+            "cost_usd": 0.00015981,
+            "wall_ms": 4802.5
+          }
+        ],
+        "current": 4,
+        "events": [
+          {
+            "i": 44,
+            "t": 52.67,
+            "kind": "llm",
+            "text": "escalate · anthropic/claude-sonnet-5 · 826+150 tok · $0.003152 · 3813 ms"
+          },
+          {
+            "i": 45,
+            "t": 52.67,
+            "kind": "escalate",
+            "text": "anthropic/claude-sonnet-5 proposes click e8 — Clicking 'Zapisz' (Save) on the unsaved file prompt should open the Save As dialog needed to save as hello.txt on Deskto"
+          },
+          {
+            "i": 46,
+            "t": 52.67,
+            "kind": "refocus",
+            "text": "action: the target window was not in front — could not bring it back"
+          },
+          {
+            "i": 47,
+            "t": 52.67,
+            "kind": "goal_stalled",
+            "text": "goal 5 ended: error — RuntimeError: the target window lost the foreground before the action and could not be brought back; not acting on 'Discord - AI Lounge'"
+          },
+          {
+            "i": 48,
+            "t": 52.67,
+            "kind": "end",
+            "text": "failed after 52.7 s · 5 goals · jev $0.002105 · llm $0.048636 · error · RuntimeError: the target window lost the foreground before the action and could not be brought back; not acting on 'Discord - AI Lounge'"
+          }
+        ],
+        "next": 49,
+        "pending_confirm": null,
+        "spend": {
+          "jev_calls": 5,
+          "jev_tokens": 50111,
+          "jev_usd": 0.00210466,
+          "llm_calls": 10,
+          "llm_tokens": 15758,
+          "llm_usd": 0.048636,
+          "usd": 0.05074066
+        },
+        "started_at": 1789951940.3197987,
+        "ended_at": 1789951992.9907284,
+        "elapsed_s": 52.7,
+        "stop_reason": "error",
+        "error": "RuntimeError: the target window lost the foreground before the action and could not be brought back; not acting on 'Discord - AI Lounge'",
+        "limits": {
+          "max_steps": 10,
+          "budget_s": 60.0,
+          "total_budget_s": 240.0,
+          "usd_cap": 0.3
+        },
+        "run": "20260921-025220-709b6c",
+        "busy": false,
+        "platform": {
+          "ok": true,
+          "reason": ""
+        },
+        "kill_switch": {
+          "button": true,
+          "hotkey": "Ctrl+Alt+Esc",
+          "corner": "top-left",
+          "stop_file": "D:\\code\\jevskill\\.jevskill\\cu.stop",
+          "cli": "jevskill cu stop",
+          "armed": false,
+          "tripped": false,
+          "reason": ""
+        }
+      }
+    },
+    {
+      "name": "from the panel, after the first fixes",
+      "run": {
+        "run_id": "20260921-033947-d06ea8",
+        "state": "failed",
+        "stop_reason": "escalated",
+        "elapsed_s": 114.2,
+        "spend": {
+          "jev_calls": 11,
+          "jev_tokens": 187721,
+          "jev_usd": 0.00788428,
+          "llm_calls": 13,
+          "llm_tokens": 38068,
+          "llm_usd": 0.118256,
+          "usd": 0.12614028
+        },
+        "goals": [
+          [
+            "Open Notepad",
+            "done",
+            "done",
+            1
+          ],
+          [
+            "Type \"hello world\" into the Notepad editor",
+            "done",
+            "done",
+            2
+          ],
+          [
+            "Open the Save As dialog",
+            "done",
+            "done",
+            2
+          ],
+          [
+            "Type the full file path into the File name field and save",
+            "failed",
+            "escalated",
+            2
+          ],
+          [
+            "Navigate to Desktop (Pulpit) location in the Save As dialog",
+            "failed",
+            "blocked",
+            9
+          ],
+          [
+            "Click into the file name field and type \"%USERPROFILE%\\Desktop\\hello.txt\" to save directly to the Desktop",
+            "failed",
+            "escalated",
+            1
+          ],
+          [
+            "Click the Save button (Zapisz) to save the file",
+            "skipped",
+            "",
+            0
+          ]
+        ]
+      },
+      "reached": [
+        "Notepad open, text typed and verified, Save As dialog open and verified in 30 s, no refocus needed"
+      ],
+      "exposed": [
+        "the compose hook typed the command's quoted \"hello world\" into the file-name field (the goal carried no quote of its own): with a model present the command's quote is no longer used, the model is asked, with done_when and the field",
+        "the model never saw the file-name field: ELEMENTS_FOR_LLM=60 truncated the screen sent to every escalation and re-plan, so it navigated folders instead; the model now sees the 150 candidates the loop saw",
+        "scroll_up on the navigation pane failed twice: \"element does not support IUIAutomationScrollItemPattern\"; a container without ScrollItem now tries ScrollPattern, then the mouse wheel over it",
+        "a verify reply of 708 tokens ($0.013): verify asks for `why` under 25 words and caps the reply at 300 tokens"
+      ],
+      "payload": {
+        "run_id": "20260921-033947-d06ea8",
+        "command": "Otwórz Notatnik, wpisz „hello world” i zapisz jako hello.txt na pulpicie",
+        "model": "anthropic/claude-sonnet-5",
+        "dry_run": false,
+        "state": "failed",
+        "plan": [
+          {
+            "goal": "Open Notepad",
+            "done_when": "Notepad window is in foreground with an empty Edit control",
+            "launch": "notepad.exe",
+            "status": "done",
+            "stop_reason": "done",
+            "note": "",
+            "steps": 1,
+            "tokens_in": 5164,
+            "cost_usd": 0.00021689,
+            "wall_ms": 3489.9
+          },
+          {
+            "goal": "Type \"hello world\" into the Notepad editor",
+            "done_when": "The Edit control's text value equals \"hello world\"",
+            "launch": null,
+            "status": "done",
+            "stop_reason": "done",
+            "note": "",
+            "steps": 2,
+            "tokens_in": 11351,
+            "cost_usd": 0.00047674,
+            "wall_ms": 3270.1
+          },
+          {
+            "goal": "Open the Save As dialog",
+            "done_when": "A dialog titled 'Save As' is visible with a File name field",
+            "launch": null,
+            "status": "done",
+            "stop_reason": "done",
+            "note": "",
+            "steps": 2,
+            "tokens_in": 22513,
+            "cost_usd": 0.00094555,
+            "wall_ms": 15859.3
+          },
+          {
+            "goal": "Type the full file path into the File name field and save",
+            "done_when": "Notepad's title bar shows 'hello.txt' and the Save As dialog is closed",
+            "launch": null,
+            "status": "failed",
+            "stop_reason": "escalated",
+            "note": "escalated: role_op_mismatch",
+            "steps": 2,
+            "tokens_in": 35542,
+            "cost_usd": 0.00149276,
+            "wall_ms": 12720.4
+          },
+          {
+            "goal": "Navigate to Desktop (Pulpit) location in the Save As dialog",
+            "done_when": "The current folder shown in the dialog is Desktop (Pulpit)",
+            "launch": null,
+            "status": "failed",
+            "stop_reason": "blocked",
+            "note": "tree unchanged after 2 actions (identical)",
+            "steps": 9,
+            "tokens_in": 111050,
+            "cost_usd": 0.0046641,
+            "wall_ms": 48344.1
+          },
+          {
+            "goal": "Click into the file name field and type \"%USERPROFILE%\\Desktop\\hello.txt\" to save directly to the Desktop",
+            "done_when": "The file name field shows '%USERPROFILE%\\Desktop\\hello.txt'",
+            "launch": null,
+            "status": "failed",
+            "stop_reason": "escalated",
+            "note": "escalated: unknown_op",
+            "steps": 1,
+            "tokens_in": 2101,
+            "cost_usd": 8.824e-05,
+            "wall_ms": 7135.6
+          },
+          {
+            "goal": "Click the Save button (Zapisz) to save the file",
+            "done_when": "Notepad's title bar shows 'hello.txt' and the Save As dialog is closed",
+            "launch": null,
+            "status": "skipped",
+            "stop_reason": "",
+            "note": "",
+            "steps": 0,
+            "tokens_in": 0,
+            "cost_usd": 0.0,
+            "wall_ms": 0.0
+          }
+        ],
+        "current": 5,
+        "events": [
+          {
+            "i": 61,
+            "t": 114.19,
+            "kind": "llm",
+            "text": "escalate · anthropic/claude-sonnet-5 · 3164+243 tok · $0.008758 · 5955 ms"
+          },
+          {
+            "i": 62,
+            "t": 114.19,
+            "kind": "escalate",
+            "text": "anthropic/claude-sonnet-5: none — No visible 'Nazwa pliku' (file name) field element in current screen list to click into."
+          },
+          {
+            "i": 63,
+            "t": 114.19,
+            "kind": "step",
+            "text": "#0 -  · jev · conf 0.00 · not executed · 599 ms · escalated: unknown_op",
+            "data": {
+              "index": 0,
+              "op": null,
+              "target": null,
+              "decided_by": "jev",
+              "confidence": 0.0,
+              "executed": false,
+              "stages_ms": {
+                "observe": 346.7,
+                "reduce": 1.4,
+                "decide": 250.6,
+                "validate": 0.0
+              },
+              "note": "escalated: unknown_op"
+            }
+          },
+          {
+            "i": 64,
+            "t": 114.19,
+            "kind": "goal_stalled",
+            "text": "goal 6 ended: escalated — escalated: unknown_op"
+          },
+          {
+            "i": 65,
+            "t": 114.19,
+            "kind": "end",
+            "text": "failed after 114.2 s · 7 goals · jev $0.007884 · llm $0.118256 · escalated · escalated: unknown_op"
+          }
+        ],
+        "next": 66,
+        "pending_confirm": null,
+        "spend": {
+          "jev_calls": 11,
+          "jev_tokens": 187721,
+          "jev_usd": 0.00788428,
+          "llm_calls": 13,
+          "llm_tokens": 38068,
+          "llm_usd": 0.118256,
+          "usd": 0.12614028
+        },
+        "started_at": 1789954787.6665375,
+        "ended_at": 1789954901.8581238,
+        "elapsed_s": 114.2,
+        "stop_reason": "escalated",
+        "error": "escalated: unknown_op",
+        "limits": {
+          "max_steps": 25,
+          "budget_s": 90.0,
+          "total_budget_s": 600.0,
+          "usd_cap": 0.5
+        },
+        "run": "20260921-033947-d06ea8",
+        "busy": false,
+        "platform": {
+          "ok": true,
+          "reason": ""
+        },
+        "kill_switch": {
+          "button": true,
+          "hotkey": "Ctrl+Alt+Esc",
+          "corner": "top-left",
+          "stop_file": "D:\\code\\jevskill\\.jevskill\\cu.stop",
+          "cli": "jevskill cu stop",
+          "armed": false,
+          "tripped": false,
+          "reason": ""
+        }
+      }
+    },
+    {
+      "name": "from the panel, second-loss rule",
+      "run": {
+        "run_id": "20260921-034753-8e7da4",
+        "state": "stopped",
+        "stop_reason": "the user switched to 'Claude' again after the window was brought back once; the desktop is theirs",
+        "elapsed_s": 28.7,
+        "spend": {
+          "jev_calls": 4,
+          "jev_tokens": 42204,
+          "jev_usd": 0.00177257,
+          "llm_calls": 7,
+          "llm_tokens": 11814,
+          "llm_usd": 0.030076,
+          "usd": 0.03184857
+        },
+        "goals": [
+          [
+            "Otwórz Notatnik",
+            "done",
+            "done",
+            1
+          ],
+          [
+            "Wpisz tekst w polu edycji Notatnika",
+            "done",
+            "done",
+            2
+          ],
+          [
+            "Otwórz okno dialogowe Zapisz jako",
+            "done",
+            "done",
+            3
+          ],
+          [
+            "Wpisz pełną ścieżkę pliku w polu nazwy i zapisz",
+            "stopped",
+            "error",
+            0
+          ]
+        ]
+      },
+      "reached": [
+        "compose produced the 31-character %USERPROFILE% path; the escalation's `done` closed goal 2 without a re-plan; Save As open in 26 s"
+      ],
+      "exposed": [
+        "the run was stopped by the operator's own rule (a second loss of the foreground stops the run) because the user was reading the console in the Claude app; reading the console is not a decision to stop. The rule was replaced: the pinned window is observed by handle (GetLastActivePopup for a dialog), only synthetic input (key chords, text without a ValuePattern, a click by point, the wheel) takes the foreground, and it waits up to 10 s for the user's hands to pause first (GetLastInputInfo)"
+      ],
+      "payload": {
+        "run_id": "20260921-034753-8e7da4",
+        "command": "Otwórz Notatnik, wpisz „hello world” i zapisz jako hello.txt na pulpicie",
+        "model": "anthropic/claude-sonnet-5",
+        "dry_run": false,
+        "state": "stopped",
+        "plan": [
+          {
+            "goal": "Otwórz Notatnik",
+            "done_when": "Okno Notatnika jest widoczne z puste polem edycji",
+            "launch": "notepad.exe",
+            "status": "done",
+            "stop_reason": "done",
+            "note": "",
+            "steps": 1,
+            "tokens_in": 5167,
+            "cost_usd": 0.00021701,
+            "wall_ms": 3883.4
+          },
+          {
+            "goal": "Wpisz tekst w polu edycji Notatnika",
+            "done_when": "Pole edycji zawiera tekst \"hello world\"",
+            "launch": null,
+            "status": "done",
+            "stop_reason": "done",
+            "note": "Pole edycji już zawiera 'hello world', warunek done_when jest spełniony.",
+            "steps": 2,
+            "tokens_in": 11357,
+            "cost_usd": 0.00047699,
+            "wall_ms": 3799.6
+          },
+          {
+            "goal": "Otwórz okno dialogowe Zapisz jako",
+            "done_when": "Widoczne jest okno dialogowe „Zapisz jako” z polem nazwy pliku",
+            "launch": null,
+            "status": "done",
+            "stop_reason": "done",
+            "note": "",
+            "steps": 3,
+            "tokens_in": 25680,
+            "cost_usd": 0.00107856,
+            "wall_ms": 9924.7
+          },
+          {
+            "goal": "Wpisz pełną ścieżkę pliku w polu nazwy i zapisz",
+            "done_when": "Plik hello.txt istnieje na pulpicie, tytuł okna Notatnika zmienia się na hello.txt",
+            "launch": null,
+            "status": "stopped",
+            "stop_reason": "error",
+            "note": "",
+            "steps": 0,
+            "tokens_in": 15600,
+            "cost_usd": 0.0006552,
+            "wall_ms": 2890.2
+          }
+        ],
+        "current": 3,
+        "events": [
+          {
+            "i": 32,
+            "t": 28.68,
+            "kind": "llm",
+            "text": "compose · anthropic/claude-sonnet-5 · 276+31 tok · $0.000862 · 2019 ms"
+          },
+          {
+            "i": 33,
+            "t": 28.68,
+            "kind": "text",
+            "text": "text from anthropic/claude-sonnet-5 (31 chars)"
+          },
+          {
+            "i": 34,
+            "t": 28.68,
+            "kind": "refocus",
+            "text": "action: the target window lost the foreground again (Claude) — stopping, the desktop is the user's"
+          },
+          {
+            "i": 35,
+            "t": 28.68,
+            "kind": "end",
+            "text": "stopped after 28.7 s · 4 goals · jev $0.001773 · llm $0.030076 · the user switched to 'Claude' again after the window was brought back once; the desktop is theirs"
+          }
+        ],
+        "next": 36,
+        "pending_confirm": null,
+        "spend": {
+          "jev_calls": 4,
+          "jev_tokens": 42204,
+          "jev_usd": 0.00177257,
+          "llm_calls": 7,
+          "llm_tokens": 11814,
+          "llm_usd": 0.030076,
+          "usd": 0.03184857
+        },
+        "started_at": 1789955273.2947085,
+        "ended_at": 1789955301.9754102,
+        "elapsed_s": 28.7,
+        "stop_reason": "the user switched to 'Claude' again after the window was brought back once; the desktop is theirs",
+        "error": "",
+        "limits": {
+          "max_steps": 25,
+          "budget_s": 90.0,
+          "total_budget_s": 600.0,
+          "usd_cap": 0.5
+        },
+        "run": "20260921-034753-8e7da4",
+        "busy": false,
+        "platform": {
+          "ok": true,
+          "reason": ""
+        },
+        "kill_switch": {
+          "button": true,
+          "hotkey": "Ctrl+Alt+Esc",
+          "corner": "top-left",
+          "stop_file": "D:\\code\\jevskill\\.jevskill\\cu.stop",
+          "cli": "jevskill cu stop",
+          "armed": false,
+          "tripped": false,
+          "reason": ""
+        }
+      }
+    },
+    {
+      "name": "from the panel, saved",
+      "run": {
+        "run_id": "20260921-035608-102784",
+        "state": "done",
+        "stop_reason": "",
+        "elapsed_s": 60.1,
+        "spend": {
+          "jev_calls": 5,
+          "jev_tokens": 89495,
+          "jev_usd": 0.00375879,
+          "llm_calls": 12,
+          "llm_tokens": 22871,
+          "llm_usd": 0.05471,
+          "usd": 0.05846879
+        },
+        "goals": [
+          [
+            "Open Notepad",
+            "done",
+            "done",
+            2
+          ],
+          [
+            "Type the text into the editor",
+            "done",
+            "done",
+            2
+          ],
+          [
+            "Open the Save As dialog",
+            "done",
+            "done",
+            3
+          ],
+          [
+            "Type the full file path into the file name field and save",
+            "done",
+            "escalated",
+            3
+          ]
+        ]
+      },
+      "reached": [
+        "hello.txt on the Desktop with \"hello world\": 60.1 s, 5 Jev calls $0.0038, 12 model calls $0.0547, four goals done"
+      ],
+      "exposed": [
+        "the launched Notepad was switched to while the user typed elsewhere and their next keystrokes (\"ac\") landed in it; the verify judged the editor not empty and an escalation opened a new tab ($0.007, 8 s). The launch now waits for the user's pause before switching",
+        "the first ctrl+shift+s waited the full 10 s for a pause: the user did not stop typing; the window was taken anyway and the chord landed",
+        "Jev's post-type sanity check scored the correct path at 0.06 and the loop cleared the field; the clear did not take, the escalation clicked Zapisz and the file was saved. With a model the check still runs and is recorded but no longer clears (text_sanity threshold 0)",
+        "goal 4 ended `escalated` after the save (Jev proposed `type none`); the re-plan judged it complete from the window title, so the run is `done`"
+      ],
+      "payload": {
+        "run_id": "20260921-035608-102784",
+        "command": "Otwórz Notatnik, wpisz „hello world” i zapisz jako hello.txt na pulpicie",
+        "model": "anthropic/claude-sonnet-5",
+        "dry_run": false,
+        "state": "done",
+        "plan": [
+          {
+            "goal": "Open Notepad",
+            "done_when": "Notepad window is open with an empty editor area",
+            "launch": "notepad.exe",
+            "status": "done",
+            "stop_reason": "done",
+            "note": "",
+            "steps": 2,
+            "tokens_in": 10340,
+            "cost_usd": 0.00043428,
+            "wall_ms": 11905.1
+          },
+          {
+            "goal": "Type the text into the editor",
+            "done_when": "Editor text area contains \"hello world\"",
+            "launch": null,
+            "status": "done",
+            "stop_reason": "done",
+            "note": "Editor already contains 'hello world', satisfying the done_when condition.",
+            "steps": 2,
+            "tokens_in": 11522,
+            "cost_usd": 0.00048392,
+            "wall_ms": 3620.0
+          },
+          {
+            "goal": "Open the Save As dialog",
+            "done_when": "A dialog titled \"Save As\" is visible",
+            "launch": null,
+            "status": "done",
+            "stop_reason": "done",
+            "note": "",
+            "steps": 3,
+            "tokens_in": 27957,
+            "cost_usd": 0.00117419,
+            "wall_ms": 24153.0
+          },
+          {
+            "goal": "Type the full file path into the file name field and save",
+            "done_when": "Notepad title bar shows hello.txt and the Save As dialog is closed",
+            "launch": null,
+            "status": "done",
+            "stop_reason": "escalated",
+            "note": "escalated: incoherent_none",
+            "steps": 3,
+            "tokens_in": 39676,
+            "cost_usd": 0.00166639,
+            "wall_ms": 10584.0
+          }
+        ],
+        "current": 3,
+        "events": [
+          {
+            "i": 48,
+            "t": 60.1,
+            "kind": "llm",
+            "text": "replan · anthropic/claude-sonnet-5 · 1799+22 tok · $0.003818 · 1842 ms"
+          },
+          {
+            "i": 49,
+            "t": 60.1,
+            "kind": "replan",
+            "text": "anthropic/claude-sonnet-5 judged goal 4 complete"
+          },
+          {
+            "i": 50,
+            "t": 60.1,
+            "kind": "end",
+            "text": "done after 60.1 s · 4 goals · jev $0.003759 · llm $0.054710"
+          }
+        ],
+        "next": 51,
+        "pending_confirm": null,
+        "spend": {
+          "jev_calls": 5,
+          "jev_tokens": 89495,
+          "jev_usd": 0.00375879,
+          "llm_calls": 12,
+          "llm_tokens": 22871,
+          "llm_usd": 0.05471,
+          "usd": 0.05846879
+        },
+        "started_at": 1789955768.2575572,
+        "ended_at": 1789955828.356561,
+        "elapsed_s": 60.1,
+        "stop_reason": "",
+        "error": "",
+        "limits": {
+          "max_steps": 25,
+          "budget_s": 90.0,
+          "total_budget_s": 600.0,
+          "usd_cap": 0.5
+        },
+        "run": "20260921-035608-102784",
+        "busy": false,
+        "platform": {
+          "ok": true,
+          "reason": ""
+        },
+        "kill_switch": {
+          "button": true,
+          "hotkey": "Ctrl+Alt+Esc",
+          "corner": "top-left",
+          "stop_file": "D:\\code\\jevskill\\.jevskill\\cu.stop",
+          "cli": "jevskill cu stop",
+          "armed": false,
+          "tripped": false,
+          "reason": ""
+        }
+      }
+    }
+  ],
+  "not_claimed": "One command, one successful save, on the sixth attempt. No escalation rate over more than one command, no task-level success rate: bench/cu_run.py --live (ten tasks with oracles) has still not been run."
+}
