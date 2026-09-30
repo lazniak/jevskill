@@ -13,8 +13,9 @@ click on the wrong button.
 
 ===============  ==========================================================
 ``done``         the injected ``verify`` oracle said so, or — with no
-                 verifier — two consecutive validated ``done`` proposals,
-                 which the record marks as unverified
+                 verifier, or one that abstains (returns ``None``) — two
+                 consecutive validated ``done`` proposals, which the record
+                 marks as unverified
 ``max_steps``    ``RunOptions.max_steps``
 ``budget``       ``RunOptions.budget_s`` of wall clock
 ``blocked``      two settles in a row with no tree change, or the human
@@ -387,7 +388,12 @@ def _step(index: int, state: _LoopState, result: RunResult, options: RunOptions,
         verified = None
         if verify is not None:
             try:
-                verified = bool(verify(goal, snapshot))
+                answer = verify(goal, snapshot)
+                # A verifier may abstain. ``None`` is "code could not tell and
+                # there was no model to ask" (a Jev-only operator run), which
+                # for this step is exactly the no-verifier case below — not a
+                # "no", which would escalate a run nobody can escalate to.
+                verified = None if answer is None else bool(answer)
             except Exception as exc:
                 verified = False
                 record.note = "verify raised: %s" % type(exc).__name__
@@ -399,10 +405,10 @@ def _step(index: int, state: _LoopState, result: RunResult, options: RunOptions,
             return finish("blocked", "done proposed with goal_reached %.2f"
                           % decision.goal_reached)
         state.done_streak += 1
-        if verify is None and state.done_streak >= DONE_WITHOUT_VERIFIER:
+        if verified is None and state.done_streak >= DONE_WITHOUT_VERIFIER:
             return finish("done", "unverified: %d consecutive done proposals"
                           % state.done_streak)
-        if verify is None:
+        if verified is None:
             # Nothing was executed, so the tree will not change and the stall
             # counter must not see this step. Ask again on a fresh observation.
             state.last_action = {"type": "done", "target": None,

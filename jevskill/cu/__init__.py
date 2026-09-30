@@ -52,7 +52,8 @@ __all__ = [
     "BEAM_MARGIN", "CONTROL_TYPES", "DESTRUCTIVE_NAMES", "INTERACTIVE_ROLES",
     "OPS", "PATTERN_KEYS", "REGION_ROLES", "THRESHOLDS", "Action", "ActResult",
     "Consistency", "ConsistencyGate", "Decision", "KillSwitch", "MacroCache",
-    "OpenRouterLLM", "Operator", "Region", "RunOptions", "RunResult", "Snapshot",
+    "OpenRouterLLM", "Operator", "PlanNode", "Region", "RunOptions", "RunResult",
+    "RunStore", "Snapshot",
     "Speculation", "Speculator", "StepRecord", "Stopped", "TreeDiff", "UIElement",
     "Verdict", "build_bundle", "build_state", "candidates", "decide_beam",
     "decide_cascade", "decide_step", "dedupe", "diff", "execute",
@@ -78,7 +79,10 @@ _LAZY = {"snapshot": "observe", "to_state": "observe",
          # a caller composing bundles never needs a thread, a socket or ctypes.
          "Operator": "runner", "platform_status": "runner",
          "KillSwitch": "killswitch", "Stopped": "killswitch",
-         "OpenRouterLLM": "llm"}
+         "OpenRouterLLM": "llm",
+         # The plan tree and the run journal behind it (pure Python, but only
+         # the operator needs them).
+         "PlanNode": "agenda", "RunStore": "journal"}
 
 
 def __getattr__(name: str) -> Any:
