@@ -297,9 +297,15 @@ says.
 
 | op | roles | or any of these patterns |
 |---|---|---|
-| `click` | `appbar`, `button`, `checkbox`, `dataitem`, `headeritem`, `hyperlink`, `listitem`, `menuitem`, `radiobutton`, `splitbutton`, `tab`, `tabitem`, `treeitem` | `expand`, `invoke`, `select`, `toggle` |
+| `click` | `appbar`, `button`, `canvas`, `checkbox`, `dataitem`, `headeritem`, `hyperlink`, `listitem`, `menuitem`, `radiobutton`, `splitbutton`, `tab`, `tabitem`, `treeitem` | `expand`, `invoke`, `select`, `toggle` |
 | `type` | `combobox`, `document`, `edit`, `spinner` | `value` |
 | `select` | `combobox`, `dataitem`, `list`, `listitem`, `menu`, `menuitem`, `tabitem`, `treeitem` | `expand`, `select` |
+
+`canvas` is not a UIA control type: `reduce.mark_surfaces` gives it to a large,
+pattern-less `group`/`pane`/`custom`/`image` that holds nothing interactive or
+named — measured live on 2026-09-30, Windows 11 Paint's picture area is exactly
+that, and without the role it never reached the candidate list. A `click` on it
+lands on its centre; strokes at points are the operator's `draw`, not an op.
 
 Three hand-written copies of this rule — here, in §1's example and in §8's
 listing — had drifted into three different rules by 2026-09-20: this row

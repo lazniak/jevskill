@@ -22,6 +22,48 @@ replaced.
   indentation (minified JSON, unformatted XML). One workload proves the fix, not the
   generality.
 
+## [0.15.1] — 2026-09-30
+
+No published number changes. The only live data behind this release is the run
+that motivated it; the fix is proven offline (`tests/test_cu_canvas.py`, 35
+tests) and **nothing is claimed about how drawn pictures look**.
+
+### Fixed — the operator could not touch a canvas
+
+Measured live from the panel on 2026-09-30, *"stwórz obrazek w Paint … wilk i
+czerwony kapturek"*: Paint opened (goal 1 done), Jev selected dark red and the
+Fill tool, and then the run **failed after 51.0 s, $0.004 Jev + $0.099 model,
+13 calls** — three goals in a row escalated with the planning model's own words,
+*"no canvas element is listed to click"*. Paint's picture area is a `group`
+(automation id `image`, 690x338) with **no UI Automation pattern**, so
+`reduce.interactive` dropped it; and even listed, Jev chooses *which control*,
+and a brush stroke is not a control.
+
+- `reduce.mark_surfaces` gives a large, pattern-less `group`/`pane`/`custom`/
+  `image` that has a name or an automation id and holds nothing interactive,
+  named or smaller of its kind the role **`canvas`**. It ranks with the focused
+  region, so a 100-control ribbon cannot push it past the cap, and `to_state`
+  carries its size in pixels (`px`). `decide.ALLOWED_ROLES["click"]` gains
+  `canvas` (act.md §4's generated row changes with it); a click lands on the
+  centre — what a Fill tool needs. The name-or-id rule comes from the committed
+  Calculator fixture, whose `ApplicationFrameInputSinkWindow` (968x877, no name,
+  no id) was the one false positive in the fixtures.
+- **`Draw` goals.** The planning and phase-breakdown prompts word canvas work as
+  a goal starting with *Draw*, preceded by a goal choosing its tool and colour.
+  Such a goal skips the Jev loop: one call (`DRAW_SYSTEM`) returns strokes in
+  fractions of the canvas — one point a click, two a drag, more a path — and the
+  operator performs them in chunks of 6 through the same execute hook as every
+  action (kill switch, foreground rule, guarded backend). `act.Action.strokes`,
+  op `draw`, method `draw_path`, `UiaBackend.draw_stroke` (press, densified
+  moves ≤ 6 px, release — always released), `act.stroke_points`, `act.densify`.
+- A `Draw` goal ends on the drawing model's word (evidence `model`): paint is
+  not in the tree, so a verifier would call every picture unfinished and the
+  stall rule every stroke "changed nothing". Later `Draw` goals receive
+  `already_drawn` — earlier parts and the box each covers. Strokes are never a
+  recipe step or a lesson (`Trajectory.drawn`; `learn_recipe` returns `None` for
+  a goal that drew): a replay would redo the tool clicks and call an empty
+  canvas a picture. The escalation prompt says what a `canvas` is.
+
 ## [0.15.0] — 2026-09-27
 
 No published number changes in this release. Everything below is proven

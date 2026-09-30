@@ -66,7 +66,7 @@ from .journal import STALE_S, RunNotResumable, RunStore, UnknownRun, valid_run_i
 from .killswitch import STOP_FILE_NAME, KillSwitch, Stopped
 from .llm import LLMError, OpenRouterLLM, cached_models, pricing_table
 from .reduce import candidates as reduce_candidates
-from .types import Snapshot
+from .types import CANVAS_ROLE, Snapshot
 
 CONSOLE_TITLE = "jev · console"
 MAX_PLAN_STEPS = 8
@@ -131,6 +131,73 @@ LAUNCH_ALLOW = frozenset({
 ESCALATION_OPS = frozenset({"click", "type", "select", "scroll_up", "scroll_down",
                             "key", "wait"})
 
+#: A goal whose text starts with this word is canvas work, done by one drawing
+#: call instead of the Jev loop. Measured live (2026-09-30, Paint): Jev picks
+#: *which control*, and a stroke is not a control — the loop spent 51 s and
+#: $0.10 escalating a fill it had no way to express. The planning prompt tells
+#: the planner to word every canvas goal this way.
+DRAW_GOAL_WORD = "draw"
+#: What one drawing reply may put on the canvas. Design bounds: enough for one
+#: part of a picture (a figure, a tree, a sky), small enough that a runaway
+#: reply cannot scribble for minutes with the user's mouse.
+DRAW_MAX_STROKES = 60
+DRAW_MAX_POINTS = 800
+DRAW_MAX_TOKENS = 6000
+#: Strokes per executed action: the kill switch and the foreground rule are
+#: checked between actions, so a long picture stays stoppable mid-way.
+DRAW_CHUNK = 6
+DRAW_SYSTEM = (
+    "You draw on a canvas in a Windows paint program for a UI agent. Nobody sees the "
+    "pixels: you place strokes blind, from the goal alone, and the agent performs them "
+    "with the tool, shape, colour and size already selected on `screen` (the canvas's "
+    "name usually names the active tool). Coordinates are fractions of the canvas: x from "
+    "0 (left) to 1 (right), y from 0 (top) to 1 (bottom); `canvas.px` is its size in "
+    "pixels, so mind the aspect ratio. A stroke of one point is a single click (with a "
+    "fill tool it fills the region under it); two points are a drag (with a shape tool, "
+    "the shape's box from corner to corner); more points are a freehand path for a brush "
+    "or pencil — put points every 2-4%% along a curve. `already_drawn` lists the parts of "
+    "this picture drawn so far and the box each occupies: keep the composition consistent "
+    "and do not cover them unless the goal says so. At most %d strokes and %d points in "
+    "total. Reply with JSON only: {\"strokes\": [[[x, y], ...], ...], \"why\": \"...\"}; "
+    "keep `why` under 25 words." % (DRAW_MAX_STROKES, DRAW_MAX_POINTS))
+
+
+def is_draw_goal(goal: str) -> bool:
+    """``"Draw the moon ..."`` — the planner's marker for canvas work."""
+    words = str(goal or "").strip().split(None, 1)
+    return bool(words) and words[0].strip(":,.").casefold() == DRAW_GOAL_WORD
+
+
+def parse_strokes(raw: Any) -> List[List[Tuple[float, float]]]:
+    """A model's ``strokes`` -> clean polylines in [0, 1], within the caps.
+
+    Drops what is not a pair of numbers rather than failing the whole reply:
+    one malformed point in forty strokes is a typo, not a refusal.
+    """
+    out: List[List[Tuple[float, float]]] = []
+    total = 0
+    if not isinstance(raw, list):
+        return out
+    for stroke in raw:
+        if len(out) >= DRAW_MAX_STROKES or total >= DRAW_MAX_POINTS:
+            break
+        if not isinstance(stroke, list):
+            continue
+        points: List[Tuple[float, float]] = []
+        for point in stroke:
+            if total + len(points) >= DRAW_MAX_POINTS:
+                break
+            if (isinstance(point, (list, tuple)) and len(point) >= 2
+                    and all(isinstance(v, (int, float)) and not isinstance(v, bool)
+                            and v == v and abs(v) != float("inf")   # not NaN, not inf
+                            for v in point[:2])):
+                points.append((min(1.0, max(0.0, float(point[0]))),
+                               min(1.0, max(0.0, float(point[1])))))
+        if points:
+            out.append(points)
+            total += len(points)
+    return out
+
 #: The break-down call: one phase into leaves, from the screen the previous
 #: goal left. It must not contain "plan desktop tasks" (the planning prompt's
 #: marker) — fakes and logs tell the two families apart by it.
@@ -144,7 +211,10 @@ EXPAND_SYSTEM = (
     "visible controls and menus over key chords. A child may be `\"kind\": \"phase\"` "
     "(with `done_when`, no children) only when `depth` < 3 and it clearly needs more than 8 "
     "actions. `lessons` are earlier failures here; reuse `known_goals` wording verbatim when "
-    "one fits. Never add delete/send/pay/overwrite steps the command does not ask for. "
+    "one fits. Work on a drawing canvas (role `canvas`: strokes, shapes, a Fill click) is a "
+    "leaf whose goal starts with the word \"Draw\" and says what, where and how big, right "
+    "after a leaf choosing its tool and colour. "
+    "Never add delete/send/pay/overwrite steps the command does not ask for. "
     "Reply with JSON only: {\"steps\": [...], \"note\": \"\"}")
 #: The tree repair: only the failed scope's remaining work may change. It says
 #: "ended without" like the flat re-plan, so an older fake answers give_up.
@@ -687,6 +757,9 @@ class Operator:
         self._phase_pin: Tuple[str, int] = ("", 0)
         #: Launch name stem -> the process stem its window turned out to have.
         self._aliases: Dict[str, str] = {}
+        #: This run's finished ``Draw`` goals and the box (in canvas fractions)
+        #: each covered — the only memory of the picture a blind drawer has.
+        self._drawn_parts: List[Dict[str, Any]] = []
         #: Checkpoints and full event logs, one directory per run, next to the
         #: ledger (and the stop file) so `jevskill cu` and the console share them.
         self._journal = RunStore(ledger_path(ledger_root).parent / "cu_runs")
@@ -1062,6 +1135,7 @@ class Operator:
         self._aliases = {}
         self._current_node = None
         self._goal_evidence = ""
+        self._drawn_parts = []
         self._last_snapshot = None
         self._acting = 0
         self._pause_requested = False
@@ -1964,6 +2038,18 @@ class Operator:
         if run.dry_run:
             return self._simulate(step.goal, options, **hooks)
         backend = _GuardedBackend(self._backend_factory(), self)
+        if llm is not None and is_draw_goal(step.goal):
+            try:
+                drawn = self._draw_goal(run, llm, step, backend, hooks)
+            except Stopped:
+                raise
+            except Exception as exc:
+                # The loop turns a failed observation or a lost foreground into
+                # an `error` result; the drawing path answers the same way.
+                drawn = RunResult(task_id=str(hooks.get("task_id", "")), stop_reason="error",
+                                  error="%s: %s" % (type(exc).__name__, exc))
+            if drawn is not None:
+                return drawn
         replayed: List[StepRecord] = []
         recipe = self._recipe_for(run, step)
         if recipe is not None:
@@ -1990,6 +2076,80 @@ class Operator:
                       execute=functools.partial(self._execute_hook, backend=backend), **hooks)
         if replayed:
             result.steps = replayed + list(result.steps)
+        return result
+
+    # ------------------------------------------------------------ the canvas
+    def _draw_goal(self, run: Run, llm: Any, step: PlanStep, backend: Any,
+                   hooks: Dict[str, Any]) -> Optional[RunResult]:
+        """A ``Draw ...`` goal: one drawing call, its strokes on the canvas, done.
+
+        ``None`` hands the goal to the ordinary loop — there is no canvas on
+        this screen, so whatever the goal needs is a control after all.
+
+        The goal is closed on the drawing model's word (evidence ``model``)
+        because nothing else can close it: paint is invisible to UI Automation,
+        so a verifier reading the tree would call every picture unfinished, and
+        the stall rule would call every stroke "changed nothing".
+        """
+        started = time.perf_counter()
+        snapshot = self._observe_hook()
+        cands = reduce_candidates(list(getattr(snapshot, "elements", []) or []), OPERATOR_CAP)
+        canvas = next((el for el in cands if el.role == CANVAS_ROLE), None)
+        if canvas is None:
+            self._event(run, "draw", "no canvas on this screen — the goal goes to the loop")
+            return None
+        payload: Dict[str, Any] = {
+            "command": run.command, "goal": step.goal, "done_when": step.done_when,
+            "canvas": {"id": canvas.id, "name": canvas.name,
+                       "px": [canvas.bbox[2], canvas.bbox[3]]},
+            "already_drawn": self._drawn_parts[-20:],
+            "screen": self._screen(snapshot, cands)}
+        result = RunResult(task_id=str(hooks.get("task_id", "")), stop_reason="escalated")
+        reply = self._llm(run, llm, "draw", DRAW_SYSTEM,
+                          json.dumps(payload, ensure_ascii=False), max_tokens=DRAW_MAX_TOKENS)
+        data = reply.json() if reply is not None else None
+        strokes = parse_strokes(data.get("strokes") if isinstance(data, dict) else None)
+        why = str(data.get("why", "") if isinstance(data, dict) else "")[:120]
+        if not strokes:
+            self._event(run, "draw", "%s gave no strokes to draw" % run.model)
+            result.error = "the drawing model gave no strokes"
+            result.wall_ms = (time.perf_counter() - started) * 1000.0
+            return result
+        on_step = hooks.get("on_step")
+        for index, start in enumerate(range(0, len(strokes), DRAW_CHUNK)):
+            chunk = strokes[start:start + DRAW_CHUNK]
+            action = act_module.Action(op="draw", target=canvas.id, strokes=chunk,
+                                       source="escalation", note="llm:%s" % run.model)
+            mark = time.perf_counter()
+            outcome = self._execute_hook(action, snapshot, backend=backend)
+            ok = bool(getattr(outcome, "ok", False))
+            record = StepRecord(index=index, t_ms=(time.perf_counter() - started) * 1000.0,
+                                stages_ms={"act": (time.perf_counter() - mark) * 1000.0},
+                                candidates=len(cands), op="draw", target=canvas.id,
+                                decided_by="escalation", executed=ok,
+                                note="%d stroke%s, %d points%s" % (
+                                    len(chunk), "" if len(chunk) == 1 else "s",
+                                    sum(len(s) for s in chunk),
+                                    "" if ok else "; " + str(getattr(outcome, "error", ""))[:120]))
+            result.steps.append(record)
+            if on_step is not None:
+                on_step(record)
+            if not ok:
+                result.stop_reason = "error"
+                result.error = "draw did not execute: %s" % getattr(outcome, "error", "")
+                result.wall_ms = (time.perf_counter() - started) * 1000.0
+                return result
+        points = [p for s in strokes for p in s]
+        box = [round(min(p[0] for p in points), 2), round(min(p[1] for p in points), 2),
+               round(max(p[0] for p in points), 2), round(max(p[1] for p in points), 2)]
+        self._drawn_parts.append({"goal": step.goal[:160], "box": box})
+        self._goal_evidence = "model"
+        self._event(run, "draw", "drew %d stroke%s (%d points) on %s — %s" % (
+            len(strokes), "" if len(strokes) == 1 else "s", len(points),
+            canvas.name[:60] or canvas.id, why or "no comment"),
+            {"box": box, "strokes": len(strokes)})
+        result.stop_reason = "done"
+        result.wall_ms = (time.perf_counter() - started) * 1000.0
         return result
 
     # ------------------------------------------------------------ the replay
@@ -2350,7 +2510,7 @@ class Operator:
             method = act_module._method_for(op, element)
         except Exception:
             return True
-        return method in ("sendinput_text", "sendinput_key", "click_point", "wheel")
+        return method in ("sendinput_text", "sendinput_key", "click_point", "wheel", "draw_path")
 
     def _execute_hook(self, action: Any, snapshot: Any, *, backend: Any = None,
                       dry_run: bool = False) -> Any:
@@ -2569,6 +2729,9 @@ class Operator:
             "in `key`, e.g. ctrl+s, enter, escape), wait, done when `done_when` is already "
             "satisfied on this screen, or none when nothing safe applies. "
             "`target` must be an element id from the list (null for key/scroll/wait/done). "
+            "An element with role `canvas` is a drawing surface: `click` on it clicks its "
+            "centre (with a fill tool, that fills the picture); what is painted on it is not "
+            "in the list. "
             "Never choose an action that deletes, sends, pays or overwrites unless the goal "
             "says so. `tried` is what this goal already did and what happened: do not repeat "
             "an action that changed nothing or did not execute. `lessons` are failures from "
@@ -2649,7 +2812,8 @@ class Operator:
         rules = (
             "You plan desktop tasks for a UI agent on Windows. The agent sees the UI "
             "Automation tree of the foreground window (control roles, names, values) and "
-            "performs one action per step: click, type, select, scroll, a key chord, wait. "
+            "performs one action per step: click, type, select, scroll, a key chord, wait "
+            "— or, on a drawing canvas, a set of strokes. "
             "It cannot see pixels, cannot browse, and cannot run programs except a launch "
             "you name. Split the command into 1-%d sub-goals. Each goal: one short English "
             "imperative completable inside a single window or dialog. Write `goal` and "
@@ -2667,7 +2831,14 @@ class Operator:
             "working, a shortcut takes the keyboard from them. `known_goals`, when "
             "present, are goals this agent has completed on this machine before; when one "
             "fits, reuse its wording exactly, with «n» replaced by the value — those "
-            "replay from memory in a fraction of the time. Do not add "
+            "replay from memory in a fraction of the time. A drawing canvas (Paint's "
+            "picture area) is listed with role `canvas`. Choosing a tool, shape, colour or "
+            "brush size is an ordinary goal: click the visible control. Everything done ON "
+            "the canvas — brush strokes, dragged shapes, a click with the Fill tool — is a "
+            "goal whose text starts with the word \"Draw\" (\"Draw the wolf's head as a grey "
+            "ellipse left of centre\"): the agent performs it in one go from coordinates with "
+            "whatever is selected and cannot see the result, so say what, where and how big, "
+            "and put the goal choosing its tool and colour right before it. Do not add "
             "steps that delete, send, pay or overwrite unless the command says so. " % MAX_PLAN_STEPS)
         if not hierarchical:
             return rules + (

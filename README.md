@@ -26,7 +26,7 @@ tokens on decisions — and start making them for **$0.000013** in **325 ms**.
 **Jev** is TypeSafe's *System One* decision model, and it is the whole engine here.
 Official model page: **[typesafe.ai](https://typesafe.ai/)** · [API docs](https://docs.typesafe.ai/)
 
-[![tests](https://img.shields.io/badge/tests-1753%20passing-brightgreen)](#-does-it-actually-help-ab-tested)
+[![tests](https://img.shields.io/badge/tests-1788%20passing-brightgreen)](#-does-it-actually-help-ab-tested)
 [![A/B](https://img.shields.io/badge/A%2FB-99.3%25%20fewer%20tokens-blue)](#-does-it-actually-help-ab-tested)
 [![cost](https://img.shields.io/badge/decision-%240.000013-success)](#-cost-per-decision)
 [![license](https://img.shields.io/badge/license-MIT-informational)](LICENSE)
@@ -805,6 +805,19 @@ drive the real operator over a simulated Notepad): the second run of a
 remembered command makes no model call and no loop run and saves the same file.
 **No speed-up is claimed** until a live run measures one.
 
+**It can draw — blind.** A drawing surface (Paint's picture area: a `group` with
+no UI Automation pattern at all) is listed as role `canvas`; a click on it lands
+on its centre, which is what a Fill tool needs. The planner words every piece
+of canvas work as a goal starting with **Draw** ("Draw the wolf's head as a grey
+ellipse left of centre"), and such a goal is **one call** to the planning model,
+which answers with strokes in fractions of the canvas — one point a click, two a
+drag, more a brush path — performed with whatever tool and colour an earlier goal
+selected. Neither model sees a pixel: paint is not in the accessibility tree, so
+the goal ends on the drawing model's word, later parts are told where earlier
+ones went, and no recipe or lesson is ever learned from a stroke. Tested
+offline only (`tests/test_cu_canvas.py`); what the pictures look like is not
+measured.
+
 Measured live on 2026-09-21: *Open Notepad, type "hello world"* was done in
 13.9 s from the panel (`bench/cu_live_first_run.json`); the full command with
 *save as hello.txt on the desktop* saved the file in 60 s on the sixth attempt
@@ -846,13 +859,13 @@ bench/
   cu_run.py            the task harness: --dry-run (default, synthetic) · --live; cu_report.py renders it
   cu_learn_live.py     live, needs --live: one command twice, memory on → cu_learn_live.json (not run yet)
   web_live.json        the one live decision behind CHANGELOG 0.13.0 "Measured live": a ledger row, which=web
-tests/                 1753 tests, offline, green
+tests/                 1788 tests, offline, green
 docs/install.md        install guide an agent reads and executes
 docs/DESIGN.md         architecture + the mistakes that shaped it
 AGENTS.md              conventions for agents working on this repo
 ```
 
-## 🧭 Status & known limits — `v0.15.0`
+## 🧭 Status & known limits — `v0.15.1`
 
 CLI, skill, bundled scripts, ledger, reference docs and the computer-use half
 (`jevskill.cu`: observe · reduce · hashing · decide · act · loop · macros) are
@@ -875,6 +888,9 @@ complete and offline-tested. What is **not** proven, stated plainly:
   plans, lessons, code verification, the plan tree, phase repair, pause and
   resume run in tests against a simulated Notepad; none of it has run on a live
   desktop yet, so their effect on time and cost is unmeasured and not claimed.
+* **Drawing is proven offline only.** The canvas role, `Draw` goals and strokes
+  run in tests against a hand-built Paint-shaped tree and a fake mouse; the one
+  live Paint run (2026-09-30) predates them and failed — which is why they exist.
 * **No computer-use benchmark result exists yet.** `bench/cu_tasks.json` has the
   ten tasks and their oracles; `bench/cu_run.py --dry-run` proves the harness,
   and every dry-run number is marked synthetic.

@@ -726,6 +726,16 @@ class Trajectory:
         self.start_title: str = ""
         self.last_title: str = ""
         self.last_snapshot: Any = None
+        #: Lines for :meth:`tried`, one per ``draw`` this goal performed. A draw
+        #: is kept out of ``attempts`` on purpose: paint is invisible to UI
+        #: Automation, so it would always read "changed nothing" — a lesson
+        #: telling the next run not to draw — and never reach a recipe.
+        self.drawn: List[str] = []
+
+    @property
+    def drew(self) -> bool:
+        """This goal put strokes on a canvas; no recipe can replay that."""
+        return bool(self.drawn)
 
     def _hash(self, snapshot: Any, ignore: Tuple[str, ...]) -> str:
         cands = reduce_candidates(getattr(snapshot, "elements", []) or [], self.cap)
@@ -757,6 +767,13 @@ class Trajectory:
         self.close()
         op = str(getattr(action, "op", "") or "")
         if op in ("done", "blocked", "wait", ""):
+            return
+        if op == "draw":
+            strokes = getattr(action, "strokes", None) or []
+            self.drawn.append("draw %d stroke%s on the canvas — %s" % (
+                len(strokes), "" if len(strokes) == 1 else "s",
+                "done (paint is not visible in the tree)" if ok
+                else "did not execute: %s" % str(error or "")[:80]))
             return
         target = getattr(action, "target", None)
         element = snapshot.by_id(target) if (target and snapshot is not None
@@ -821,7 +838,7 @@ class Trajectory:
                 lines.append("%s — waiting to see its effect" % what)
             else:
                 lines.append("%s — changed nothing" % what)
-        return lines[-10:]
+        return (lines + self.drawn)[-10:]
 
 
 # --------------------------------------------------------------------------- #
@@ -1234,6 +1251,11 @@ class Experience:
         the same whether or not anything was typed.
         """
         if not app or not goal:
+            return None
+        if getattr(trajectory, "drew", False):
+            # The strokes are not in `effective()` (see Trajectory.drawn), so
+            # the recipe would replay the tool clicks around them and call an
+            # empty canvas a finished picture.
             return None
         gkey, gslots = goal_key(goal)
         ckey, cslots = command_key(command)
