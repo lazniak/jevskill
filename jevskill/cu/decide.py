@@ -102,7 +102,7 @@ TERMINAL_OPS = frozenset({"done", "blocked"})
 ALLOWED_ROLES: Dict[str, frozenset] = {
     "click": frozenset({"button", "checkbox", "hyperlink", "menuitem", "radiobutton",
                         "splitbutton", "tab", "tabitem", "listitem", "treeitem",
-                        "dataitem", "headeritem", "appbar"}),
+                        "dataitem", "headeritem", "appbar", "canvas"}),
     "type": frozenset({"edit", "combobox", "document", "spinner"}),
     "select": frozenset({"combobox", "list", "listitem", "menu", "menuitem",
                          "tabitem", "treeitem", "dataitem"}),

@@ -79,7 +79,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 from ..orchestrate import count_tokens
 from .reduce import union_bbox
-from .types import CONTROL_TYPES, REGION_ROLES, Snapshot, UIElement
+from .types import CANVAS_ROLE, CONTROL_TYPES, REGION_ROLES, Snapshot, UIElement
 
 #: A model does not need a document's whole text to pick a control, and a
 #: ``document`` node's Name can be the entire file. Truncation is marked.
@@ -781,6 +781,10 @@ def to_state(snapshot: Union[Snapshot, Sequence[Any]], *,
             entry["tog"] = el.toggled
         if el.duplicates:
             entry["dup"] = el.duplicates
+        if el.role == CANVAS_ROLE:
+            # Strokes are placed in fractions of this box, so its pixel size
+            # is the aspect ratio that keeps a drawn circle round.
+            entry["px"] = [el.bbox[2], el.bbox[3]]
         out[el.id] = entry
     head["elements"] = out
     return head

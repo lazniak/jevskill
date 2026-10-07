@@ -48,7 +48,25 @@ INTERACTIVE_ROLES = frozenset({
     "button", "checkbox", "combobox", "edit", "hyperlink", "listitem",
     "menuitem", "radiobutton", "slider", "spinner", "splitbutton", "tabitem",
     "treeitem", "dataitem", "headeritem", "calendar", "scrollbar", "thumb",
+    "canvas",
 })
+
+#: The role :func:`jevskill.cu.reduce.mark_surfaces` gives a drawing surface.
+#: Not a UIA control type: measured live (2026-09-30, Windows 11 Paint) the
+#: picture area is a ``group`` (automation id ``image``, 690x338) with **no**
+#: pattern at all, so :func:`jevskill.cu.reduce.interactive` dropped it and a
+#: run whose Fill tool and colour were already set escalated three times with
+#: "no canvas element is listed to click".
+CANVAS_ROLE = "canvas"
+
+#: Control types a drawing surface is reported as. Paint's is a ``group``;
+#: other programs paint into a ``pane``, a ``custom`` host or an ``image``.
+SURFACE_BASE_ROLES = frozenset({"group", "pane", "custom", "image"})
+
+#: A surface is big: both sides at least this. Paint's default canvas is
+#: 690x338 on a 3,840-wide screen; a 96 px floor keeps icons, swatches and
+#: spacer panes out.
+SURFACE_MIN_SIDE_PX = 96
 
 #: Patterns that make a node actionable regardless of its role.
 ACTIONABLE_PATTERNS = frozenset({"invoke", "value", "toggle", "select"})

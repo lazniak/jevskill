@@ -39,8 +39,9 @@ import math
 from dataclasses import replace
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
-from .types import (ACTIONABLE_PATTERNS, INTERACTIVE_ROLES, MIN_SIDE_PX,
-                    REGION_ROLES, Region, UIElement, as_elements)
+from .types import (ACTIONABLE_PATTERNS, CANVAS_ROLE, INTERACTIVE_ROLES, MIN_SIDE_PX,
+                    REGION_ROLES, SURFACE_BASE_ROLES, SURFACE_MIN_SIDE_PX, Region,
+                    UIElement, as_elements)
 
 #: Two controls whose tops differ by less than this belong to the same visual
 #: row and are read left-to-right. 8 px is below every standard Windows control
@@ -57,6 +58,55 @@ def visible_enabled(elements: Sequence[Any]) -> List[UIElement]:
     """
     return [el for el in as_elements(elements)
             if el.enabled and not el.offscreen and el.is_sized()]
+
+
+def mark_surfaces(elements: Sequence[Any]) -> List[UIElement]:
+    """Give a drawing surface the ``canvas`` role, so it survives :func:`interactive`.
+
+    Measured live (2026-09-30, Windows 11 Paint): the picture area is a
+    ``group`` with automation id ``image`` and **no pattern at all**. Nothing
+    about it said "clickable", so the reduction dropped it, and a run with the
+    Fill tool and dark red already chosen escalated three times — the planning
+    model's own words: "no canvas element is listed to click". A canvas is the
+    one control whose whole interface is a pointer at a point.
+
+    A surface is a large (both sides >= ``SURFACE_MIN_SIDE_PX``), enabled,
+    on-screen ``group``/``pane``/``custom``/``image`` with no pattern and a name
+    or an automation id, that holds nothing else worth naming: no interactive
+    descendant, no named descendant (a pane with a caption in it is a content
+    pane, not a canvas) and no smaller surface (the innermost one is the
+    canvas; the scroll host around it is not). The name-or-id rule is from the
+    committed Calculator fixture: its ``ApplicationFrameInputSinkWindow`` is a
+    968x877 empty pane with neither — an input overlay a click must never be
+    aimed at — while Paint's canvas has both.
+
+    Copies, never mutation — the caller's snapshot must read the same before
+    and after a reduction, and the live handle stays keyed by the same id.
+    """
+    els = as_elements(elements)
+    surfaces = {el.id for el in els
+                if el.role in SURFACE_BASE_ROLES and not el.patterns and el.enabled
+                and not el.offscreen and el.bbox[2] >= SURFACE_MIN_SIDE_PX
+                and el.bbox[3] >= SURFACE_MIN_SIDE_PX
+                and (el.name.strip() or el.automation_id.strip())}
+    if not surfaces:
+        return els
+    by_id = {el.id: el for el in els}
+    holders: Set[str] = set()
+    for el in els:
+        if not (el.id in surfaces or el.name.strip() or el.role in INTERACTIVE_ROLES
+                or ACTIONABLE_PATTERNS.intersection(el.patterns)):
+            continue
+        current = by_id.get(el.parent) if el.parent else None
+        seen: Set[str] = set()
+        while current is not None and current.id not in seen and current.id not in holders:
+            seen.add(current.id)
+            holders.add(current.id)
+            current = by_id.get(current.parent) if current.parent else None
+    marked = surfaces - holders
+    if not marked:
+        return els
+    return [replace(el, role=CANVAS_ROLE) if el.id in marked else el for el in els]
 
 
 def interactive(elements: Sequence[Any]) -> List[UIElement]:
@@ -237,6 +287,10 @@ def prioritise(elements: Sequence[Any], focus_id: Optional[str] = None, *,
             return 1
         if focus_region is not None and el.region == focus_region:
             return 2
+        if el.role == CANVAS_ROLE:
+            # A canvas sits below a ribbon of 100+ controls in reading order;
+            # ranked there, the cap is what decides whether it is seen.
+            return 2
         return 3
 
     buckets: Dict[int, List[UIElement]] = {0: [], 1: [], 2: [], 3: []}
@@ -259,7 +313,7 @@ def candidates(elements: Sequence[Any], cap: int = 60) -> List[UIElement]:
     The full list is handed to :func:`prioritise` as ``full``: the dialog and
     the parent chain that proves membership are both stripped by the filters.
     """
-    els = as_elements(elements)
+    els = mark_surfaces(elements)
     focus_id = next((el.id for el in els if el.focused), None)
     focus_point = _focus_point(els, None)
     kept = interactive(visible_enabled(els))
@@ -391,7 +445,7 @@ def region_state(elements: Sequence[Any], cap: int = 60) -> Dict[str, Any]:
     than ``cap`` entries, the tail is still dropped and a third round would be
     required. At ``cap=60`` that needs 3,600 ranked candidates in one window.
     """
-    els = as_elements(elements)
+    els = mark_surfaces(elements)
     ranked = prioritise(dedupe(interactive(visible_enabled(els))),
                         next((el.id for el in els if el.focused), None),
                         full=els)
