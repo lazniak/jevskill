@@ -582,8 +582,20 @@ class TestPauseAndResume:
         assert wait_for(lambda: operator.status()["state"] == "paused")
         assert loop.calls == ["Open Notepad"], "the next goal must not start while paused"
         store = RunStore(tmp_path / ".jevskill" / "cu_runs")
+
+        def saved_state():
+            # `status()` reads "paused" the moment the state flips; the forced
+            # checkpoint lands a moment later. Until it does there is no
+            # run.json and `load` raises UnknownRun — measured 1 in 30 locally
+            # and on CI (3.9 and 3.11), where the race ended the test instead
+            # of the wait.
+            try:
+                return store.load(operator.run.id)["state"]
+            except UnknownRun:
+                return None
+
         # The pause forces a checkpoint right after the state flips.
-        assert wait_for(lambda: store.load(operator.run.id)["state"] == "paused")
+        assert wait_for(lambda: saved_state() == "paused")
         paused.set()
         time.sleep(0.25)
         operator.pause(False)
