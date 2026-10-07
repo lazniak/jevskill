@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from .hashing import DEFAULT_IGNORE, tree_hash
 from .types import Snapshot, UIElement, as_elements
@@ -241,11 +241,21 @@ class Action:
     #: ``"escalation"``. Carried into the :class:`StepRecord` as ``decided_by``.
     source: str = "jev"
     note: str = ""
+    #: ``op="draw"`` only: polylines in *fractions of the target's box* —
+    #: ``(0, 0)`` its top-left, ``(1, 1)`` its bottom-right. One point is a
+    #: click there, two a drag, more a freehand path. Fractions, not pixels,
+    #: because the model that writes them sees no pixels and the canvas moves
+    #: when the window does. Written by the operator's drawing call, never by
+    #: Jev: ``draw`` is not one of :data:`jevskill.cu.decide.OPS`.
+    strokes: Optional[List[List[Tuple[float, float]]]] = None
 
     def to_dict(self) -> Dict[str, Any]:
-        return {"op": self.op, "target": self.target, "text": self.text,
-                "key": self.key, "amount": self.amount, "source": self.source,
-                "note": self.note}
+        out = {"op": self.op, "target": self.target, "text": self.text,
+               "key": self.key, "amount": self.amount, "source": self.source,
+               "note": self.note}
+        if self.strokes:
+            out["strokes"] = len(self.strokes)
+        return out
 
 
 @dataclass
@@ -503,8 +513,111 @@ class UiaBackend:
             buffer[index].mi = MOUSEINPUT(nx, ny, 0, flag, 0, None)
         self._send_input(buffer, 3)
 
+    def draw_stroke(self, points: Sequence[Tuple[int, int]]) -> None:
+        """Press at the first screen point, move through the rest, release at the last.
+
+        One point is a click. The path arrives already densified by
+        :func:`densify`, so each event is one short segment: a paint program
+        joins consecutive pointer positions with straight lines, and a jump of
+        half the canvas between two events would be one straight line where the
+        model drew a curve. The pauses are the other half of that: after the
+        press so the program starts a stroke rather than reading a click, a
+        little between moves so it processes each one, and before the release
+        so a shape tool sees where the drag ended.
+        """
+        import ctypes
+        from ctypes import wintypes
+
+        class MOUSEINPUT(ctypes.Structure):
+            _fields_ = [("dx", wintypes.LONG), ("dy", wintypes.LONG),
+                        ("mouseData", wintypes.DWORD), ("dwFlags", wintypes.DWORD),
+                        ("time", wintypes.DWORD),
+                        ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong))]
+
+        class _UNION(ctypes.Union):
+            _fields_ = [("mi", MOUSEINPUT)]
+
+        class INPUT(ctypes.Structure):
+            _anonymous_ = ("u",)
+            _fields_ = [("type", wintypes.DWORD), ("u", _UNION)]
+
+        path = [(int(x), int(y)) for x, y in points]
+        if not path:
+            return
+        if len(path) == 1:
+            self.click_point(*path[0])
+            return
+        user32 = ctypes.windll.user32
+        left, top = user32.GetSystemMetrics(76), user32.GetSystemMetrics(77)
+        width = user32.GetSystemMetrics(78) or 1
+        height = user32.GetSystemMetrics(79) or 1
+        absolute = 0x0001 | 0x8000 | 0x4000        # MOVE | ABSOLUTE | VIRTUALDESK
+
+        def send(x: int, y: int, flags: int) -> None:
+            buffer = (INPUT * 1)()
+            buffer[0].type = 0
+            buffer[0].mi = MOUSEINPUT(int((x - left) * 65535 / width),
+                                      int((y - top) * 65535 / height), 0, flags, 0, None)
+            self._send_input(buffer, 1)
+
+        send(path[0][0], path[0][1], absolute)
+        send(path[0][0], path[0][1], absolute | 0x0002)          # + LEFTDOWN
+        time.sleep(DRAW_PRESS_S)
+        try:
+            for x, y in path[1:]:
+                send(x, y, absolute)
+                time.sleep(DRAW_MOVE_S)
+            time.sleep(DRAW_PRESS_S)
+        finally:
+            # Released whatever happened above: a button left down would turn
+            # the user's next mouse move into a stroke.
+            send(path[-1][0], path[-1][1], absolute | 0x0004)    # + LEFTUP
+
     def focus(self, handle: Any) -> None:
         handle.SetFocus()
+
+
+#: A drawn path is sent as segments no longer than this, in screen pixels.
+DRAW_STEP_PX = 6
+#: Pauses of :meth:`UiaBackend.draw_stroke`: after the press and before the
+#: release, and between two moves. Design values, not measurements.
+DRAW_PRESS_S = 0.03
+DRAW_MOVE_S = 0.003
+#: A stroke never lands on the target's own border: a click on a canvas's edge
+#: can hit a resize handle.
+DRAW_INSET_PX = 2
+
+
+def stroke_points(bbox: Tuple[int, int, int, int],
+                  stroke: Sequence[Sequence[float]]) -> List[Tuple[int, int]]:
+    """Fractions of ``bbox`` -> screen points, clamped inside it.
+
+    A model writes 1.2 as readily as 0.9; clamping keeps a stroke on the
+    canvas rather than dragging across the ribbon above it.
+    """
+    left, top, width, height = bbox
+    inner_w = max(0, width - 2 * DRAW_INSET_PX - 1)
+    inner_h = max(0, height - 2 * DRAW_INSET_PX - 1)
+    out: List[Tuple[int, int]] = []
+    for point in stroke:
+        fx = min(1.0, max(0.0, float(point[0])))
+        fy = min(1.0, max(0.0, float(point[1])))
+        out.append((left + DRAW_INSET_PX + int(round(fx * inner_w)),
+                    top + DRAW_INSET_PX + int(round(fy * inner_h))))
+    return out
+
+
+def densify(points: Sequence[Tuple[int, int]], step: int = DRAW_STEP_PX) -> List[Tuple[int, int]]:
+    """Insert points so no two consecutive ones are more than ``step`` apart."""
+    pts = [(int(x), int(y)) for x, y in points]
+    if len(pts) < 2:
+        return pts
+    out = [pts[0]]
+    for (x0, y0), (x1, y1) in zip(pts, pts[1:]):
+        parts = max(1, int(-(-max(abs(x1 - x0), abs(y1 - y0)) // max(1, step))))
+        for index in range(1, parts + 1):
+            out.append((x0 + (x1 - x0) * index // parts, y0 + (y1 - y0) * index // parts))
+    return out
 
 
 def vk_code(name: str) -> int:
@@ -565,6 +678,8 @@ def _method_for(op: str, el: Optional[UIElement]) -> str:
         return "sendinput_key"
     if op == "wait":
         return "wait"
+    if op == "draw":
+        return "draw_path"
     return "noop"
 
 
@@ -601,6 +716,11 @@ def execute(action: Action, snapshot: Snapshot, *, backend: Any = None,
         return done(False, method, "type without text: code writes the text, not the model")
     if op == "key" and not action.key:
         return done(False, method, "key without a chord: code chooses the key")
+    if op == "draw":
+        if element is None:
+            return done(False, method, "draw without a target: nothing to draw on")
+        if not any(action.strokes or []):
+            return done(False, method, "draw without strokes: nothing to draw")
 
     if dry_run:
         return done(True, "dry:" + method)
@@ -612,7 +732,8 @@ def execute(action: Action, snapshot: Snapshot, *, backend: Any = None,
     # handle made the fallback's fallback — the path for a control that
     # advertises no pattern at all, which is also the one most likely to have no
     # live pointer — unreachable.
-    if method not in ("sendinput_key", "wait", "noop", "click_point") and handle is None:
+    if method not in ("sendinput_key", "wait", "noop", "click_point", "draw_path") \
+            and handle is None:
         return done(False, method, "no live handle for %r" % action.target)
     if method == "click_point" and element is None:
         return done(False, method, "click without a target: nothing to click at")
@@ -670,6 +791,13 @@ def execute(action: Action, snapshot: Snapshot, *, backend: Any = None,
             return done(True, method)
         if op == "key":
             backend.send_keys(action.key)
+            return done(True, method)
+        if op == "draw":
+            # Pointer input at points of the target's box, like click_point:
+            # there is no pattern for "put paint here".
+            for stroke in action.strokes or []:
+                if stroke:
+                    backend.draw_stroke(densify(stroke_points(element.bbox, stroke)))
             return done(True, method)
     except Exception as exc:  # a dead node, a refused pattern, a COM error
         return done(False, method, "%s: %s" % (type(exc).__name__, exc))
@@ -753,9 +881,9 @@ def settle_ignore_for(op: Optional[str]) -> Tuple[str, ...]:
 
 __all__ = [
     "Action", "ActResult", "CONFIRM_ROLES", "DESTRUCTIVE_NAMES",
-    "DISMISS_WORDS", "KeyChoice", "MENU_ROLES", "SETTLE_CAP_COMBOBOX_MS",
+    "DISMISS_WORDS", "DRAW_STEP_PX", "KeyChoice", "MENU_ROLES", "SETTLE_CAP_COMBOBOX_MS",
     "SETTLE_CAP_MS", "SETTLE_IGNORE_BY_OP", "SETTLE_POLL_MS",
-    "SETTLE_TIMEOUT_MS", "UiaBackend", "VK_CODES", "chord_for", "execute",
+    "SETTLE_TIMEOUT_MS", "UiaBackend", "VK_CODES", "chord_for", "densify", "execute",
     "is_destructive_name", "parse_chord", "risky_ids", "settle",
-    "settle_cap_for", "settle_ignore_for", "vk_code",
+    "settle_cap_for", "settle_ignore_for", "stroke_points", "vk_code",
 ]

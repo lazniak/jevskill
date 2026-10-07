@@ -292,3 +292,152 @@ after a launch, as the user's cursor crossed the corner: the convention working
 as documented, and it stays a hair trigger — a dwell requirement would not tell
 a parked mouse from a fling to the first browser tab, and the cost of a false
 stop is one re-run.
+
+## ADR — the operator remembers, and code verifies before a model does (2026-09-27, 0.15.0)
+
+**Decision.** `jevskill.cu.experience` keeps four kinds of knowledge on disk
+(next to the ledger when a root is named, else `~/.jevskill/cu_experience.json`),
+and the operator consults it before every model call it would otherwise make:
+**plans** (command template → the goals that completed it), **recipes**
+((application, goal template) → the actions that completed the goal, by control
+identity), **lessons** (actions that changed nothing or were refused, with what
+worked instead) and the **end state** a goal was verified in. A remembered plan
+skips the planning call; a recipe replays the goal with no Jev call and no model
+call; a recipe answers an escalation before the model is asked; the screen is
+checked in code — the recipe's end state, then the quoted values of `done_when`
+— before the model is asked to verify or to re-plan.
+
+**Why.** The first live save (`bench/cu_live_save_run.json`) took 60.1 s. Jev
+decided in about 5 s of it; twelve planning-model calls took about 33 s; waiting
+for the user's hands to pause took 10 s. Every one of the twelve answered a
+question an earlier attempt had already answered, and nothing was kept, so the
+next run would have paid the same 33 s. The model is the supporting module: it
+is asked what the operator does not know yet, once.
+
+**Templates, not strings.** Quoted text and file names are cut into slots and
+put back from the current command, so a plan learned for `„hello world”` /
+`hello.txt` serves `„lista”` / `zakupy.txt`; a command that differs in any other
+word misses and is planned fresh. A composed text with no slot in it (a path the
+model wrote) replays only under the command template it was learned under —
+the same goal from another command re-composes it. A miss costs one model call;
+a false hit types the wrong thing into someone's document.
+
+**Every replayed step is still checked.** The control must resolve on the
+current screen (identity, then automation id, then a *unique* name — identical
+twins are refused, a test caught the first version picking one), the action
+goes through the operator's execute hook (kill switch, foreground rules), a
+destructive control still asks, and the screen must change within the settle
+window (2 s for a step that opened a window). The goal counts as done only when
+the screen matches how it ended before, or the verifier says so. A recipe that
+fails twice in a row is not offered until a run completes the goal the ordinary
+way and relearns it. A step-less recipe is kept only for a goal whose launch did
+the work: otherwise "type the text" after a goal that already typed it would
+replay as "nothing to do".
+
+**Verification in code is conservative.** A `done_when` that names the title is
+checked against the title only; otherwise quoted values must sit in an editor
+with no dialog up — while a Save As dialog is open, `hello.txt` in its file-name
+field says nothing about whether the file was saved. Code answers *yes* or
+*cannot tell*, never *no*.
+
+**Only a real desktop teaches.** A dry run reads memory and writes nothing;
+`memory=False` (panel switch, `--no-memory`) neither reads nor writes. A
+"forget" writes a tombstone into the file, so another process's stale copy
+cannot write the entry back — the macro cache's in-process tombstones could,
+and a test here showed it.
+
+**Non-invasive, amended.** With the window read by handle, a launched window no
+longer needs the foreground at all: it is found (a new top-level window, or the
+program's existing window once its title shows the new tab) and pinned, and
+nothing is switched. The window the user had in front before a key chord took
+it is given back when the run ends, if the agent's window still holds it. The
+planning and escalation prompts prefer controls and menus — UI Automation
+patterns that act on a background window — over chords.
+
+**Measured so far: offline only.** `tests/test_cu_memory.py` drives the real
+operator over a simulated Notepad and Save As dialog (`tests/cu_sim.py`): the
+first run of the save command makes two model calls (plan, compose) and four
+loop runs; the second makes none of either and saves the same file; a third
+with new values types the new values. No latency is claimed from the
+simulation; the live effect is unmeasured until a live run.
+
+## ADR — the plan is a tree; only leaves act; recovery repairs the scope, not the plan (2026-09-27, 0.15.0)
+
+**Decision.** A command is planned as a tree: the root (the command), up to 12
+**phases** (one milestone in one program, with its own `done_when` and optional
+code checks), and **leaves** — the one-window goals `loop.run` has always
+driven. The General Agent Plan is the old planning prompt with phases appended
+after the same rules, so a short command makes the same call and gets the same
+all-leaf answer; `hierarchical=False` sends the old prompt byte for byte. Only
+the first phase comes back broken down; the others are broken down when the
+cursor reaches them, from the screen the previous goal left. A failure is
+repaired in its **scope** — the failed item's parent — and the level above is
+asked only when that scope cannot recover. The whole design came out of a
+judge panel of three independent designs (an agenda tree, a mission tree with
+a journal, a supervised milestone plan); the agenda tree won and took the
+others' journal, resume rules, launch-through-the-hook and quote-checked
+verdicts.
+
+**Why lazy.** A phase planned up front is planned against a screen that does not
+exist yet — the Save As dialog of phase 3 cannot be described before phase 2
+has typed anything. Broken down when reached, it sees the real screen, and the
+expansion reuses the previous goal's observation, so it costs one model call
+and no extra UI walk. A phase broken down before, in any mission and with any
+file name, costs none: decompositions are remembered under the phase's goal
+template (`phase\x1f` keys inside the existing `plans` section — an older build
+merges that dict wholesale and keeps them).
+
+**Why repair the scope.** The flat run's re-plan rewrote everything after the
+failed goal. In a 40-goal mission that throws away phases that were fine and
+buys a planning call sized for the whole command. A scope repair sees its own
+children, the failed goal with what was `tried`, and the screen; it may finish
+(only with a quote that is on the screen), revise the scope's remaining work,
+skip an item marked optional *before* it failed, ask the user, give up, or send
+the question up one level. Bounds keep a bad model from looping: two repairs per
+scope (the flat run's `MAX_REPLANS`, so a flat run behaves as before), eight per
+run, a goal that failed twice is filtered out of any proposal, 60 goals, depth
+3, and an LLM-call allowance of 40 plus 6 per phase, at most 200.
+
+**Only leaves act.** Planning, expansion, repair, phase acceptance, pinning,
+pause and resume only read. `_GuardedBackend` makes a backend call from outside
+`Operator._execute_hook` a `RuntimeError`, and a launch now goes through the
+hook too — the kill switch is checked right before it, which an allow-listed
+launch used to skip. A test records every backend call of a learned run and a
+replayed one and finds none outside the hook.
+
+**Resume is explicit and careful.** Every run checkpoints to
+`cu_runs/<run_id>/run.json` (atomic replace) and appends `events.jsonl`; the
+first action a goal executes forces a checkpoint, because that is the moment a
+blind rerun stops being safe. A resumed goal that had acted is not rerun: code
+checks the screen first, then the model is told it was interrupted after N
+actions, or — Jev only — the user is asked. A run with a fresh heartbeat is
+refused (it may be alive in another console), a finished one is refused, and a
+dry run resumes dry. The heartbeat is its own file, written by a timer thread:
+the run thread blocks for up to a minute in a model call, past the 30 s
+staleness mark, and a live run used to look dead. Run ids arrive over HTTP and
+are matched against a strict pattern before any path is built.
+
+**A goal works only in a window of the program it names.** A phase in another
+program pins that program's window once; with several windows of it, the one
+this run already worked in, or the only one — never a guess among the user's
+documents. With no window, an allow-listed program is opened through the
+execute hook and anything else waits for the user. The window pinned before is
+never borrowed: the first version of the tree did, and the simulator recorded a
+Calculator goal typing into Notepad. A resume whose window closed takes only a
+window with the saved title.
+
+**Rejected.** Look-ahead expansion in a background thread (a prediction of a
+screen, plus locks around spend and events, for a latency nobody has measured);
+skipping a phase by code before expanding it (a title substring is true for an
+unsaved `*hello.txt`, `file_exists` for yesterday's file); per-node dollar and
+call budgets (the loop swallows hook exceptions, so the only reliable cap is at
+leaf boundaries and at the next observation); approval checkpoints on the plan
+or on evidence (time to success matters most; the per-action destructive gate
+stays).
+
+**Measured so far: offline only.** `tests/test_cu_mission.py` drives the real
+operator over the simulated desktop: a three-phase mission makes one planning
+call and one break-down per later phase; a failed goal is repaired inside its
+phase without replanning the mission; a remembered two-phase mission replays
+with no model call and no loop run and saves the file with the new values. No
+latency is claimed until a live multi-phase run writes a reproducible JSON.

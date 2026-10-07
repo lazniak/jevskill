@@ -940,13 +940,16 @@ def cmd_web(args: argparse.Namespace) -> int:
 
 
 def cmd_cu(args: argparse.Namespace) -> int:
-    """``jevskill cu run "<command>"`` and ``jevskill cu stop``.
+    """``jevskill cu run "<command>"``, ``cu resume <run_id>``, ``cu runs`` and
+    ``cu stop``.
 
     The same operator the web console's panel drives, without the page: events
     print as they happen, a destructive step asks on stdin, Ctrl+C stops the
     run. ``stop`` touches the stop file the operator polls, so it works from a
     second terminal, over SSH, or from a scheduled task — whichever front end
-    started the run.
+    started the run. ``resume`` continues a checkpointed run in this process
+    through the very same watch loop as ``run``, so Ctrl+C, the confirm prompt
+    and the exit codes cannot drift between the two.
     """
     import sys as _sys
 
@@ -958,20 +961,109 @@ def cmd_cu(args: argparse.Namespace) -> int:
         touch_stop_file(stop_file)
         print(f"stop requested via {stop_file}")
         return 0
+    if args.cu_command == "memory":
+        return _cu_memory(args)
 
-    from .cu.runner import Operator, OperatorUnavailable
+    from .cu.runner import (Operator, OperatorBusy, OperatorUnavailable, RunNotResumable,
+                            UnknownRun)
     from .errors import JevConfigError as _ConfigError
 
     operator = Operator(ledger_root=args.ledger_dir)
+    if args.cu_command == "runs":
+        return _cu_runs(operator, args)
     try:
-        run_id = operator.start(args.command_text, args.model, dry_run=args.dry_run,
-                                max_steps=args.max_steps, budget_s=args.budget_s,
-                                usd_cap=args.usd_cap)
-    except (OperatorUnavailable, _ConfigError, ValueError) as exc:
+        if args.cu_command == "resume":
+            run_id = operator.resume(args.run_id, args.model,
+                                     total_budget_s=args.total_budget_s,
+                                     usd_cap=args.usd_cap, max_llm_calls=args.max_llm_calls)
+        else:
+            run_id = operator.start(args.command_text, args.model, dry_run=args.dry_run,
+                                    max_steps=args.max_steps, budget_s=args.budget_s,
+                                    total_budget_s=args.total_budget_s,
+                                    usd_cap=args.usd_cap, memory=not args.no_memory,
+                                    hierarchical=not args.flat,
+                                    max_llm_calls=args.max_llm_calls)
+    except UnknownRun as exc:
+        # Checked before its LookupError siblings: "no such run" and "that run
+        # cannot be resumed" are different mistakes with different fixes.
+        print(f"error: no checkpoint for run {exc} — `jevskill cu runs` lists what can be "
+              f"resumed", file=_sys.stderr)
+        return 2
+    except (OperatorUnavailable, OperatorBusy, RunNotResumable, _ConfigError, ValueError) as exc:
         print(f"error: {exc}", file=_sys.stderr)
         return 2
-    print(f"run {run_id} — Ctrl+C here, Ctrl+Alt+Esc anywhere, or `jevskill cu stop`",
-          flush=True)
+    return _cu_watch(operator, run_id, resumed=args.cu_command == "resume")
+
+
+def _cu_llm_calls(text: str) -> int:
+    """``--max-llm-calls``: a whole number from 1 to ``LLM_CAP_CEIL``, or exit 2.
+
+    The help always said 1-200, but a plain ``type=int`` let 0 or 5000 through
+    and the operator clamped them — a run spending on a number nobody typed,
+    while the console's API refused the same value with a 400. Same bounds,
+    same constant, same refusal. Imported here, not at parser build time, so
+    ``jevskill --help`` does not load the operator.
+    """
+    from .cu.runner import LLM_CAP_CEIL
+
+    try:
+        number = int(text.strip())
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"must be a whole number from 1 to {LLM_CAP_CEIL}, got {text!r}") from None
+    if not 1 <= number <= LLM_CAP_CEIL:
+        raise argparse.ArgumentTypeError(f"must be from 1 to {LLM_CAP_CEIL}, got {number}")
+    return number
+
+
+def _cu_progress_text(progress: dict) -> str:
+    """``6/9 goals · 1/3 phases · 2 not broken down`` — only the parts that exist."""
+    progress = progress or {}
+    parts = []
+    if progress.get("leaves_known"):
+        parts.append(f"{progress.get('leaves_done', 0)}/{progress['leaves_known']} goals")
+    if progress.get("phases_total"):
+        parts.append(f"{progress.get('phases_done', 0)}/{progress['phases_total']} phases")
+    if progress.get("unexpanded_phases"):
+        parts.append(f"{progress['unexpanded_phases']} not broken down")
+    return " · ".join(parts) or "no progress recorded"
+
+
+def _cu_runs(operator, args: argparse.Namespace) -> int:
+    """``jevskill cu runs``: the checkpointed runs ``cu resume`` can continue.
+
+    The rows are ``Operator.runs()`` verbatim — the same list the console's
+    resume card and ``GET /api/cu/runs`` read — so the three can never
+    disagree about what is resumable. A finished run is never listed.
+    """
+    rows = operator.runs()
+    if args.json:
+        print(json.dumps({"runs": rows}, ensure_ascii=False, indent=2))
+        return 0
+    if not rows:
+        from .stats import ledger_path
+
+        print(f"no runs to resume under {ledger_path(args.ledger_dir).parent}")
+        return 0
+    for row in rows:
+        state = "interrupted" if row.get("interrupted") else str(row.get("state") or "?")
+        flags = " dry run" if row.get("dry_run") else ""
+        print(f"{row.get('run_id')}  {state:<11}{flags}  "
+              f"{_cu_progress_text(row.get('progress') or {})}  "
+              f"{str(row.get('command') or '')[:70]}")
+        why = row.get("stop_reason") or row.get("error")
+        if why:
+            print(f"    {str(why)[:100]}")
+    print("resume one with: jevskill cu resume <run_id>")
+    return 0
+
+
+def _cu_watch(operator, run_id: str, *, resumed: bool = False) -> int:
+    """Print a run's events until it ends; the one loop ``run`` and ``resume`` share."""
+    status = operator.status()
+    lead = f"resumed run {run_id} (segment {status.get('segment', 2)})" if resumed \
+        else f"run {run_id}"
+    print(f"{lead} — Ctrl+C here, Ctrl+Alt+Esc anywhere, or `jevskill cu stop`", flush=True)
     seen = 0
     try:
         while True:
@@ -993,8 +1085,56 @@ def cmd_cu(args: argparse.Namespace) -> int:
         status = operator.status(seen)
         for event in status["events"]:
             print(f"[{event['t']:7.2f}] {event['kind']:<14} {event['text']}", flush=True)
+        _cu_resume_hint(operator, run_id)
         return 130
+    if status.get("state") != "done":
+        _cu_resume_hint(operator, run_id)
     return 0 if status.get("state") == "done" else 1
+
+
+def _cu_resume_hint(operator, run_id: str) -> None:
+    """Say how to continue — only when the checkpoint really is resumable."""
+    try:
+        listed = any(row.get("run_id") == run_id for row in operator.runs())
+    except Exception:  # pragma: no cover - the hint is a courtesy
+        listed = False
+    if listed:
+        print(f"resume with: jevskill cu resume {run_id}", flush=True)
+
+
+def _cu_memory(args: argparse.Namespace) -> int:
+    """``jevskill cu memory``: what the operator learned, and forgetting it."""
+    from .cu.experience import Experience
+
+    store = Experience.for_ledger_root(args.ledger_dir)
+    if args.forget:
+        kind, key = args.forget
+        forgot = store.forget(kind, key)
+        print("forgot" if forgot else "no such entry (a tombstone was written anyway)")
+        return 0
+    if args.clear:
+        print(f"cleared {store.clear()} entries from {store.path}")
+        return 0
+    listing = store.listing(limit=args.limit)
+    if args.json:
+        print(json.dumps(listing, ensure_ascii=False, indent=2))
+        return 0
+    stats = listing["stats"]
+    print(f"{stats['path']}: {stats['plans']} plans, {stats['recipes']} recipes "
+          f"({stats['usable_recipes']} usable), {stats['lessons']} lessons")
+    for plan in listing["plans"]:
+        print(f"  plan   {plan['successes']}ok/{plan['failures']}x  {plan['command'][:70]}")
+        for goal in plan["goals"]:
+            print(f"           - {goal}")
+    for recipe in listing["recipes"]:
+        flag = "" if recipe["usable"] else "  [demoted]"
+        print(f"  recipe {recipe['successes']}ok/{recipe['failures']}x  {recipe['app']}: "
+              f"{recipe['goal'][:60]}{flag}")
+        for step in recipe["steps"]:
+            print(f"           - {step}")
+    for lesson in listing["lessons"]:
+        print(f"  lesson {lesson['app']}: {lesson['line']}")
+    return 0
 
 
 # --------------------------------------------------------------------------- #
@@ -1224,10 +1364,50 @@ def build_parser() -> argparse.ArgumentParser:
                    help="plan for real, then simulate the steps — nothing on the desktop is touched")
     r.add_argument("--max-steps", type=int, default=25, help="Jev steps per sub-goal (default 25)")
     r.add_argument("--budget-s", type=float, default=90.0, help="seconds per sub-goal (default 90)")
+    r.add_argument("--total-budget-s", type=float, default=600.0,
+                   help="active seconds for the whole run, pauses excluded (default 600)")
     r.add_argument("--usd-cap", type=float, default=0.5,
                    help="stop when Jev + model spend passes this (default 0.50)")
+    r.add_argument("--max-llm-calls", type=_cu_llm_calls, default=None, metavar="N",
+                   help="planning-model calls for the run, 1-200 (default: automatic — 40, "
+                        "raised per phase of a long command)")
+    r.add_argument("--flat", action="store_true",
+                   help="plan 1-8 one-window goals only, never phases broken down later")
+    r.add_argument("--no-memory", action="store_true",
+                   help="neither use nor feed what earlier runs learned (plans, recipes, lessons)")
     r.add_argument("--ledger-dir", help="directory holding .jevskill/ledger.jsonl")
     r.set_defaults(func=cmd_cu)
+    rs = cu_sub.add_parser(
+        "resume", help="continue a stopped, interrupted or failed run where it left off",
+        description=(
+            "Continue a checkpointed run in this terminal. A goal that had already acted "
+            "is never simply run again: the screen is checked in code first, then the "
+            "planning model (or you, Jev only) decides. Limits come from the checkpoint "
+            "unless given here."),
+    )
+    rs.add_argument("run_id", metavar="RUN_ID", help="an id from 'jevskill cu runs'")
+    rs.add_argument("--model", help="planning model for the rest of the run, or 'none' for "
+                                    "Jev only (default: the one the run started with)")
+    rs.add_argument("--total-budget-s", type=float, default=None,
+                    help="active seconds across all segments (default: the checkpoint's)")
+    rs.add_argument("--usd-cap", type=float, default=None,
+                    help="spend cap for the whole run (default: the checkpoint's)")
+    rs.add_argument("--max-llm-calls", type=_cu_llm_calls, default=None, metavar="N",
+                    help="planning-model calls for the whole run, 1-200 (default: the checkpoint's)")
+    rs.add_argument("--ledger-dir", help="directory holding .jevskill/ledger.jsonl")
+    rs.set_defaults(func=cmd_cu)
+    ru = cu_sub.add_parser("runs", help="list the runs 'cu resume' can continue")
+    ru.add_argument("--json", action="store_true", help="the rows as JSON")
+    ru.add_argument("--ledger-dir", help="directory holding .jevskill/ledger.jsonl")
+    ru.set_defaults(func=cmd_cu)
+    m = cu_sub.add_parser("memory", help="list what the operator learned, or forget it")
+    m.add_argument("--forget", nargs=2, metavar=("KIND", "KEY"),
+                   help="forget one entry: KIND is recipe, plan or lesson; KEY from --json")
+    m.add_argument("--clear", action="store_true", help="forget everything")
+    m.add_argument("--json", action="store_true", help="the listing as JSON (with keys)")
+    m.add_argument("--limit", type=int, default=50, help="entries per kind (default 50)")
+    m.add_argument("--ledger-dir", help="directory holding .jevskill/ (default: ~/.jevskill)")
+    m.set_defaults(func=cmd_cu)
     s = cu_sub.add_parser("stop", help="stop the active run, from any terminal")
     s.add_argument("--ledger-dir", help="directory holding .jevskill/ledger.jsonl")
     s.set_defaults(func=cmd_cu)

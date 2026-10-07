@@ -578,6 +578,12 @@ label.microlabel { display: block; }
 #cu-stop.is-armed:hover { background: var(--stop); color: #000; }
 #cu-stop:disabled { background: transparent; color: var(--dimmer); border-color: var(--line); }
 
+/* Pause sits beside STOP, never instead of it: it is the soft brake (at the
+ * next goal boundary), STOP the hard one (before the next action). */
+#cu-pause { margin-left: auto; padding: 8px 14px; letter-spacing: .06em; }
+#cu-pause + #cu-stop { margin-left: 0; }
+#cu-pause[aria-pressed="true"]:not(:disabled) { color: var(--gold); border-color: var(--gold); }
+
 #cu-hint { margin-top: 8px; }
 
 .cu-howstop {
@@ -618,6 +624,50 @@ label.microlabel { display: block; }
 .cu-meta { font-size: 11px; color: var(--fg-3); }
 #cu-state.is-live { color: var(--gold); border-color: var(--gold); }
 #cu-state.is-lost { color: var(--stop); border-color: var(--stop); }
+
+/* An active run whose checkpoint stopped beating: a warning, not an error —
+ * it may be one long model call — so gold, like every other warning here. */
+.cu-stale {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: .08em;
+  color: var(--gold);
+  border: 1px solid var(--gold);
+  border-radius: var(--r);
+  padding: 1px 6px;
+  white-space: nowrap;
+}
+
+#cu-progress { font-size: 11.5px; margin-top: 8px; color: var(--fg-2); }
+
+/* Runs a STOP, a crash or a failure left unfinished. */
+.cu-resume {
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  padding: 10px 12px;
+  margin-top: 14px;
+}
+
+.cu-resume .microlabel { margin-bottom: 4px; }
+
+.cu-resume-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  border-top: 1px solid var(--line);
+  padding: 7px 0;
+}
+
+.cu-resume-row .cu-goal { font-size: 13px; }
+
+/* A run resumes in the mode it started in, not the dry-run switch's: a live
+ * row says so in the stop colour, on the label and on its button. */
+.cu-mode { display: block; font-size: 11.5px; color: var(--fg-2); margin-top: 3px; }
+.cu-mode.is-live { color: var(--stop); }
+.cu-resume-row button.is-live { border-color: var(--stop); color: var(--stop); }
+.cu-when.is-warn { color: var(--gold); }
+.cu-resume-msg { color: var(--gold); }
 
 /* ------------------------------------------------------------ plan list */
 
@@ -660,6 +710,65 @@ label.microlabel { display: block; }
   text-align: right;
   white-space: nowrap;
 }
+
+/* ------------------------------------------------------------ plan tree */
+
+/* A phase is a native <details>: keyboard, screen reader and the open state
+ * come from the browser. Only the marker is drawn, as a glyph in the type. */
+.cu-phase { border-top: 1px solid var(--line); }
+#cu-plan > :first-child { border-top: 0; }
+
+.cu-phase > summary {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 8px 0 8px 8px;
+  cursor: pointer;
+  list-style: none;
+  border-left: 1px solid transparent;
+}
+
+.cu-phase > summary::-webkit-details-marker { display: none; }
+.cu-phase > summary::before { content: "▸"; font-family: var(--mono); font-size: 11px; color: var(--fg-3); }
+.cu-phase[open] > summary::before { content: "▾"; }
+.cu-phase > summary:hover .cu-phase-goal { color: var(--fg); }
+
+.cu-phase-goal { font-size: 13.5px; color: var(--fg-2); overflow-wrap: anywhere; flex: 1 1 auto; min-width: 0; }
+.cu-phase-meta { font-family: var(--mono); font-size: 11px; color: var(--fg-3); text-align: right; }
+
+.cu-phase.is-running > summary { border-left-color: var(--gold); }
+.cu-phase.is-running > summary .cu-phase-goal,
+.cu-phase.is-running > summary .cu-glyph { color: var(--gold); }
+.cu-phase.is-done > summary .cu-phase-goal { color: var(--fg); }
+.cu-phase.is-failed > summary .cu-glyph { color: var(--stop); }
+
+.cu-phase-body {
+  margin: 0 0 6px 12px;
+  padding-left: 8px;
+  border-left: 1px solid var(--line);
+}
+
+.cu-phase-body > .cu-when { margin: 0 0 4px; }
+.cu-phase-body > .cu-empty { margin: 4px 0 8px; }
+.cu-phase-body > .cu-step:first-of-type { border-top: 0; }
+
+/* What proved a goal done. Code and replay are the answers memory bought
+ * without a decision, so they wear memory's gold-hi. */
+.cu-evidence {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: .06em;
+  color: var(--fg-3);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  padding: 0 5px;
+  margin-left: 6px;
+  white-space: nowrap;
+}
+
+.cu-evidence.is-code, .cu-evidence.is-replay { color: var(--gold-hi); border-color: var(--gold); }
+
+.cu-step.is-superseded .cu-goal { color: var(--fg-3); text-decoration: line-through; }
 
 /* ---------------------------------------------------------- confirm box */
 
@@ -708,14 +817,44 @@ label.microlabel { display: block; }
 
 .cu-empty { font-size: 13px; color: var(--fg-3); margin: 8px 0 0; }
 
+/* Memory: what earlier runs taught. Gold-hi marks "no decision was bought". */
+.cu-line.is-memory .kind, .cu-line.is-memory .t { color: var(--gold-hi); }
+.cu-memory { margin-top: 16px; }
+.cu-memory summary { cursor: pointer; }
+.cu-mem-group { margin: 10px 0 0; }
+.cu-mem-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  padding: 6px 0;
+  border-top: 1px solid var(--line);
+  font-size: 12.5px;
+  color: var(--fg-2);
+}
+.cu-mem-item .sub { display: block; font-family: var(--mono); font-size: 11px; color: var(--fg-3); overflow-wrap: anywhere; }
+.cu-mem-item .demoted { color: var(--stop); font-family: var(--mono); font-size: 10.5px; margin-left: 6px; }
+.cu-mem-badge {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--gold-hi);
+  border: 1px solid var(--gold);
+  border-radius: var(--r);
+  padding: 0 5px;
+  white-space: nowrap;
+}
+
 /* At a phone width the row becomes a column and STOP goes to the top of it:
  * one thumb-sized target, above everything it might have to interrupt. */
 @media (max-width: 640px) {
   .cu-actions { flex-direction: column; align-items: stretch; }
   .cu-actions button { width: 100%; }
-  #cu-stop { order: -1; margin-left: 0; }
+  /* STOP first, pause right under it, then the buttons that start things. */
+  #cu-stop { order: -2; margin-left: 0; }
+  #cu-pause { order: -1; margin-left: 0; }
   .cu-step { grid-template-columns: 16px minmax(0, 1fr); }
   .cu-step-meta { grid-column: 2; text-align: left; white-space: normal; }
+  .cu-phase > summary { flex-wrap: wrap; }
+  .cu-phase-meta { flex-basis: 100%; text-align: left; padding-left: 22px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

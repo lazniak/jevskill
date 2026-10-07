@@ -22,6 +22,231 @@ replaced.
   indentation (minified JSON, unformatted XML). One workload proves the fix, not the
   generality.
 
+## [0.15.1] — 2026-09-30
+
+No published number changes. The only live data behind this release is the run
+that motivated it; the fix is proven offline (`tests/test_cu_canvas.py`, 35
+tests) and **nothing is claimed about how drawn pictures look**.
+
+### Fixed — the operator could not touch a canvas
+
+Measured live from the panel on 2026-09-30, *"stwórz obrazek w Paint … wilk i
+czerwony kapturek"*: Paint opened (goal 1 done), Jev selected dark red and the
+Fill tool, and then the run **failed after 51.0 s, $0.004 Jev + $0.099 model,
+13 calls** — three goals in a row escalated with the planning model's own words,
+*"no canvas element is listed to click"*. Paint's picture area is a `group`
+(automation id `image`, 690x338) with **no UI Automation pattern**, so
+`reduce.interactive` dropped it; and even listed, Jev chooses *which control*,
+and a brush stroke is not a control.
+
+- `reduce.mark_surfaces` gives a large, pattern-less `group`/`pane`/`custom`/
+  `image` that has a name or an automation id and holds nothing interactive,
+  named or smaller of its kind the role **`canvas`**. It ranks with the focused
+  region, so a 100-control ribbon cannot push it past the cap, and `to_state`
+  carries its size in pixels (`px`). `decide.ALLOWED_ROLES["click"]` gains
+  `canvas` (act.md §4's generated row changes with it); a click lands on the
+  centre — what a Fill tool needs. The name-or-id rule comes from the committed
+  Calculator fixture, whose `ApplicationFrameInputSinkWindow` (968x877, no name,
+  no id) was the one false positive in the fixtures.
+- **`Draw` goals.** The planning and phase-breakdown prompts word canvas work as
+  a goal starting with *Draw*, preceded by a goal choosing its tool and colour.
+  Such a goal skips the Jev loop: one call (`DRAW_SYSTEM`) returns strokes in
+  fractions of the canvas — one point a click, two a drag, more a path — and the
+  operator performs them in chunks of 6 through the same execute hook as every
+  action (kill switch, foreground rule, guarded backend). `act.Action.strokes`,
+  op `draw`, method `draw_path`, `UiaBackend.draw_stroke` (press, densified
+  moves ≤ 6 px, release — always released), `act.stroke_points`, `act.densify`.
+- A `Draw` goal ends on the drawing model's word (evidence `model`): paint is
+  not in the tree, so a verifier would call every picture unfinished and the
+  stall rule every stroke "changed nothing". Later `Draw` goals receive
+  `already_drawn` — earlier parts and the box each covers. Strokes are never a
+  recipe step or a lesson (`Trajectory.drawn`; `learn_recipe` returns `None` for
+  a goal that drew): a replay would redo the tool clicks and call an empty
+  canvas a picture. The escalation prompt says what a `canvas` is.
+
+## [0.15.0] — 2026-09-27
+
+No published number changes in this release. Everything below is proven
+offline — on the simulated desktop in `tests/cu_sim.py` and with fake
+planning models — and **no latency, cost or speed-up is claimed from it**:
+the only live multi-goal data is still `bench/cu_live_save_run.json` (one
+command, 60.1 s, 12 model calls). A live multi-phase bench runs only with the
+user's explicit go.
+
+### Added — the operator learns from its own runs (`jevskill.cu.experience`)
+
+The live runs of 0.14.0 were slow for reasons a second run should not repeat:
+model calls were most of the 60.1 s, nothing was kept between runs, and the
+escalation model repeated actions that had already failed because it was never
+told they had been tried.
+
+- **Recipes.** A goal that finished is kept as the actions that changed the
+  screen, keyed by the controls' identity (automation id, role, class, name),
+  with the quoted text and file names turned into slots. The next time the same
+  goal comes up — with other values — it **replays without a Jev decision or a
+  model call**, every step checked: the control must resolve uniquely, the
+  action must execute, the screen must change, a destructive control still
+  waits for *allow*. A step that does not hold hands the goal back to Jev from
+  that screen; two failures in a row demote the recipe.
+- **Plans.** A command that finished remembers its goals under a template of
+  the command, so *„lista” … zakupy.txt* reuses what *„hello world” …
+  hello.txt* was planned as — no planning call.
+- **Lessons.** Every action that changed nothing or was refused is kept with
+  what worked instead, and goes into the escalation and re-plan prompts
+  (`tried`, `lessons`, `remembered`) — the fix for the repeated scroll the
+  0.14.0 run paid for twice.
+- **Verification in code first.** A goal's end is checked against how the
+  screen looked when it was last done, and against the quoted values of
+  `done_when`, before any model is asked; a re-plan checks the screen first.
+  In the simulation, the second run of the save command makes **0 model calls
+  and 0 loop runs** and saves the same file (a test, not a timing).
+- The console lists what was learned and forgets any of it (`GET
+  /api/cu/memory`, `POST /api/cu/memory/forget`, `POST /api/cu/memory/clear`
+  with `{"confirm": true}`); the CLI has `jevskill cu memory` and
+  `jevskill cu run --no-memory`. A forget is durable across processes.
+- Dry runs read memory and never write it.
+
+### Added — long missions: a plan tree, broken down as it goes (`jevskill.cu.agenda`)
+
+- **A General Agent Plan.** The planning prompt still starts with the same
+  rules, and a short command gets exactly the old answer — all leaves. A long
+  one may come back as up to 12 **phases**, each one milestone in one program
+  with its own `done_when`, optional code `checks` (`file_exists`,
+  `file_contains`, `title_contains`), a weight, and `optional` / `irreversible`
+  flags. Only the first phase is broken down up front.
+- **Break-down when reached.** A phase becomes goals when the cursor gets to
+  it, from the screen the previous goal left (no extra UI walk), or from memory
+  of how that phase was broken down before — in any mission, with any file
+  name. A phase that cannot be broken down is one goal for Jev.
+- **Repair where it failed.** A goal that stalls is repaired in its phase
+  (at most twice), and the level above is asked only when the phase cannot be;
+  a goal that failed twice is never proposed again; `completed` from the model
+  counts only with a quote that is on the screen. Bounds: 8 repairs per run,
+  60 goals, depth 3, an LLM-call allowance of 40 plus 6 per phase (at most 200),
+  and per-phase seconds carved from the total budget.
+- **Only leaves act.** Planning, break-down, repair, phase acceptance, pause and
+  resume never touch the desktop; the backend is wrapped so that a call from
+  anywhere but the execute hook raises, and a launch now goes through the hook
+  (the kill switch is checked right before it — an allow-listed launch used to
+  skip that check).
+- **Pause, checkpoints, resume** (`jevskill.cu.journal`). Pause holds at the
+  next goal boundary, never inside a goal; STOP still works while paused.
+  Every run writes `<ledger dir>/cu_runs/<run_id>/run.json` (atomic) and
+  `events.jsonl`; a stopped, interrupted or failed run can be **resumed** —
+  the window re-pinned by handle, else by process and title, never focused. A
+  goal that had already acted is not simply rerun: code checks the screen
+  first, then the model is told it was interrupted after N actions, or — with
+  no model — the user is asked. `POST /api/cu/pause`, `POST /api/cu/resume`,
+  `GET /api/cu/runs`; `jevskill cu runs`, `jevskill cu resume <id>`,
+  `jevskill cu run --flat --max-llm-calls N --total-budget-s S`.
+- `bench/cu_learn_live.py` — the live measurement of all this: one command
+  template run twice or three times on this desktop with new values, memory on,
+  in a fresh memory directory; it writes `bench/cu_learn_live.json` and refuses
+  to start without `--live`. **Not run yet** — there is no live figure to quote.
+- The panel shows the tree (a phase per `<details>`, with its goals, time,
+  spend and evidence), a progress line, a pause button, a resume card, and
+  inputs for the total budget and the LLM-call allowance (the total budget was
+  hard-coded to 600 s).
+
+### Changed
+
+- **A launch no longer takes the foreground.** The new window is found and
+  pinned by handle, so the user's keystrokes stay in their own window — in the
+  live run of 2026-09-21 two of them landed in the new Notepad. The
+  foreground is given back to the user's window at the end of a run and at
+  every phase boundary, if the agent's window still holds it.
+- The event list is a ring of 2,000 with `events_base`; the full log is on
+  disk. It used to stop recording after 2,000 events — the end of a long run.
+- A spend or time cap crossed inside an escalation's model call now stops the
+  run at the next observation (the loop swallows exceptions from that hook).
+- The total budget counts active time: pauses are excluded, and a resumed run
+  carries its earlier segments.
+
+### Fixed — before release, from an adversarial review of the tree
+
+An adversarial review of the unreleased tree code confirmed 25 defects (one
+more was rejected); each fix has a regression test that failed on the first
+version (`tests/test_cu_mission_review.py`, `tests/test_cu_review_memory.py`).
+The ones that could act on the wrong thing:
+
+- **A phase in a program with no window ran in the window pinned before** — in
+  the simulator a Calculator goal typed into Notepad and the run ended `done`.
+  A goal now works only in a window of the program it names: an allow-listed
+  program with no window is opened (through the execute hook), otherwise the
+  user is asked to bring it up; the old pin is never borrowed.
+- **A resume whose window had closed pinned the user's other document** of the
+  same program. Re-finding a window is now strict about the saved title, and
+  with several windows of one program the run prefers the one it worked in.
+- **The total budget used wall time**, so a pause longer than what was left
+  ended the run on *continue*, and every resume granted a fresh budget. It is
+  active time across segments now; a resume with the budget spent is refused
+  until a larger one is given. A running phase's seconds are checkpointed, so a
+  resumed phase no longer gets its whole budget back.
+- **No heartbeat during a model call** (up to 60 s, against a 30 s staleness
+  mark): a second console could list a live run as interrupted and resume it
+  onto the same desktop. A timer thread writes a heartbeat file every 5 s.
+- **`give_up`, or the user's *no*, at a phase acceptance was sent to the level
+  above**, which re-planned and kept acting. It ends the run. **STOP during a
+  repair question** ended the run *failed* (and counted against a remembered
+  plan); it is *stopped*. An interrupted goal on resume goes up the tree like
+  any other failure instead of failing the run with repairs left above it.
+- **Plans were cut**: a user or remembered plan over 8 goals lost its tail
+  (the Save and the Close) and the run still reported `done`; `max_leaves` was
+  not applied to a model's tree or to a repair's nested children (4 × 8 goals
+  ran under a limit of 10). Remembered and user plans are used whole; a model
+  tree over the limit is broken down as it is reached, or refused.
+- **False proof of done**: yesterday's file satisfied a `file_exists` check
+  and rescued today's failed save; an unsaved title (`*hello.txt - Notatnik`)
+  passed three title checks; a typed value still in its field passed for a goal
+  whose committing click never happened. File checks now count only files
+  written since the run began, a dirty title is undecided, and a field's value
+  is evidence only when typing it was the goal's last step.
+- **Memory**: dry runs could demote a remembered break-down; a break-down
+  carrying the command's file name was replayed inside the next mission; a
+  phase accepted with a failed goal was stored without it; a replay that did
+  every step but missed the goal was never demoted; a `forget` from the CLI did
+  not reach a running console; the size bounds were undone by the merge on
+  save; a malformed recipe row crashed verification. All fixed.
+- A resume numbered its events from the last checkpoint and reused indices a
+  crashed segment had already written.
+
+A second review, of those fixes and of the console and CLI surfaces, confirmed
+11 more (none rejected), each with a regression test that fails on the code
+before it (`TestReviewRound2`, `tests/test_cu_surfaces_review.py`):
+
+- **A program whose window belongs to another process was launched at every
+  goal** — calc.exe owns its window as CalculatorApp.exe, so the first fix
+  above found "no window" after the plan's own launch and opened a new, blank
+  Calculator for each goal. The operator now remembers what a launch produced
+  (checkpointed, so a resume keeps it), a launch leaf pins its phase, and
+  looking at an interrupted goal on resume launches nothing. Waiting for a
+  window whose process is named otherwise (wt.exe is WindowsTerminal.exe)
+  accepts the window the user brings to the front after being asked.
+- **The console's resume could not resume a run stopped by its budget or
+  cap**, and its *none — Jev only* choice resumed with the checkpoint's paid
+  model. The resume card now sends the page's limits and a Jev-only choice
+  (`model: null`, `""` or `"none"`; an absent key keeps the checkpoint's
+  model), shows each run's stop reason, which field to raise, the model it will
+  use, and whether it resumes **live — moves the desktop** or as a dry run. A
+  run whose spend already reached its cap is refused until the cap is raised,
+  like one whose total budget is spent; a damaged checkpoint is refused with a
+  reason instead of a 500.
+- Console flags are strict booleans: `{"memory": null}` turned memory off, and
+  `{"allow": "false"}` on a confirmation *allowed* the step (`bool("false")`).
+  A non-boolean is now a 400. `cu run` / `cu resume --max-llm-calls` outside
+  1–200 exits 2 instead of being clamped.
+- Proof and memory: a `•` used as a separator (`Inbox • Slack`) no longer
+  reads as an unsaved title — only a marker opening or closing the document
+  part does; a file copied into place (which keeps its old modified time) counts
+  as this run's; a phase naming its own executable no longer refuses every
+  break-down; a stale copy in one process no longer deletes a plan another
+  process relearned after a `forget`; a user phase over the goal limit is
+  refused instead of cut to the limit.
+- The console answered a refused request (wrong Origin, unknown route) before
+  reading its body; Windows then reset the connection and the client saw
+  WinError 10053 instead of the 403 — a flake of the surfaces suite. The body is
+  drained first.
+
 ## [0.14.0] — 2026-09-21
 
 ### Added — a computer-use panel: one command, Jev per step, an LLM between
